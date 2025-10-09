@@ -1,3 +1,9 @@
+# installations:
+# pip install sqlalchemy
+# pip install dotenv
+# pip install pymysql
+# pip install psycopg2
+
 # Pandas ETL Script
 # -> Extract data from MySQL source database, transform to fit to data warehouse, and finally load into PostgreSQL (Supabase)
 import os
