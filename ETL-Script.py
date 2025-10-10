@@ -1,3 +1,5 @@
+#IMPORTANT: MAKE SURE UR NET IS NOT OBSOLETE 1990 TECHNOLOGY - MAKE SURE IT SUPPORTS FRICKEN IPV6
+
 # installations:
 # pip install sqlalchemy
 # pip install dotenv
@@ -42,14 +44,19 @@ dim_user['date_of_birth'] = pd.to_datetime(dim_user['date_of_birth'], errors='co
 dim_user = dim_user.drop_duplicates(subset=['user_id'])
 
 # dim_rider (join riders -> couriers to get courier_name, while preserving rider names)
-riders_small = riders_df[['id', 'firstName', 'lastName', 'vehicleType', 'courierId', 'gender']].copy()
-riders_small = riders_small.rename(columns={'id': 'rider_id', 'firstName': 'first_name', 'lastName': 'last_name', 'vehicleType': 'vehicle_type', 'courierId': 'courier_id'})
+riders_small = riders_df[['id', 'vehicleType', 'courierId', 'gender']].copy()
+riders_small = riders_small.rename(columns={
+    'id': 'rider_id', 
+    'vehicleType': 'vehicle_type', 
+    'courierId': 'courier_id'
+})
 
+# Join with couriers to get courier_name
 couriers_small = couriers_df[['id', 'courier_name']].rename(columns={'id': 'courier_id'})
 dim_rider = riders_small.merge(couriers_small, on='courier_id', how='left')
-# select the schema we want
-dim_rider['name'] = dim_rider['first_name'] + ' ' + dim_rider['last_name']
-dim_rider = dim_rider[['rider_id', 'first_name', 'last_name', 'vehicle_type', 'courier_name', 'gender']]
+
+# Final selection of columns matching the schema
+dim_rider = dim_rider[['rider_id', 'courier_name', 'vehicle_type', 'gender']]
 dim_rider = dim_rider.drop_duplicates(subset=['rider_id'])
 
 # dim_date (from orders' createdAt and deliveryDate; ensure timezone-aware)
@@ -152,14 +159,61 @@ dim_date = dim_date.drop_duplicates(subset=['date_id'])
 #  - set unique constraints in DB and handle conflicts.
 
 try:
-    # Cast date_id back to datetime for SQL compatibility
-    dim_date['date_id'] = pd.to_datetime(dim_date['date_id'])
+    # Convert date_id from date objects to integer format (YYYYMMDD)
+    dim_date['date_id'] = dim_date['date_id'].apply(lambda d: int(d.strftime('%Y%m%d')))
     
-    # Load the data
-    dim_date.to_sql('dim_date', supabase_engine, if_exists='append', index=False)
-    dim_product.to_sql('dim_product', supabase_engine, if_exists='append', index=False)
-    dim_user.to_sql('dim_user', supabase_engine, if_exists='append', index=False)
-    dim_rider.to_sql('dim_rider', supabase_engine, if_exists='append', index=False)
+    # --- DEDUPLICATION FOR ALL DIMENSION TABLES ---
+    # 1. Date dimension
+    existing_dates = pd.read_sql("SELECT date_id FROM dim_date", supabase_engine)
+    if not existing_dates.empty:
+        new_dim_date = dim_date[~dim_date['date_id'].isin(existing_dates['date_id'])]
+        print(f"Dates: {len(dim_date) - len(new_dim_date)} existing, {len(new_dim_date)} new")
+    else:
+        new_dim_date = dim_date
+        print(f"Dates: 0 existing, {len(new_dim_date)} new")
+    
+    # 2. Product dimension
+    existing_products = pd.read_sql("SELECT product_id FROM dim_product", supabase_engine)
+    if not existing_products.empty:
+        new_dim_product = dim_product[~dim_product['product_id'].isin(existing_products['product_id'])]
+        print(f"Products: {len(dim_product) - len(new_dim_product)} existing, {len(new_dim_product)} new")
+    else:
+        new_dim_product = dim_product
+        print(f"Products: 0 existing, {len(new_dim_product)} new")
+    
+    # 3. User dimension
+    existing_users = pd.read_sql("SELECT user_id FROM dim_user", supabase_engine)
+    if not existing_users.empty:
+        new_dim_user = dim_user[~dim_user['user_id'].isin(existing_users['user_id'])]
+        print(f"Users: {len(dim_user) - len(new_dim_user)} existing, {len(new_dim_user)} new")
+    else:
+        new_dim_user = dim_user
+        print(f"Users: 0 existing, {len(new_dim_user)} new")
+    
+    # 4. Rider dimension
+    existing_riders = pd.read_sql("SELECT rider_id FROM dim_rider", supabase_engine)
+    if not existing_riders.empty:
+        new_dim_rider = dim_rider[~dim_rider['rider_id'].isin(existing_riders['rider_id'])]
+        print(f"Riders: {len(dim_rider) - len(new_dim_rider)} existing, {len(new_dim_rider)} new")
+    else:
+        new_dim_rider = dim_rider
+        print(f"Riders: 0 existing, {len(new_dim_rider)} new")
+    
+    # Load dimension tables, only inserting new records
+    if not new_dim_date.empty:
+        new_dim_date.to_sql('dim_date', supabase_engine, if_exists='append', index=False)
+    
+    if not new_dim_product.empty:
+        new_dim_product.to_sql('dim_product', supabase_engine, if_exists='append', index=False)
+    
+    if not new_dim_user.empty:
+        new_dim_user.to_sql('dim_user', supabase_engine, if_exists='append', index=False)
+    
+    if not new_dim_rider.empty:
+        new_dim_rider.to_sql('dim_rider', supabase_engine, if_exists='append', index=False)
+    
+    # For fact table, we might want a different strategy
+    # For now, just append (might create duplicates if run multiple times)
     fact_orders_final.to_sql('fact_orders', supabase_engine, if_exists='append', index=False, chunksize=5000)
     print("ETL completed: dims and fact appended to target.")
     
