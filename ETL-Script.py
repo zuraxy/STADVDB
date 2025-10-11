@@ -9,15 +9,71 @@
 import os
 import pandas as pd
 import json
+import socket
+import time
+import urllib.parse
 from datetime import datetime
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 from dotenv import load_dotenv
 
 load_dotenv()
-
 # Config to connect to source db and db warehouse (.env)
 MYSQL_CONN_STR = os.environ.get("MYSQL_CONNECTION_STRING")
 SUPABASE_CONN_STR = os.environ.get("SUPABASE_CONNECTION_STRING")
+
+#  First ensure IPv6 preference
+socket.setdefaulttimeout(30)  
+original_getaddrinfo = socket.getaddrinfo
+def getaddrinfo_ipv6_preferred(*args, **kwargs):
+    responses = original_getaddrinfo(*args, **kwargs)
+
+    # Sort results to prefer IPv6
+    ipv6_responses = [response for response in responses if response[0] == socket.AF_INET6]
+    ipv4_responses = [response for response in responses if response[0] == socket.AF_INET]
+    return ipv6_responses + ipv4_responses
+
+socket.getaddrinfo = getaddrinfo_ipv6_preferred
+
+# 2. Modify connection parameters - REMOVE TCP KEEPALIVE SETTINGS
+parsed_url = urllib.parse.urlparse(SUPABASE_CONN_STR)
+query_params = urllib.parse.parse_qs(parsed_url.query)
+query_params.update({
+    'connect_timeout': ['30']  # Only keep the connect_timeout parameter
+})
+new_query = urllib.parse.urlencode(query_params, doseq=True)
+url_parts = list(parsed_url)
+url_parts[4] = new_query
+SUPABASE_CONN_STR_OPTIMIZED = urllib.parse.urlunparse(url_parts)
+
+# 3. Add retry logic for the connection
+def create_engine_with_retries(conn_str, retries=3, delay=5):
+    for attempt in range(retries):
+        try:
+            print(f"Connection attempt {attempt+1}/{retries}...")
+            engine = create_engine(conn_str)
+            # Test connection with a simple query
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            print("Connection successful!")
+            return engine
+        except OperationalError as e:
+            print(f"Connection attempt {attempt+1} failed: {e}")
+            if attempt < retries - 1:
+                print(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                print("All connection attempts failed.")
+                raise
+
+# Create engines with the improved connection settings
+mysql_engine = create_engine(MYSQL_CONN_STR)
+try:
+    supabase_engine = create_engine_with_retries(SUPABASE_CONN_STR_OPTIMIZED)
+except OperationalError:
+    print("Critical error: Could not connect to Supabase.")
+    # You can choose to exit the script here with sys.exit(1) or continue with extract/transform
+
 
 mysql_engine = create_engine(MYSQL_CONN_STR)
 supabase_engine = create_engine(SUPABASE_CONN_STR)
