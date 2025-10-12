@@ -32,8 +32,7 @@ SELECT
     du.city,
     COUNT(DISTINCT du.user_id) AS total_customers
 FROM dim_user du
-GROUP BY du.country, du.city WITH ROLLUP;
-
+GROUP BY ROLLUP (du.country, du.city);
 `
 
 //# 3 Top N products by revenue from either all customers, or filter by country or by city and by category 
