@@ -1,0 +1,149 @@
+// #1 Revenue Rollup by time granularity
+export const QUERY1 = 
+`WITH base AS (
+  SELECT
+    fo.total_price,
+    fo.quantity,
+    to_date(d.date_id::text,'YYYYMMDD') AS dateval,
+    CASE $4
+      WHEN 'year'  THEN to_char(to_date(d.date_id::text,'YYYYMMDD'), 'YYYY')
+      WHEN 'month' THEN to_char(to_date(d.date_id::text,'YYYYMMDD'), 'YYYY-MM')
+      WHEN 'day'   THEN to_char(to_date(d.date_id::text,'YYYYMMDD'), 'YYYY-MM-DD')
+    END AS period
+  FROM fact_orders fo
+  JOIN dim_product p ON fo.product_id = p.product_id
+  JOIN dim_date d ON fo.delivery_date_id = d.date_id
+  WHERE ($3::text IS NULL OR p.category = $3::text)
+)
+SELECT
+  period,
+  SUM(total_price) AS revenue,
+  SUM(quantity)    AS units_sold
+FROM base
+WHERE dateval BETWEEN $1::date AND $2::date
+GROUP BY period
+ORDER BY period;
+`
+//# 2 Customer distribution by country and by city via WITH ROLLUP
+export const QUERY2=
+`
+SELECT
+    du.country,
+    du.city,
+    COUNT(DISTINCT du.user_id) AS total_customers
+FROM dim_user du
+GROUP BY du.country, du.city WITH ROLLUP;
+
+`
+
+//# 3 Top N products by revenue from either all customers, or filter by country or by city and by category 
+
+export const QUERY3 = 
+`
+-- Parameters you can adjust:
+-- :N → number of top products to return
+-- :country → filter by specific country (optional)
+-- :city → filter by specific city (optional)
+-- :category → filter by product category (optional)
+
+SELECT
+    dp.name AS product_name,
+    dp.category,
+    du.country,
+    du.city,
+    SUM(fo.quantity) AS total_quantity_sold,
+    SUM(fo.total_price) AS total_sales
+FROM fact_orders fo
+JOIN dim_product dp ON fo.product_id = dp.product_id
+JOIN dim_user du ON fo.user_id = du.user_id
+WHERE
+    (:country IS NULL OR du.country = :country)
+    AND (:city IS NULL OR du.city = :city)
+    AND (:category IS NULL OR dp.category = :category)
+GROUP BY
+    dp.name, dp.category, du.country, du.city
+ORDER BY
+    total_sales DESC
+LIMIT :N;
+`
+
+
+//#4 3-month moving average and optionally filters (or not) by country
+
+export const QUERY4 =
+`
+WITH monthly_sales AS (
+    SELECT
+        d.year,
+        d.month,
+        du.country,
+        SUM(fo.total_price) AS total_sales
+    FROM fact_orders fo
+    JOIN dim_date d ON fo.delivery_date_id = d.date_id
+    JOIN dim_user du ON fo.user_id = du.user_id
+    GROUP BY d.year, d.month, du.country
+)
+SELECT
+    year,
+    month,
+    country,
+    total_sales,
+    ROUND(
+        AVG(total_sales) OVER (
+            PARTITION BY country
+            ORDER BY year, month
+            ROWS BETWEEN 2 PRECEDING AND CURRENT ROW
+        ), 2
+    ) AS moving_avg_3_month
+FROM monthly_sales
+WHERE (@country IS NULL OR country = @country)
+ORDER BY year, month, country;
+`
+
+// # 5 Rank Riders by their total deliveries (and optionally) by country
+
+export const QUERY5 =
+`
+WITH rider_deliveries AS (
+    SELECT
+        du.country,
+        r.rider_id,
+        r.rider_name,
+        COUNT(*) AS total_deliveries
+    FROM fact_orders fo
+    JOIN dim_rider r ON fo.rider_id = r.rider_id
+    JOIN dim_user du ON fo.user_id = du.user_id
+    GROUP BY du.country, r.rider_id, r.rider_name
+)
+SELECT
+    country,
+    rider_id,
+    rider_name,
+    total_deliveries,
+    RANK() OVER (
+        PARTITION BY 
+            CASE 
+                WHEN @country IS NULL THEN NULL  -- Global rank if no filter
+                ELSE country                     -- Separate ranks per country
+            END
+        ORDER BY total_deliveries DESC
+    ) AS delivery_rank
+FROM rider_deliveries
+WHERE (@country IS NULL OR country = @country)
+ORDER BY delivery_rank;
+`
+
+//# 6  Total Deliveries by Vehicle Type (Optionally by Year and Month), WITH ROLLUP
+export const QUERY6= 
+`
+SELECT
+    d.year,
+    d.month,
+    dr.vehicle_type,
+    COUNT(fo.fact_id) AS total_deliveries
+FROM fact_orders fo
+JOIN dim_rider dr ON fo.rider_id = dr.rider_id
+JOIN dim_date d ON fo.delivery_date_id = d.date_id
+GROUP BY d.year, d.month, dr.vehicle_type WITH ROLLUP;
+
+`
