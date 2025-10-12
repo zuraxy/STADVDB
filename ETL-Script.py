@@ -5,10 +5,10 @@
 # pip install dotenv
 # pip install pymysql
 # pip install psycopg2
+# pip install cryptography
 
 import os
 import pandas as pd
-import json
 import socket
 import time
 import urllib.parse
@@ -134,9 +134,34 @@ try:
 
     # 2.3 DIM_USER: Pre-processing
     dim_user = users_df[['id', 'city', 'country', 'gender', 'dateOfBirth', 'updatedAt']].copy()
-    dim_user = dim_user.rename(columns={'id': 'user_id', 'dateOfBirth': 'date_of_birth'})
+    dim_user = dim_user.rename(columns={'id': 'user_id', 'dateOfBirth': 'date_of_birth_raw'})
     dim_user = dim_user.drop_duplicates(subset=['user_id'])
-    dim_user['date_of_birth'] = pd.to_datetime(dim_user['date_of_birth'], errors='coerce', utc=True,  format='%m/%d/%Y').dt.date
+
+    # 2.3.1 Parse date_of_birth with multiple formats
+    dim_user['date_of_birth_raw'] = dim_user['date_of_birth_raw'].astype(str).str.strip().replace({'nan': None})
+    s = dim_user['date_of_birth_raw']
+
+    # known formats (iso is y-m-d, mdy is m/d/y)
+    mask_iso   = s.str.match(r'^\d{4}-\d{2}-\d{2}$', na=False) 
+    mask_mdy   = s.str.match(r'^\d{1,2}/\d{1,2}/\d{4}$', na=False)
+
+    # Prepare an empty Series of dtype datetime64[ns]
+    parsed = pd.Series(pd.NaT, index=s.index, dtype='datetime64[ns]')
+
+    # Parse slices with explicit formats (fast + strict)
+    if mask_iso.any():
+        parsed.loc[mask_iso] = pd.to_datetime(s.loc[mask_iso], format='%Y-%m-%d', errors='coerce')
+    if mask_mdy.any():
+        parsed.loc[mask_mdy] = pd.to_datetime(s.loc[mask_mdy], format='%m/%d/%Y', errors='coerce')
+
+    # Fallback: try pandas generic parser for any remaining non-null strings
+    remaining = parsed.isna() & s.notna()
+    if remaining.any():
+        parsed.loc[remaining] = pd.to_datetime(s.loc[remaining], errors='coerce', infer_datetime_format=True)
+
+    # Final column as python date (no timezone — DOB is a date)
+    dim_user['date_of_birth'] = parsed.dt.date
+
     # Ensure updatedAt is UTC-aware for comparison
     dim_user['updatedAt'] = pd.to_datetime(dim_user['updatedAt'], utc=True)
 
@@ -158,14 +183,38 @@ try:
     dim_rider = dim_rider[['rider_id', 'vehicle_type', 'courier_name', 'gender', 'updatedAt']]
     dim_rider = dim_rider.drop_duplicates(subset=['rider_id'])
 
-    # 2.5 DIM_DATE: Pre-processing - FIX
-    # Keep as datetime, don't convert to date yet
-    unique_delivery_dates = pd.to_datetime(orders_df['deliveryDate'], errors='coerce', utc=True, format='%Y/%m/%d')
-    unique_delivery_dates = unique_delivery_dates.dropna().unique()
-
+        # 2.5 DIM_DATE: Pre-processing with robust date parsing
+    # Get delivery dates as strings first
+    delivery_dates_raw = orders_df['deliveryDate'].astype(str).str.strip().replace({'nan': None})
+    
+    # known formats (iso is y-m-d, mdy is m/d/y, ymd is y/m/d)
+    mask_iso = delivery_dates_raw.str.match(r'^\d{4}-\d{2}-\d{2}$', na=False) 
+    mask_mdy = delivery_dates_raw.str.match(r'^\d{1,2}/\d{1,2}/\d{4}$', na=False)
+    
+    # Prepare an empty Series of dtype datetime64[ns]
+    parsed_delivery_dates = pd.Series(pd.NaT, index=delivery_dates_raw.index, dtype='datetime64[ns]')
+    
+    # Parse slices with explicit formats
+    if mask_iso.any():
+        parsed_delivery_dates.loc[mask_iso] = pd.to_datetime(
+            delivery_dates_raw.loc[mask_iso], format='%Y-%m-%d', errors='coerce', utc=True)
+    if mask_mdy.any():
+        parsed_delivery_dates.loc[mask_mdy] = pd.to_datetime(
+            delivery_dates_raw.loc[mask_mdy], format='%m/%d/%Y', errors='coerce', utc=True)
+    
+    # Fallback: try pandas generic parser for any remaining non-null strings
+    remaining = parsed_delivery_dates.isna() & delivery_dates_raw.notna()
+    if remaining.any():
+        parsed_delivery_dates.loc[remaining] = pd.to_datetime(
+            delivery_dates_raw.loc[remaining], errors='coerce', utc=True, infer_datetime_format=True)
+    
+    # Now use the parsed dates for creating dim_date
+    unique_delivery_dates = parsed_delivery_dates.dropna().unique()
+    
     # Create Series from datetime array
     date_series = pd.Series(pd.to_datetime(unique_delivery_dates))
-
+    
+    # Continue with the rest of your dim_date creation as before
     dim_date = pd.DataFrame()
     dim_date['date_id'] = date_series.map(lambda d: int(d.strftime('%Y%m%d')))
     dim_date['year'] = date_series.dt.year
@@ -339,7 +388,8 @@ try:
             else:
                 conn.execute(text("TRUNCATE TABLE dim_user CASCADE"))
                 
-            updated_users.drop(columns=['updatedAt'], errors='ignore').to_sql(
+            # Drop both 'updatedAt' and 'date_of_birth_raw' columns
+            updated_users.drop(columns=['updatedAt', 'date_of_birth_raw'], errors='ignore').to_sql(
                 'dim_user', 
                 conn, 
                 if_exists='append', 
