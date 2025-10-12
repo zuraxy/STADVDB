@@ -48,22 +48,20 @@ export const QUERY3 =
 SELECT
     dp.name AS product_name,
     dp.category,
-    du.country,
-    du.city,
     SUM(fo.quantity) AS total_quantity_sold,
     SUM(fo.total_price) AS total_sales
 FROM fact_orders fo
 JOIN dim_product dp ON fo.product_id = dp.product_id
 JOIN dim_user du ON fo.user_id = du.user_id
 WHERE
-    (:country IS NULL OR du.country = :country)
-    AND (:city IS NULL OR du.city = :city)
-    AND (:category IS NULL OR dp.category = :category)
+    ($2::text IS NULL OR du.country = $2::text)
+    AND ($3::text IS NULL OR du.city = $3::text)
+    AND ($4::text IS NULL OR dp.category = $4::text)
 GROUP BY
-    dp.name, dp.category, du.country, du.city
+    dp.name, dp.category
 ORDER BY
     total_sales DESC
-LIMIT :N;
+LIMIT $1;
 `
 
 
@@ -95,7 +93,7 @@ SELECT
         ), 2
     ) AS moving_avg_3_month
 FROM monthly_sales
-WHERE (@country IS NULL OR country = @country)
+WHERE ($1::text IS NULL OR country = $1::text)
 ORDER BY year, month, country;
 `
 
@@ -107,28 +105,28 @@ WITH rider_deliveries AS (
     SELECT
         du.country,
         r.rider_id,
-        r.rider_name,
+        r.courier_name,
         COUNT(*) AS total_deliveries
     FROM fact_orders fo
     JOIN dim_rider r ON fo.rider_id = r.rider_id
     JOIN dim_user du ON fo.user_id = du.user_id
-    GROUP BY du.country, r.rider_id, r.rider_name
+    GROUP BY du.country, r.rider_id, r.courier_name
 )
 SELECT
     country,
     rider_id,
-    rider_name,
+    courier_name,
     total_deliveries,
     RANK() OVER (
         PARTITION BY 
             CASE 
-                WHEN @country IS NULL THEN NULL  -- Global rank if no filter
+                WHEN $1::text IS NULL THEN NULL  -- Global rank if no filter
                 ELSE country                     -- Separate ranks per country
             END
         ORDER BY total_deliveries DESC
     ) AS delivery_rank
 FROM rider_deliveries
-WHERE (@country IS NULL OR country = @country)
+WHERE ($1::text IS NULL OR country = $1::text)
 ORDER BY delivery_rank;
 `
 
@@ -143,6 +141,10 @@ SELECT
 FROM fact_orders fo
 JOIN dim_rider dr ON fo.rider_id = dr.rider_id
 JOIN dim_date d ON fo.delivery_date_id = d.date_id
-GROUP BY d.year, d.month, dr.vehicle_type WITH ROLLUP;
+WHERE
+    ($1::int IS NULL OR d.year = $1::int)
+    AND ($2::int IS NULL OR d.month = $2::int)
+GROUP BY ROLLUP (d.year, d.month, dr.vehicle_type)
+ORDER BY d.year, d.month, dr.vehicle_type;
 
 `
