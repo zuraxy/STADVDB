@@ -1,0 +1,199 @@
+import pandas as pd
+
+def transform_product_dimension(products_df):
+    """Transform product data into dim_product table"""
+    dim_product = products_df[['id', 'name', 'category', 'price', 'updatedAt']].copy()
+    dim_product = dim_product.rename(columns={'id': 'product_id', 'name': 'name', 'price': 'current_price'})
+    dim_product = dim_product.drop_duplicates(subset=['product_id'])
+    dim_product['updatedAt'] = pd.to_datetime(dim_product['updatedAt'], utc=True)
+    return dim_product
+
+def transform_user_dimension(users_df):
+    """Transform user data into dim_user table"""
+    dim_user = users_df[['id', 'city', 'country', 'gender', 'dateOfBirth', 'updatedAt']].copy()
+    dim_user = dim_user.rename(columns={'id': 'user_id', 'dateOfBirth': 'date_of_birth_raw'})
+    dim_user = dim_user.drop_duplicates(subset=['user_id'])
+
+    # Parse date_of_birth with multiple formats
+    dim_user['date_of_birth_raw'] = dim_user['date_of_birth_raw'].astype(str).str.strip().replace({'nan': None})
+    s = dim_user['date_of_birth_raw']
+
+    # known formats (iso is y-m-d, mdy is m/d/y)
+    mask_iso = s.str.match(r'^\d{4}-\d{2}-\d{2}$', na=False) 
+    mask_mdy = s.str.match(r'^\d{1,2}/\d{1,2}/\d{4}$', na=False)
+
+    # Prepare an empty Series of dtype datetime64[ns]
+    parsed = pd.Series(pd.NaT, index=s.index, dtype='datetime64[ns]')
+
+    # Parse slices with explicit formats (fast + strict)
+    if mask_iso.any():
+        parsed.loc[mask_iso] = pd.to_datetime(s.loc[mask_iso], format='%Y-%m-%d', errors='coerce')
+    if mask_mdy.any():
+        parsed.loc[mask_mdy] = pd.to_datetime(s.loc[mask_mdy], format='%m/%d/%Y', errors='coerce')
+
+    # Fallback: try pandas generic parser for any remaining non-null strings
+    remaining = parsed.isna() & s.notna()
+    if remaining.any():
+        parsed.loc[remaining] = pd.to_datetime(s.loc[remaining], errors='coerce', infer_datetime_format=True)
+
+    # Final column as python date (no timezone — DOB is a date)
+    dim_user['date_of_birth'] = parsed.dt.date
+
+    # Ensure updatedAt is UTC-aware for comparison
+    dim_user['updatedAt'] = pd.to_datetime(dim_user['updatedAt'], utc=True)
+    
+    return dim_user
+
+def transform_rider_dimension(riders_df, couriers_df):
+    """Transform rider and courier data into dim_rider table"""
+    riders_table = riders_df[['id', 'vehicleType', 'courierId', 'gender', 'updatedAt']].copy()
+    riders_table = riders_table.rename(columns={
+        'id': 'rider_id', 
+        'vehicleType': 'vehicle_type', 
+        'courierId': 'courier_id', 
+        'updatedAt': 'rider_updatedAt'
+    })
+    
+    couriers_table = couriers_df[['id', 'courier_name', 'updatedAt']].copy()
+    couriers_table = couriers_table.rename(columns={'id': 'courier_id', 'updatedAt': 'courier_updatedAt'})
+
+    # Merge riders and couriers table to one dimension table
+    dim_rider = riders_table.merge(couriers_table, on='courier_id', how='left')
+
+    # Use the most recent updatedAt 
+    dim_rider['rider_updatedAt'] = pd.to_datetime(dim_rider['rider_updatedAt'], errors='coerce', utc=True)
+    dim_rider['courier_updatedAt'] = pd.to_datetime(dim_rider['courier_updatedAt'], errors='coerce', utc=True)
+    dim_rider['updatedAt'] = dim_rider[['rider_updatedAt', 'courier_updatedAt']].max(axis=1)
+
+    # Final selection of columns matching our DW schema
+    dim_rider = dim_rider[['rider_id', 'vehicle_type', 'courier_name', 'gender', 'updatedAt']]
+    dim_rider = dim_rider.drop_duplicates(subset=['rider_id'])
+    
+    return dim_rider
+
+def transform_date_dimension(orders_df):
+    """Transform delivery dates into dim_date table"""
+    # Get delivery dates as strings first
+    delivery_dates_raw = orders_df['deliveryDate'].astype(str).str.strip().replace({'nan': None})
+    
+    # known formats (iso is y-m-d, mdy is m/d/y, ymd is y/m/d)
+    mask_iso = delivery_dates_raw.str.match(r'^\d{4}-\d{2}-\d{2}$', na=False) 
+    mask_mdy = delivery_dates_raw.str.match(r'^\d{1,2}/\d{1,2}/\d{4}$', na=False)
+    
+    # Prepare an empty Series of dtype datetime64[ns]
+    parsed_delivery_dates = pd.Series(pd.NaT, index=delivery_dates_raw.index, dtype='datetime64[ns]')
+    
+    # Parse slices with explicit formats
+    if mask_iso.any():
+        parsed_delivery_dates.loc[mask_iso] = pd.to_datetime(
+            delivery_dates_raw.loc[mask_iso], format='%Y-%m-%d', errors='coerce', utc=True)
+    if mask_mdy.any():
+        parsed_delivery_dates.loc[mask_mdy] = pd.to_datetime(
+            delivery_dates_raw.loc[mask_mdy], format='%m/%d/%Y', errors='coerce', utc=True)
+    
+    # Fallback: try pandas generic parser for any remaining non-null strings
+    remaining = parsed_delivery_dates.isna() & delivery_dates_raw.notna()
+    if remaining.any():
+        parsed_delivery_dates.loc[remaining] = pd.to_datetime(
+            delivery_dates_raw.loc[remaining], errors='coerce', utc=True, infer_datetime_format=True)
+    
+    # Now use the parsed dates for creating dim_date
+    unique_delivery_dates = parsed_delivery_dates.dropna().unique()
+    
+    # Create Series from datetime array
+    date_series = pd.Series(pd.to_datetime(unique_delivery_dates))
+    
+    # Create the date dimension table
+    dim_date = pd.DataFrame()
+    dim_date['date_id'] = date_series.map(lambda d: int(d.strftime('%Y%m%d')))
+    dim_date['year'] = date_series.dt.year
+    dim_date['quarter'] = date_series.dt.quarter
+    dim_date['month'] = date_series.dt.month
+    dim_date['day'] = date_series.dt.day
+    dim_date['day_of_week'] = date_series.dt.dayofweek
+    dim_date['is_weekend'] = dim_date['day_of_week'].isin([5, 6])
+
+    # Remove duplicates after creating all columns
+    dim_date = dim_date.drop_duplicates(subset=['date_id'])
+
+    # Check data types
+    dim_date['date_id'] = dim_date['date_id'].astype('int64') 
+    dim_date['year'] = dim_date['year'].astype('int16')
+    dim_date['quarter'] = dim_date['quarter'].astype('int16')
+    dim_date['month'] = dim_date['month'].astype('int16')
+    dim_date['day'] = dim_date['day'].astype('int16')
+    dim_date['day_of_week'] = dim_date['day_of_week'].astype('int16')
+    dim_date['is_weekend'] = dim_date['is_weekend'].astype('bool')
+    
+    return dim_date, parsed_delivery_dates
+
+def transform_fact_table(order_items_df, orders_df, products_df, parsed_delivery_dates):
+    """Transform data into fact_orders table"""
+    # Join order_items with orders to get all needed columns
+    fact_orders = order_items_df.merge(
+        orders_df,
+        left_on='order_items_id',
+        right_on='orders_id',
+        how='left'
+    )
+
+    # Join with products for price (unit_price)
+    fact_orders = fact_orders.merge(
+        products_df[['id', 'price', 'updatedAt']],
+        left_on='ProductId',
+        right_on='id',
+        how='left',
+        suffixes=('', '_product')
+    )
+
+    # After all merges, find the most recent updatedAt timestamp
+    fact_orders['orders_updated_at'] = pd.to_datetime(fact_orders['orders_updated_at'], errors='coerce')
+    fact_orders['order_items_updated_at'] = pd.to_datetime(fact_orders['order_items_updated_at'], errors='coerce')
+    fact_orders['updatedAt'] = pd.to_datetime(fact_orders['updatedAt'], errors='coerce')
+
+    fact_orders['most_recent_updated_at'] = fact_orders[['orders_updated_at', 'order_items_updated_at', 'updatedAt']].max(axis=1)
+
+    # Convert delivery date to match the date_id format in dim_date
+    fact_orders['delivery_date'] = pd.to_datetime(fact_orders['deliveryDate'], errors='coerce', utc=True).dt.date
+    fact_orders['delivery_date'] = fact_orders['delivery_date'].map(lambda d: int(d.strftime('%Y%m%d')) if pd.notnull(d) else None)
+
+    # Calculate total_price
+    fact_orders['unit_price'] = fact_orders['price']
+    fact_orders['total_price'] = fact_orders['quantity'] * fact_orders['unit_price']
+
+    # Create fact_id as a simple auto-increment
+    fact_orders['fact_id'] = range(1, len(fact_orders) + 1)
+
+    # Select columns to keep and rename to match fact table schema
+    fact_orders_final = fact_orders[[
+        'fact_id',
+        'order_items_id',
+        'ProductId',
+        'userId',
+        'deliveryRiderId',
+        'delivery_date',
+        'quantity',
+        'unit_price',
+        'total_price',
+        'most_recent_updated_at'
+    ]].rename(columns={
+        'order_items_id': 'order_id',
+        'ProductId': 'product_id',
+        'userId': 'user_id',
+        'deliveryRiderId': 'rider_id',
+        'delivery_date': 'delivery_date_id',
+        'most_recent_updated_at': 'updated_at'
+    })
+
+    # Handle missing values and ensure correct data types
+    fact_orders_final['fact_id'] = fact_orders_final['fact_id'].astype('int64')
+    fact_orders_final['order_id'] = fact_orders_final['order_id'].astype('int64')
+    fact_orders_final['product_id'] = fact_orders_final['product_id'].astype('int32')
+    fact_orders_final['user_id'] = fact_orders_final['user_id'].astype('int32')
+    fact_orders_final['rider_id'] = fact_orders_final['rider_id'].fillna(-1).astype('int32')
+    fact_orders_final['quantity'] = fact_orders_final['quantity'].fillna(0).astype('int32')
+    fact_orders_final['unit_price'] = fact_orders_final['unit_price'].fillna(0).astype('float')
+    fact_orders_final['total_price'] = fact_orders_final['total_price'].fillna(0).astype('float')
+    fact_orders_final['updated_at'] = pd.to_datetime(fact_orders_final['updated_at'], utc=True)
+    
+    return fact_orders_final
