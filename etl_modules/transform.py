@@ -73,60 +73,49 @@ def transform_rider_dimension(riders_df, couriers_df):
 
 def transform_date_dimension(orders_df):
     """Transform delivery dates into dim_date table"""
+    s = orders_df['deliveryDate']
 
-    # Get delivery dates as strings first
-    delivery_dates_raw = orders_df['deliveryDate'].astype(str).str.strip().replace({'nan': None})
-    
-    # known formats (iso is y-m-d, mdy is m/d/y, ymd is y/m/d)
-    mask_iso = delivery_dates_raw.str.match(r'^\d{4}-\d{2}-\d{2}$', na=False) 
-    mask_mdy = delivery_dates_raw.str.match(r'^\d{1,2}/\d{1,2}/\d{4}$', na=False)
-    
-    # Prepare an empty Series of dtype datetime64[ns]
-    parsed_delivery_dates = pd.Series(pd.NaT, index=delivery_dates_raw.index, dtype='datetime64[ns, UTC]')
-    
-    # Parse slices with explicit formats
+    # Normalize to strings and strip whitespace
+    s_str = s.astype(str).str.strip().replace({'nan': None, 'NaT': None, 'None': None, '': None})
+
+    # Prepare a UTC-aware Series
+    parsed = pd.Series(pd.NaT, index=s_str.index, dtype='datetime64[ns, UTC]')
+
+    # Only two known formats: YYYY-MM-DD and MM/DD/YYYY
+    mask_iso = s_str.str.match(r'^\d{4}-\d{2}-\d{2}$', na=False)
+    mask_mdy = s_str.str.match(r'^\d{1,2}/\d{1,2}/\d{4}$', na=False)
+
     if mask_iso.any():
-        parsed_delivery_dates.loc[mask_iso] = pd.to_datetime(
-            delivery_dates_raw.loc[mask_iso], format='%Y-%m-%d', errors='coerce', utc=True)
+        parsed.loc[mask_iso] = pd.to_datetime(
+            s_str.loc[mask_iso], format='%Y-%m-%d', errors='coerce', utc=True
+        )
     if mask_mdy.any():
-        parsed_delivery_dates.loc[mask_mdy] = pd.to_datetime(
-            delivery_dates_raw.loc[mask_mdy], format='%m/%d/%Y', errors='coerce', utc=True)
-    
-    # Fallback: try pandas generic parser for any remaining non-null strings
-    remaining = parsed_delivery_dates.isna() & delivery_dates_raw.notna()
+        parsed.loc[mask_mdy] = pd.to_datetime(
+            s_str.loc[mask_mdy], format='%m/%d/%Y', errors='coerce', utc=True
+        )
+
+    # Generic fallback for remaining values (handles e.g. "YYYY-MM-DD HH:MM:SS")
+    remaining = parsed.isna() & s_str.notna()
     if remaining.any():
-        parsed_delivery_dates.loc[remaining] = pd.to_datetime(
-            delivery_dates_raw.loc[remaining], errors='coerce', utc=True, infer_datetime_format=True)
-    
-    # Now use the parsed dates for creating dim_date
-    unique_delivery_dates = parsed_delivery_dates.dropna().unique()
-    
-    # Create Series from datetime array
-    date_series = pd.Series(pd.to_datetime(unique_delivery_dates))
-    
-    # Create the date dimension table
-    dim_date = pd.DataFrame()
-    dim_date['date_id'] = date_series.map(lambda d: int(d.strftime('%Y%m%d')))
-    dim_date['year'] = date_series.dt.year
-    dim_date['quarter'] = date_series.dt.quarter
-    dim_date['month'] = date_series.dt.month
-    dim_date['day'] = date_series.dt.day
-    dim_date['day_of_week'] = date_series.dt.dayofweek
-    dim_date['is_weekend'] = dim_date['day_of_week'].isin([5, 6])
+        parsed.loc[remaining] = pd.to_datetime(s_str.loc[remaining], errors='coerce', utc=True)
 
-    # Remove duplicates after creating all columns
-    dim_date = dim_date.drop_duplicates(subset=['date_id'])
+    # Distinct calendar days present in Orders
+    dates_only = parsed.dropna().dt.date
+    unique_dates = pd.Series(dates_only, dtype='object').drop_duplicates().sort_values()
+    date_series = pd.to_datetime(unique_dates)
 
-    # Check data types
-    dim_date['date_id'] = dim_date['date_id'].astype('int64') 
-    dim_date['year'] = dim_date['year'].astype('int16')
-    dim_date['quarter'] = dim_date['quarter'].astype('int16')
-    dim_date['month'] = dim_date['month'].astype('int16')
-    dim_date['day'] = dim_date['day'].astype('int16')
-    dim_date['day_of_week'] = dim_date['day_of_week'].astype('int16')
-    dim_date['is_weekend'] = dim_date['is_weekend'].astype('bool')
-    
-    return dim_date, parsed_delivery_dates
+    dim_date = pd.DataFrame({
+        'date_id': date_series.dt.strftime('%Y%m%d').astype('int64'),
+        'year': date_series.dt.year.astype('int16'),
+        'quarter': date_series.dt.quarter.astype('int16'),
+        'month': date_series.dt.month.astype('int16'),
+        'day': date_series.dt.day.astype('int16'),
+        'day_of_week': date_series.dt.dayofweek.astype('int16'),
+        'is_weekend': date_series.dt.dayofweek.isin([5, 6]).astype('bool'),
+    })
+
+    # Return parsed delivery datetimes to keep the existing function signature
+    return dim_date, parsed
 
 def transform_fact_table(order_items_df, orders_df, products_df, parsed_delivery_dates):
     """Transform data into fact_orders table"""
