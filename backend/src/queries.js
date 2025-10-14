@@ -148,3 +148,77 @@ GROUP BY ROLLUP (d.year, d.month, dr.vehicle_type)
 ORDER BY d.year, d.month, dr.vehicle_type;
 
 `
+
+// #7 Top percentile categories by quantity with regional sales analysis and YoY growth
+// $1::date  -> start_date (e.g., '2023-01-01')
+// $2::date  -> end_date   (e.g., '2024-12-31')
+// $3::int   -> top_percent (e.g., 20 for top 20%)
+// $4::text  -> granularity ('year', 'quarter', 'month')
+export const QUERY7 = 
+`
+WITH base AS (
+    SELECT 
+        fo.order_date,
+        EXTRACT(YEAR FROM fo.order_date)::int AS yr,
+        EXTRACT(QUARTER FROM fo.order_date)::int AS qtr,
+        EXTRACT(MONTH FROM fo.order_date)::int AS mon,
+        fo.total_price,
+        fo.quantity,
+        dp.category,
+        du.country AS region,
+        du.user_id AS customer_id
+    FROM fact_orders fo
+    JOIN dim_product dp ON fo.product_id = dp.product_id
+    JOIN dim_user du ON fo.user_id = du.user_id
+    WHERE fo.order_date BETWEEN $1::date AND $2::date
+),
+ranked_products AS (
+    SELECT 
+        category,
+        SUM(quantity) AS total_qty,
+        NTILE(100) OVER (ORDER BY SUM(quantity) DESC) AS percentile_rank
+    FROM base
+    GROUP BY category
+),
+filtered AS (
+    SELECT b.*
+    FROM base b
+    JOIN ranked_products rp ON b.category = rp.category
+    WHERE rp.percentile_rank <= $3::int
+),
+agg AS (
+    SELECT 
+        region,
+        category,
+        CASE 
+            WHEN $4 = 'year' THEN yr::text
+            WHEN $4 = 'quarter' THEN yr::text || '-Q' || qtr::text
+            WHEN $4 = 'month' THEN yr::text || '-' || LPAD(mon::text, 2, '0')
+        END AS period,
+        SUM(total_price) AS total_sales,
+        COUNT(DISTINCT customer_id) AS customers
+    FROM filtered
+    GROUP BY region, category, period
+),
+growth AS (
+    SELECT 
+        a1.region,
+        a1.category,
+        a1.period,
+        ROUND(a1.total_sales / NULLIF(a1.customers, 0), 2) AS avg_spend_per_customer,
+        ROUND(((a1.total_sales - a2.total_sales) / NULLIF(a2.total_sales, 0)) * 100, 2) AS sales_growth_pct
+    FROM agg a1
+    LEFT JOIN agg a2
+        ON a1.region = a2.region
+        AND a1.category = a2.category
+        AND (
+            ($4 = 'year' AND a1.period::int = a2.period::int + 1)
+            OR ($4 = 'quarter' AND SPLIT_PART(a1.period, '-Q', 1)::int = SPLIT_PART(a2.period, '-Q', 1)::int + 1
+                                AND SPLIT_PART(a1.period, '-Q', 2)::int = SPLIT_PART(a2.period, '-Q', 2)::int)
+            OR ($4 = 'month' AND TO_DATE(a1.period || '-01', 'YYYY-MM-DD') = TO_DATE(a2.period || '-01', 'YYYY-MM-DD') + INTERVAL '1 month')
+        )
+)
+SELECT *
+FROM growth
+ORDER BY region, category, period;
+`
