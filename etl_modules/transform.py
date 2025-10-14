@@ -73,6 +73,7 @@ def transform_rider_dimension(riders_df, couriers_df):
 
 def transform_date_dimension(orders_df):
     """Transform delivery dates into dim_date table"""
+
     # Get delivery dates as strings first
     delivery_dates_raw = orders_df['deliveryDate'].astype(str).str.strip().replace({'nan': None})
     
@@ -81,7 +82,7 @@ def transform_date_dimension(orders_df):
     mask_mdy = delivery_dates_raw.str.match(r'^\d{1,2}/\d{1,2}/\d{4}$', na=False)
     
     # Prepare an empty Series of dtype datetime64[ns]
-    parsed_delivery_dates = pd.Series(pd.NaT, index=delivery_dates_raw.index, dtype='datetime64[ns]')
+    parsed_delivery_dates = pd.Series(pd.NaT, index=delivery_dates_raw.index, dtype='datetime64[ns, UTC]')
     
     # Parse slices with explicit formats
     if mask_iso.any():
@@ -129,29 +130,29 @@ def transform_date_dimension(orders_df):
 
 def transform_fact_table(order_items_df, orders_df, products_df, parsed_delivery_dates):
     """Transform data into fact_orders table"""
+    orders_df = orders_df.rename(columns={'id':'order_id', 'updatedAt': 'orders_updated_at'})
+    order_items_df = order_items_df.rename(columns={'OrderId':'order_id','updatedAt': 'order_items_updated_at'})
+
     # Join order_items with orders to get all needed columns
     fact_orders = order_items_df.merge(
         orders_df,
-        left_on='order_items_id',
-        right_on='orders_id',
-        how='left'
+        on='order_id',
+        how='left',
+        suffixes=('_item', '_order')
     )
 
-    # Join with products for price (unit_price)
+    # Bring in product price
     fact_orders = fact_orders.merge(
-        products_df[['id', 'price', 'updatedAt']],
+        products_df[['id', 'price']],
         left_on='ProductId',
         right_on='id',
-        how='left',
-        suffixes=('', '_product')
-    )
+        how='left'
+    ).drop(columns=['id'])
 
     # After all merges, find the most recent updatedAt timestamp
-    fact_orders['orders_updated_at'] = pd.to_datetime(fact_orders['orders_updated_at'], errors='coerce')
-    fact_orders['order_items_updated_at'] = pd.to_datetime(fact_orders['order_items_updated_at'], errors='coerce')
-    fact_orders['updatedAt'] = pd.to_datetime(fact_orders['updatedAt'], errors='coerce')
-
-    fact_orders['most_recent_updated_at'] = fact_orders[['orders_updated_at', 'order_items_updated_at', 'updatedAt']].max(axis=1)
+    fact_orders['orders_updated_at'] = pd.to_datetime(fact_orders['orders_updated_at'], errors='coerce', utc=True)
+    fact_orders['order_items_updated_at'] = pd.to_datetime(fact_orders['order_items_updated_at'], errors='coerce', utc=True)
+    fact_orders['most_recent_updated_at'] = fact_orders[['orders_updated_at', 'order_items_updated_at']].max(axis=1)
 
     # Convert delivery date to match the date_id format in dim_date
     fact_orders['delivery_date'] = pd.to_datetime(fact_orders['deliveryDate'], errors='coerce', utc=True).dt.date
@@ -167,7 +168,7 @@ def transform_fact_table(order_items_df, orders_df, products_df, parsed_delivery
     # Select columns to keep and rename to match fact table schema
     fact_orders_final = fact_orders[[
         'fact_id',
-        'order_items_id',
+        'order_id',
         'ProductId',
         'userId',
         'deliveryRiderId',
@@ -177,7 +178,6 @@ def transform_fact_table(order_items_df, orders_df, products_df, parsed_delivery
         'total_price',
         'most_recent_updated_at'
     ]].rename(columns={
-        'order_items_id': 'order_id',
         'ProductId': 'product_id',
         'userId': 'user_id',
         'deliveryRiderId': 'rider_id',

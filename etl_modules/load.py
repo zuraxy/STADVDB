@@ -40,21 +40,30 @@ def load_dimension_table(engine, df, table_name, id_column, run_date=None):
     return 0
 
 def load_date_dimension(engine, dim_date):
-    """Load date dimension with handling for existing dates"""
-    print(f"Loading {len(dim_date)} date records")
+    """Load date dimension while skipping existing dates (by primary key)"""
+    print(f"Preparing to load up to {len(dim_date)} date records")
     if len(dim_date) > 0:
         with engine.begin() as conn:
-            # Use to_sql with ON CONFLICT handled by database
-            dim_date.to_sql(
-                'dim_date',
-                conn,
-                if_exists='append',
-                index=False,
-                method='multi',
-                chunksize=500
-            )
-            print(f"Loaded {len(dim_date)} date records")
-            return len(dim_date)
+            # Fetch existing keys
+            existing_ids = pd.read_sql("SELECT date_id FROM dim_date", conn)['date_id'].astype('int64')
+            # Only insert new dates
+            to_insert = dim_date[~dim_date['date_id'].isin(existing_ids)]
+
+            print(f"Loading {len(to_insert)} date records")
+            if len(to_insert) > 0:
+                to_insert.to_sql(
+                    'dim_date',
+                    conn,
+                    if_exists='append',
+                    index=False,
+                    method='multi',
+                    chunksize=500
+                )
+                print(f"Loaded {len(to_insert)} date records")
+                return len(to_insert)
+            else:
+                print("No new dates to load into dim_date.")
+                return 0
     else:
         print("Warning: No dates to load into dim_date!")
         return 0
