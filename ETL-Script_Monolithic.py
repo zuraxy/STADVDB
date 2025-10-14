@@ -462,7 +462,7 @@ try:
                 if_exists='append', 
                 index=False,
                 method='multi',
-                chunksize=1000  # Insert in batches of 1000 rows
+                chunksize=50000  # Insert in batches of 1000 rows
             )
             print(f"Inserted {len(updated_orders)} fact records")
 
