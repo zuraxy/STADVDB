@@ -222,3 +222,49 @@ SELECT *
 FROM growth
 ORDER BY region, category, period;
 `
+/*
+Creates a flexible summary report template for all sales; Can be filtered by YEAR, COUNTRY and CITY, and CATEGORY
+Filter ng YEAR is sa WHERE -> SLICE
+Filter ng Country & City -> ROLL UP AND DRILL DOWN
+Filter ng Category -> DICE alongside year filter
+
+*/
+export const QUERY8 = 
+`
+WITH yearly_revenue_base AS (
+    SELECT
+        du.country,
+        du.city,
+        dp.category,
+        dr.rider_id,
+        fo.total_price
+    FROM
+        fact_orders AS fo
+    JOIN
+        dim_rider AS dr ON fo.rider_id = dr.rider_id
+    JOIN
+        dim_user AS du ON fo.user_id = du.user_id
+    JOIN
+        dim_date AS dd ON fo.delivery_date_id = dd.date_id
+    JOIN
+        dim_product AS dp ON fo.product_id = dp.product_id
+    WHERE
+        dd.year = COALESCE($1, dd.year)  -- YEAR (slice)
+)
+SELECT
+    COALESCE(country, 'Grand Total') AS country,
+    COALESCE(city, 'All Cities') AS city,
+    COALESCE(category, 'All Categories') AS category,
+    SUM(total_price) AS total_revenue,
+    COUNT(DISTINCT rider_id) AS unique_riders
+FROM
+    yearly_revenue_base
+GROUP BY
+    ROLLUP(country, city, category)
+HAVING
+    ($2::TEXT IS NULL OR country = $2::TEXT)     -- COUNTRY (roll-up)
+    AND ($3::TEXT IS NULL OR city = $3::TEXT)    -- CITY (drill-down)
+    AND ($4::TEXT IS NULL OR category = $4::TEXT) -- CATEGORY (dice)
+ORDER BY
+    country, city, category;
+`
