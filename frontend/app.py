@@ -99,14 +99,33 @@ app.layout = html.Div([
         ]),
         
         # Query 2 - Customer Distribution
+# In the Query 2 tab, modify the content:
+
         dcc.Tab(label="Customer Distribution", children=[
             html.Div([
                 html.H2("Customer Distribution"),
+                # Add a Store component to remember clicked country
+                dcc.Store(id="selected-country-store", data=None),
+                
                 html.Div([
                     html.Button("Refresh Data", id="q2-submit-btn", n_clicks=0,
-                               style={'backgroundColor': COLORS['primary'], 'color': 'white',
-                                      'border': 'none', 'padding': '10px 15px', 'borderRadius': '5px'})
+                            style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                    'border': 'none', 'padding': '10px 15px', 'borderRadius': '5px'})
                 ], style={"marginBottom": "20px"}),
+                
+                # Add visualization type selector
+                html.Div([
+                    html.Label("View Type:"),
+                    dcc.RadioItems(
+                        id='q2-view-type',
+                        options=[
+                            {'label': 'Bar Chart', 'value': 'bar'},
+                            {'label': 'World Map', 'value': 'map'}
+                        ],
+                        value='map',  # Changed default to map
+                        labelStyle={'display': 'inline-block', 'marginRight': '15px'}
+                    ),
+                ], style={"marginBottom": "15px"}),
                 
                 html.Div([
                     dcc.Loading(
@@ -114,6 +133,16 @@ app.layout = html.Div([
                         type="circle"
                     ),
                 ], style={'backgroundColor': COLORS['card'], 'padding': '15px', 'borderRadius': '10px', 'boxShadow': '0px 0px 10px rgba(0,0,0,0.1)'}),
+                
+                # Add a container for city details that appears when a country is clicked
+                html.Div([
+                    html.H3(id="city-detail-title", children=""),
+                    dcc.Loading(
+                        dcc.Graph(id="city-detail-graph"),
+                        type="circle"
+                    ),
+                ], id="city-detail-container", style={'backgroundColor': COLORS['card'], 'padding': '15px', 'borderRadius': '10px', 
+                                                    'boxShadow': '0px 0px 10px rgba(0,0,0,0.1)', 'marginTop': '20px', 'display': 'none'}),
                 
                 html.Div(id="q2-query-time", style={'marginTop': '10px', 'fontStyle': 'italic'})
             ], style={"padding": "20px"})
@@ -212,57 +241,68 @@ app.layout = html.Div([
             ], style={"padding": "20px"})
         ]),
         
-        dcc.Tab(label="Vehicle Deliveries", children=[
+               dcc.Tab(label="Vehicle Deliveries", children=[
             html.Div([
                 html.H2("Deliveries by Vehicle Type"),
                 html.Div([
                     html.Div([
                         html.Label("Year:"),
                         dcc.Input(
-                            id="q6-year", 
-                            type="number", 
+                            id="q6-year",
+                            type="number",
                             placeholder="Leave empty for all years",
                             style={"width": "180px", "height": "36px", "paddingLeft": "10px"}
                         ),
                     ], style={'display': 'inline-block', 'marginRight': '20px'}),
-                    
                     html.Div([
-            html.Label("Month:"),
-            dcc.Dropdown(
-                id="q6-month",
-                options=[
-                    {"label": "All Months", "value": ""},  # Empty string instead of null
-                    {"label": "January", "value": "1"},
-                    {"label": "February", "value": "2"},
-                    {"label": "March", "value": "3"},
-                    {"label": "April", "value": "4"},
-                    {"label": "May", "value": "5"},
-                    {"label": "June", "value": "6"},
-                    {"label": "July", "value": "7"},
-                    {"label": "August", "value": "8"},
-                    {"label": "September", "value": "9"},
-                    {"label": "October", "value": "10"},
-                    {"label": "November", "value": "11"},
-                    {"label": "December", "value": "12"},
-                ],
-                value="",  # Use empty string as default
-                clearable=False,
-                style={"width": "200px"}
-            ),
-        ], style={'display': 'inline-block', 'marginRight': '20px'}),
-                    
+                        html.Label("Month:"),
+                        dcc.Dropdown(
+                            id="q6-month",
+                            options=[
+                                {"label": "All Months", "value": ""},
+                                {"label": "January", "value": "1"},
+                                {"label": "February", "value": "2"},
+                                {"label": "March", "value": "3"},
+                                {"label": "April", "value": "4"},
+                                {"label": "May", "value": "5"},
+                                {"label": "June", "value": "6"},
+                                {"label": "July", "value": "7"},
+                                {"label": "August", "value": "8"},
+                                {"label": "September", "value": "9"},
+                                {"label": "October", "value": "10"},
+                                {"label": "November", "value": "11"},
+                                {"label": "December", "value": "12"},
+                            ],
+                            value="",
+                            clearable=False,
+                            style={"width": "200px"}
+                        ),
+                    ], style={'display': 'inline-block', 'marginRight': '20px'}),
+                    html.Div([
+                        html.Label("Chart Type:"),
+                        dcc.RadioItems(
+                            id="q6-chart-type",
+                            options=[
+                                {"label": "Stacked Bar", "value": "stacked_bar"},
+                                {"label": "Grouped Bar", "value": "grouped_bar"},
+                                {"label": "Stacked Area", "value": "stacked_area"},
+                            ],
+                            value="stacked_bar",
+                            labelStyle={'display': 'inline-block', 'marginRight': '15px'}
+                        )
+                    ], style={'display': 'inline-block', 'marginRight': '20px', 'verticalAlign': 'top'}),
                     html.Button("Update", id="q6-submit-btn", n_clicks=0,
-                            style={'backgroundColor': COLORS['primary'], 'color': 'white',
-                                    'border': 'none', 'padding': '10px 15px', 'borderRadius': '5px'})
+                                style={'backgroundColor': COLORS['primary'], 'color': 'white',
+                                       'border': 'none', 'padding': '10px 15px', 'borderRadius': '5px'})
                 ], style={"marginBottom": "20px"}),
-                
                 html.Div([
                     dcc.Loading(
                         dcc.Graph(id="vehicle-deliveries-graph"),
                         type="circle"
                     ),
-                ], style={'backgroundColor': COLORS['card'], 'padding': '15px', 'borderRadius': '10px', 'boxShadow': '0px 0px 10px rgba(0,0,0,0.1)'}),
-                
+                ], style={'backgroundColor': COLORS['card'], 'padding': '15px', 'borderRadius': '10px',
+                          'boxShadow': '0px 0px 10px rgba(0,0,0,0.1)'}),
+                html.Div(id="q6-summary", style={'marginTop': '20px'}),
                 html.Div(id="q6-query-time", style={'marginTop': '10px', 'fontStyle': 'italic'})
             ], style={"padding": "20px"})
         ])
@@ -353,12 +393,19 @@ def update_revenue_graph(n_clicks, start, end, category, granularity):
     
     return fig, f"Query executed in {duration} ms"
 
-# Callback for Query 2 - Customer Distribution
+# Update the Query 2 callback
+
+# First, add import for ISO country code mapping (at the top of the file)
+import pycountry
+
+# Update the Query 2 callback to add clickData handling
+
 @app.callback(
     [Output("customer-dist-graph", "figure"), Output("q2-query-time", "children")],
-    Input("q2-submit-btn", "n_clicks"),
+    [Input("q2-submit-btn", "n_clicks"),
+     Input("q2-view-type", "value")]
 )
-def update_customer_dist(n_clicks):
+def update_customer_dist(n_clicks, view_type):
     data, duration = make_api_request("query2")
     
     df = pd.DataFrame(data) if data else pd.DataFrame({"country": [], "city": [], "total_customers": []})
@@ -374,41 +421,149 @@ def update_customer_dist(n_clicks):
     # Convert to numeric
     df["total_customers"] = pd.to_numeric(df["total_customers"])
     
-    # Filter out the grand total row (where both country and city are null)
-    df = df[~(df['country'].isna() & df['city'].isna())]
+    # Create country-level dataframe for the map
+    # Filter to rows where city is null (these are country totals from ROLLUP)
+    country_df = df[df['city'].isna()].copy()
+    country_df = country_df.dropna(subset=['country'])  # Ensure no null countries
     
-    # Replace NaN in city with "Total" for country totals
-    df['city'] = df['city'].fillna('Total')
-    
-    # Sort by country and total customers (descending)
-    df = df.sort_values(['country', 'total_customers'], ascending=[True, False])
-    
-    # Create grouped bar chart
-    fig = px.bar(
-        df,
-        x="country",
-        y="total_customers",
-        color="city",
-        title="Customer Distribution by Country and City",
-        barmode="group",  # Use "stack" for stacked bars
-        hover_data=["total_customers"]
-    )
-    
-    fig.update_layout(
-        xaxis_title="Country",
-        yaxis_title="Number of Customers",
-        legend_title="City",
-        height=600,  # Taller to fit legend
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=0.99,
-            xanchor="right",
-            x=0.99
+    # For bar chart view
+    if view_type == 'bar':
+        # Same as before
+        # Filter out the grand total row (where both country and city are null)
+        df = df[~(df['country'].isna() & df['city'].isna())]
+        
+        # Replace NaN in city with "Total" for country totals
+        df['city'] = df['city'].fillna('Total')
+        
+        # Sort by country and total customers (descending)
+        df = df.sort_values(['country', 'total_customers'], ascending=[True, False])
+        
+        # Create grouped bar chart
+        fig = px.bar(
+            df,
+            x="country",
+            y="total_customers",
+            color="city",
+            title="Customer Distribution by Country and City",
+            barmode="group",  # Use "stack" for stacked bars
+            hover_data=["total_customers"]
         )
-    )
+        
+        fig.update_layout(
+            xaxis_title="Country",
+            yaxis_title="Number of Customers",
+            legend_title="City",
+            height=600,  # Taller to fit legend
+            legend=dict(
+                orientation="v",
+                yanchor="top",
+                y=0.99,
+                xanchor="right",
+                x=0.99
+            )
+        )
+    
+    # For map view
+    else:
+        # Map country names to ISO codes
+        def get_country_code(country_name):
+            try:
+                return pycountry.countries.search_fuzzy(country_name)[0].alpha_3
+            except:
+                return None
+        
+        # Add ISO codes to dataframe
+        country_df['iso_alpha'] = country_df['country'].apply(get_country_code)
+        
+        # Create choropleth map
+        fig = px.choropleth(
+            country_df,
+            locations="iso_alpha",
+            color="total_customers",
+            hover_name="country", 
+            color_continuous_scale=px.colors.sequential.Plasma,
+            title="Global Customer Distribution (Click on a country to see city details)",
+            labels={'total_customers': 'Customers'}
+        )
+        
+        fig.update_layout(
+            geo=dict(
+                showframe=False,
+                showcoastlines=True,
+                projection_type='natural earth'
+            ),
+            height=600
+        )
     
     return fig, f"Query executed in {duration} ms"
+
+# Add a new callback for handling map clicks and showing city details
+@app.callback(
+    [Output("city-detail-container", "style"),
+     Output("city-detail-title", "children"),
+     Output("city-detail-graph", "figure"),
+     Output("selected-country-store", "data")],
+    [Input("customer-dist-graph", "clickData"),
+     Input("q2-view-type", "value")],
+    [State("selected-country-store", "data")]
+)
+def show_city_details(click_data, view_type, selected_country):
+    # Get full data to filter
+    data, _ = make_api_request("query2")
+    df = pd.DataFrame(data) if data else pd.DataFrame({"country": [], "city": [], "total_customers": []})
+    
+    # Default values for no selection
+    container_style = {'display': 'none'}
+    title = ""
+    fig = go.Figure()
+    
+    # Only process if we're in map view and have click data
+    if view_type == 'map' and click_data and 'points' in click_data and len(click_data['points']) > 0:
+        # Extract country name from clickData
+        try:
+            country_name = click_data['points'][0]['hovertext']
+            
+            # Filter data to only show cities in the selected country
+            # Get cities where country matches and city is not null
+            city_df = df[(df['country'] == country_name) & (~df['city'].isna())].copy()
+            
+            if not city_df.empty:
+                # Convert to numeric
+                city_df["total_customers"] = pd.to_numeric(city_df["total_customers"])
+                
+                # Sort by customer count descending
+                city_df = city_df.sort_values('total_customers', ascending=False)
+                
+                # Create bar chart for cities
+                fig = px.bar(
+                    city_df,
+                    x="city",
+                    y="total_customers",
+                    title=f"Customer Distribution in {country_name} Cities",
+                    color_discrete_sequence=[COLORS['primary']],
+                    labels={"total_customers": "Customers", "city": "City"}
+                )
+                
+                fig.update_layout(
+                    xaxis_title="City",
+                    yaxis_title="Number of Customers"
+                )
+                
+                # Make the container visible
+                container_style = {'backgroundColor': COLORS['card'], 'padding': '15px', 'borderRadius': '10px', 
+                                  'boxShadow': '0px 0px 10px rgba(0,0,0,0.1)', 'marginTop': '20px'}
+                title = f"Cities in {country_name}"
+                
+                return container_style, title, fig, country_name
+        except Exception as e:
+            print(f"Error processing city details: {e}")
+    
+    # If we switched to bar chart, hide the city details
+    if view_type == 'bar':
+        return container_style, title, fig, None
+    
+    # Return existing selection if no new click
+    return container_style, title, fig, selected_country
 
 # Callback for Query 3 - Top Products
 @app.callback(
@@ -636,70 +791,143 @@ def update_rider_ranking(n_clicks, country):
     return fig, f"Query executed in {duration} ms"
 
 # Callback for Query 6 - Deliveries by Vehicle Type
+
 @app.callback(
-    [Output("vehicle-deliveries-graph", "figure"), Output("q6-query-time", "children")],
+    [Output("vehicle-deliveries-graph", "figure"),
+     Output("q6-summary", "children"),
+     Output("q6-query-time", "children")],
     Input("q6-submit-btn", "n_clicks"),
     State("q6-year", "value"),
     State("q6-month", "value"),
+    State("q6-chart-type", "value"),
 )
-def update_vehicle_deliveries(n_clicks, year, month):
+def update_vehicle_deliveries(n_clicks, year, month, chart_type):
     params = {
         "year": year if year else None,
         "month": month if month else None,
     }
-    
     data, duration = make_api_request("query6", params)
-    
+
     df = pd.DataFrame(data) if data else pd.DataFrame({
         "year": [], "month": [], "vehicle_type": [], "total_deliveries": []
     })
-    
+
     if df.empty:
         fig = go.Figure().add_annotation(
             text="No data available",
             xref="paper", yref="paper",
             x=0.5, y=0.5, showarrow=False
         )
-        return fig, ""
-    
-    # Convert numeric columns
-    df["total_deliveries"] = pd.to_numeric(df["total_deliveries"])
-    
-    # Create date column for better x-axis (handle both year-only and year-month data)
-    if "month" in df.columns and not df["month"].isna().all():
-        # Create date strings
-        df["date_str"] = df["year"].astype(str) + "-" + df["month"].astype(str).str.zfill(2)
+        return fig, "", f"Query executed in {duration} ms"
+
+    # Ensure numeric
+    df["total_deliveries"] = pd.to_numeric(df["total_deliveries"], errors="coerce").fillna(0)
+
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")  # may come as float (e.g., 2024.0)
+    if "month" in df.columns:
+        df["month"] = pd.to_numeric(df["month"], errors="coerce")
     else:
-        # Just use year if no month data
-        df["date_str"] = df["year"].astype(str)
-    
-    # Remove rows where vehicle_type is None (these are subtotals from ROLLUP)
-    df = df[~df["vehicle_type"].isna()]
-    
-    # Sort by date
-    df = df.sort_values("date_str")
-    
-    # Create stacked bar chart
-    fig = px.bar(
-        df,
-        x="date_str",
-        y="total_deliveries",
-        color="vehicle_type",
-        title="Deliveries by Vehicle Type" + 
-              (f" in {year}" if year else "") +
-              (f", Month {month}" if month else ""),
-        barmode="stack",
+        df["month"] = pd.NA
+
+    # Drop rows without year
+    df = df[~df["year"].isna()]
+    df["year"] = df["year"].astype(int)
+    # Build period
+    df["period"] = df.apply(
+        lambda r: f"{r['year']}-{int(r['month']):02d}" if pd.notna(r["month"]) and r["month"] > 0 else f"{r['year']}",
+        axis=1
     )
-    
-    # Improve layout
+
+    # Detail rows only
+    df_plot = df[~df["vehicle_type"].isna()].copy()
+
+    if df_plot.empty:
+        fig = go.Figure().add_annotation(
+            text="No vehicle-level rows",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False
+        )
+        return fig, "", f"Query executed in {duration} ms"
+
+    # Sorting
+    df_plot["month_sort"] = df_plot["month"].fillna(0).astype(int)
+    df_plot = df_plot.sort_values(["year", "month_sort", "vehicle_type"])
+
+    title_suffix = ""
+    if year:
+        title_suffix += f" in {year}"
+    if month:
+        title_suffix += f", Month {month}"
+
+    ordered_periods = df_plot["period"].unique().tolist()
+
+    if chart_type == "stacked_area":
+        fig = px.area(
+            df_plot,
+            x="period",
+            y="total_deliveries",
+            color="vehicle_type",
+            title=f"Deliveries by Vehicle Type (Stacked Area){title_suffix}",
+        )
+    elif chart_type == "grouped_bar":
+        fig = px.bar(
+            df_plot,
+            x="period",
+            y="total_deliveries",
+            color="vehicle_type",
+            barmode="group",
+            title=f"Deliveries by Vehicle Type (Grouped){title_suffix}",
+        )
+    else:
+        fig = px.bar(
+            df_plot,
+            x="period",
+            y="total_deliveries",
+            color="vehicle_type",
+            barmode="stack",
+            title=f"Deliveries by Vehicle Type (Stacked){title_suffix}",
+        )
+
     fig.update_layout(
         xaxis_title="Period",
         yaxis_title="Total Deliveries",
         legend_title="Vehicle Type",
         hovermode="x unified",
     )
-    
-    return fig, f"Query executed in {duration} ms"
+    fig.update_xaxes(type="category", categoryorder="array", categoryarray=ordered_periods)
+
+    # Summary
+    summary_df = (
+        df_plot.groupby("vehicle_type", as_index=False)["total_deliveries"].sum()
+        .sort_values("total_deliveries", ascending=False)
+    )
+    grand_total = summary_df["total_deliveries"].sum()
+    summary_df["percent"] = (summary_df["total_deliveries"] / grand_total * 100).round(2)
+
+    summary_table = dash_table.DataTable(
+        columns=[
+            {"name": "Vehicle Type", "id": "vehicle_type"},
+            {"name": "Deliveries", "id": "total_deliveries", "type": "numeric"},
+            {"name": "Percent (%)", "id": "percent", "type": "numeric"},
+        ],
+        data=summary_df.to_dict("records"),
+        style_header={'backgroundColor': COLORS['primary'], 'color': 'white', 'fontWeight': 'bold'},
+        style_cell={'padding': '6px', 'textAlign': 'center'},
+        style_data={'backgroundColor': COLORS['card']},
+        style_table={'maxWidth': '650px'},
+    )
+
+    summary_container = html.Div(
+        [
+            html.H4("Total Deliveries Share by Vehicle Type"),
+            summary_table,
+            html.Div(f"Grand Total: {int(grand_total):,} deliveries", style={'marginTop': '8px', 'fontStyle': 'italic'})
+        ],
+        style={'backgroundColor': COLORS['card'], 'padding': '15px', 'borderRadius': '10px',
+               'boxShadow': '0px 0px 10px rgba(0,0,0,0.05)'}
+    )
+
+    return fig, summary_container, f"Query executed in {duration} ms"
 
 if __name__ == "__main__":
     app.run(debug=True)
