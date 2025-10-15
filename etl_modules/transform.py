@@ -1,9 +1,25 @@
 import pandas as pd
 
+def _singularize_simple(token: str) -> str:
+    t = token
+    if t.endswith('ies') and len(t) > 3:
+        return t[:-3] + 'y'          # batteries -> battery
+    if t.endswith('sses'):
+        return t[:-2]                # classes -> class
+    if t.endswith('es'):
+        return t                     # keep clothes/shoes/etc.
+    if t.endswith('s') and not t.endswith('ss'):
+        return t[:-1]                # bags -> bag, toys -> toy, gadgets -> gadget
+    return t
+
 def transform_product_dimension(products_df):
     """Transform product data into dim_product table"""
     dim_product = products_df[['id', 'name', 'category', 'price', 'updatedAt']].copy()
     dim_product = dim_product.rename(columns={'id': 'product_id', 'name': 'name', 'price': 'current_price'})
+    # normalize category
+    cat = dim_product['category'].astype('string')
+    cat = cat.str.strip().str.lower().str.replace(r'\s+', '', regex=True)
+    dim_product['category'] = cat.fillna('').map(lambda x: _singularize_simple(x) if isinstance(x, str) else x).replace({'': None})
     dim_product = dim_product.drop_duplicates(subset=['product_id'])
     dim_product['updatedAt'] = pd.to_datetime(dim_product['updatedAt'], utc=True)
     return dim_product
