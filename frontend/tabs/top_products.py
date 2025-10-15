@@ -4,6 +4,9 @@ import plotly.graph_objects as go
 import pandas as pd
 from common import COLORS, make_api_request
 
+# Ensure a stable built-in template to avoid issues with custom/default templates
+px.defaults.template = "plotly_white"
+
 
 def layout():
     return dcc.Tab(label="Top Products", children=[
@@ -98,6 +101,7 @@ def register_callbacks(app):
                   (f" (Category: {category})" if category else ""),
             hover_data=["total_quantity_sold"] if "total_quantity_sold" in df.columns else None,
             color_discrete_sequence=px.colors.qualitative.Pastel,
+            template="plotly_white",
         )
 
         fig.update_layout(
