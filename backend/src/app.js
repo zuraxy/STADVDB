@@ -124,9 +124,56 @@ app.get('/query6', async (req, res) => {
   }
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Backend is running' });
+
+app.get('/query7', async (req, res) => {
+  const start = req.query.start || '2024-01-01';
+  const end = req.query.end || '2024-12-31';
+  const top_percent = req.query.top || 20;
+  const granularity = req.query.granularity || 'month';
+  const params = [start, end, top_percent, granularity];
+
+  const startTime = process.hrtime.bigint();
+  try {
+    console.log('Running query8 with params:', params);
+    const results = await pool.query(queries.QUERY8, params);
+    const endTime = process.hrtime.bigint();
+    const durationMs = Number(endTime - startTime) / 1e6;
+    console.log('Query8 result rows:', results.rows.length, `took ${durationMs.toFixed(2)} ms`);
+    res.json({ durationMs: durationMs.toFixed(2), rows: results.rows });
+  } catch (err) {
+    console.error('Query8 error:', err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+app.get('/query8', async (req, res) => {
+
+  const year = req.query.year || 2025;                
+  const country = req.query.country || null;         
+  const city = req.query.city || null;                
+  const category = req.query.category || null;      
+
+  const params = [year, country, city, category];
+
+  const startTime = process.hrtime.bigint();
+  try {
+    console.log('Running QUERY8 with params:', params);
+    const results = await pool.query(queries.QUERY8, params);
+    const endTime = process.hrtime.bigint();
+    const durationMs = Number(endTime - startTime) / 1e6;
+
+    console.log(
+      `Query8 result rows: ${results.rows.length} (took ${durationMs.toFixed(2)} ms)`
+    );
+
+    res.json({
+      durationMs: durationMs.toFixed(2),
+      rows: results.rows,
+    });
+  } catch (err) {
+    console.error('Query8 error:', err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
 });
 
 module.exports = app;
