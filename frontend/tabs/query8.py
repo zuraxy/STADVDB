@@ -12,6 +12,18 @@ def layout():
 			html.H2("Revenue Drilldown by Country → City → Category"),
 			html.Div([
 				html.Div([
+					html.Label("Metric:"),
+					dcc.RadioItems(
+						id="q8-metric",
+						options=[
+							{"label": "Total Value", "value": "total"},
+							{"label": "Avg Order Value", "value": "aov"},
+						],
+						value="total",
+						labelStyle={"display": "inline-block", "marginRight": "12px"},
+					)
+				], style={'display': 'inline-block', 'marginRight': '20px'}),
+				html.Div([
 					html.Label("Year:"),
 					dcc.Input(id="q8-year", type="number", value=2025, min=2000, step=1,
 							  style={"width": "200px"}),
@@ -179,31 +191,35 @@ def register_callbacks(app):
 			Input("q8-state", "data"),
 			Input("q8-year", "value"),
 			Input("q8-update", "n_clicks"),
+			Input("q8-metric", "value"),
 		],
 	)
-	def render(state, year, _n_update):
+	def render(state, year, _n_update, metric):
 		# Normalize inputs
 		year = int(year) if year else 2025
+		metric = metric or "total"
 		state = state or {"level": "country", "country": None, "city": None, "category": None}
 		level = state.get("level", "country")
 		country = state.get("country")
 		city = state.get("city")
 		selected_category = state.get("category")
 
-		# Build params and fetch data
-		# Build params and fetch data using Query 8
+		# Build params and fetch data from appropriate query based on metric
 		params = {
 			"year": year,
 			"country": country if country else None,
 			"city": city if city else None,
 			"category": selected_category if selected_category else None,
 		}
-		data, duration = make_api_request("query8", params)
+		endpoint = "query8" if metric == "total" else "query9"
+		value_col = "total_revenue" if metric == "total" else "average_order_value"
+		value_label = "Total Revenue" if metric == "total" else "Average Order Value"
+		data, duration = make_api_request(endpoint, params)
 		# Graceful fallback: if no data for selected category in this year, retry without category
 		clear_category_due_to_empty = False
 		if (not data or len(data) == 0) and selected_category:
 			params_fallback = {**params, "category": None}
-			data, duration = make_api_request("query8", params_fallback)
+			data, duration = make_api_request(endpoint, params_fallback)
 			if data:
 				clear_category_due_to_empty = True
 
@@ -226,7 +242,7 @@ def register_callbacks(app):
 			)
 
 		# Ensure numeric
-		for col in ["total_revenue", "unique_riders"]:
+		for col in ["total_revenue", "unique_riders", "average_order_value"]:
 			if col in df.columns:
 				df[col] = pd.to_numeric(df[col])
 
@@ -264,52 +280,70 @@ def register_callbacks(app):
 		city_value = city
 		category_value = None if clear_category_due_to_empty else selected_category
 
-		# Build display dataframe and labels
-		display_df = df.copy()
+		# Build chart and table dataframes and labels
+		chart_df = df.copy()
+		table_df = df.copy()
 		breadcrumb = [f"Year {year}"]
 		if level == "country":
-			# For Query 8: if a category is selected, the 'All Categories' rollups are filtered out by HAVING.
-			# So select the appropriate rollup row set based on selection without aggregating client-side.
+			# Chart (top-10 countries)
 			if selected_category:
-				display_df = display_df[(display_df["city"] == "All Cities") & (display_df["category"] == selected_category)]
+				chart_df = chart_df[(chart_df["city"] == "All Cities") & (chart_df["category"] == selected_category)]
 			else:
-				display_df = display_df[(display_df["city"] == "All Cities") & (display_df["category"] == "All Categories")]
-			display_df = display_df[display_df["country"] != "Grand Total"]
-			display_df = display_df.sort_values("total_revenue", ascending=False).head(10)
-			x_vals = display_df["country"].tolist()
-			title = f"Total Revenue by Country ({year})"
+				chart_df = chart_df[(chart_df["city"] == "All Cities") & (chart_df["category"] == "All Categories")]
+			chart_df = chart_df[chart_df["country"] != "Grand Total"]
+			chart_df = chart_df.sort_values(value_col, ascending=False).head(10)
+			x_vals = chart_df["country"].tolist()
+			# Table (all countries)
+			table_df = df[(df["city"] == "All Cities") & (df["country"] != "Grand Total")]
+			if selected_category:
+				table_df = table_df[table_df["category"] == selected_category]
+			else:
+				table_df = table_df[table_df["category"] == "All Categories"]
+			table_df = table_df.sort_values(value_col, ascending=False)
+			title = f"{value_label} by Country ({year})"
 		elif level == "city":
 			breadcrumb.append(f"Country: {country}")
 			# Determine top cities by their rollup totals for the selected scope (no frontend aggregation)
 			metric_category = selected_category if selected_category else "All Categories"
 			city_totals = df[(df["country"] == country) & (df["category"] == metric_category) & (df["city"] != "All Cities")]
-			city_totals = city_totals.sort_values("total_revenue", ascending=False).head(10)
+			city_totals = city_totals.sort_values(value_col, ascending=False).head(10)
 			city_order = city_totals["city"].tolist()
-			# Now get detailed category rows for those cities
-			detail = df[(df["country"] == country) & (df["city"].isin(city_order)) & (df["category"] != "All Categories")]
+			# Chart detail rows: only top-10 cities
+			chart_detail = df[(df["country"] == country) & (df["city"].isin(city_order)) & (df["category"] != "All Categories")]
 			if selected_category:
-				detail = detail[detail["category"] == selected_category]
+				chart_detail = chart_detail[chart_detail["category"] == selected_category]
 			# Ensure cities appear in the chosen order
-			detail["city"] = pd.Categorical(detail["city"], categories=city_order, ordered=True)
-			detail = detail.sort_values(["city", "total_revenue"], ascending=[True, False])
-			display_df = detail.copy()
+			chart_detail["city"] = pd.Categorical(chart_detail["city"], categories=city_order, ordered=True)
+			chart_detail = chart_detail.sort_values(["city", value_col], ascending=[True, False])
+			chart_df = chart_detail.copy()
+			# Table: all cities' detail rows within country (optionally restricted by category)
+			table_df = df[(df["country"] == country) & (df["city"] != "All Cities") & (df["category"] != "All Categories")]
+			if selected_category:
+				table_df = table_df[table_df["category"] == selected_category]
+			table_df = table_df.sort_values(["city", value_col], ascending=[True, False])
 			x_vals = city_order
-			title = f"Revenue by City (stacked by Category) in {country} ({year})"
+			title = f"{value_label} by City (stacked by Category) in {country} ({year})"
 		else:
 			breadcrumb.extend([f"Country: {country}", f"City: {city}"])
-			display_df = display_df[(display_df["country"] == country) & (display_df["city"] == city)]
-			display_df = display_df[display_df["category"] != "All Categories"]
+			# Chart: top-10 categories for the city
+			chart_df = chart_df[(chart_df["country"] == country) & (chart_df["city"] == city)]
+			chart_df = chart_df[chart_df["category"] != "All Categories"]
 			if selected_category:
-				display_df = display_df[display_df["category"] == selected_category]
-			display_df = display_df.sort_values("total_revenue", ascending=False).head(10)
-			x_vals = display_df["category"].tolist()
-			title = f"Revenue by Category in {city}, {country} ({year})"
+				chart_df = chart_df[chart_df["category"] == selected_category]
+			chart_df = chart_df.sort_values(value_col, ascending=False).head(10)
+			x_vals = chart_df["category"].tolist()
+			# Table: all categories for the city (optionally restricted by selected_category)
+			table_df = df[(df["country"] == country) & (df["city"] == city) & (df["category"] != "All Categories")]
+			if selected_category:
+				table_df = table_df[table_df["category"] == selected_category]
+			table_df = table_df.sort_values(value_col, ascending=False)
+			title = f"{value_label} by Category in {city}, {country} ({year})"
 
 		# Build figure
 		fig = go.Figure()
 		if level == "city":
 			# Stacked bars by category
-			cats = display_df["category"].dropna().unique().tolist()
+			cats = chart_df["category"].dropna().unique().tolist()
 			# Deterministic color map
 			palette = [
 				"#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -320,8 +354,8 @@ def register_callbacks(app):
 			for cat in sorted(cats):
 				series = []
 				for city_name in x_vals:
-					row = display_df[(display_df["city"] == city_name) & (display_df["category"] == cat)]
-					val = float(row["total_revenue"].iloc[0]) if not row.empty else 0.0
+					row = chart_df[(chart_df["city"] == city_name) & (chart_df["category"] == cat)]
+					val = float(row[value_col].iloc[0]) if not row.empty else 0.0
 					series.append(val)
 				fig.add_trace(go.Bar(
 					x=x_vals,
@@ -335,10 +369,10 @@ def register_callbacks(app):
 		else:
 			fig.add_trace(go.Bar(
 				x=x_vals,
-				y=display_df["total_revenue"],
+				y=chart_df[value_col],
 				marker_color=COLORS['primary'],
 				customdata=x_vals,
-				hovertemplate="%{x}<br>Revenue: %{y:.2f}<extra></extra>",
+				hovertemplate=f"%{{x}}<br>{value_label}: %{{y:.2f}}<extra></extra>",
 			))
 		fig.update_layout(
 			title=title,
@@ -350,14 +384,18 @@ def register_callbacks(app):
 		# Build table
 		if level == "country":
 			cols = ["country", "category", "total_revenue", "unique_riders"]
-			headers = ["Country", "Category", "Total Revenue", "Unique Riders"]
+			headers = ["Country", "Category", value_label, "Unique Riders"]
 		elif level == "city":
 			# Show detailed rows per city-category
 			cols = ["city", "category", "total_revenue", "unique_riders"]
-			headers = ["City", "Category", "Total Revenue", "Unique Riders"]
+			headers = ["City", "Category", value_label, "Unique Riders"]
 		else:
 			cols = ["category", "total_revenue", "unique_riders"]
-			headers = ["Category", "Total Revenue", "Unique Riders"]
+			headers = ["Category", value_label, "Unique Riders"]
+
+		# If using AOV, swap value column name for rendering
+		if metric == "aov":
+			cols = [c if c != "total_revenue" else value_col for c in cols]
 
 		# Build DataTable for clearer alignment
 		def fmt_amount(v):
@@ -365,10 +403,10 @@ def register_callbacks(app):
 		def fmt_int(v):
 			return (str(int(v)) if pd.notnull(v) else "")
 		data_records = []
-		for _, row in display_df[cols].iterrows():
+		for _, row in table_df[cols].iterrows():
 			rec = {}
 			for c in cols:
-				if c == "total_revenue":
+				if c == value_col:
 					rec[c] = fmt_amount(row[c])
 				elif c == "unique_riders":
 					rec[c] = fmt_int(row[c])
@@ -389,52 +427,53 @@ def register_callbacks(app):
 				{"if": {"column_id": "unique_riders"}, "textAlign": "right"},
 			],
 			page_size=20,
+			page_action="native",
 		)
 
 		# Highest & Lowest labels (context-aware)
 		lines = []
-		if level == "country" and not display_df.empty:
+		if level == "country" and not table_df.empty:
 			# Compare countries (rollup rows)
-			idx_max = display_df["total_revenue"].astype(float).idxmax()
-			idx_min = display_df["total_revenue"].astype(float).idxmin()
-			max_row = display_df.loc[idx_max]
-			min_row = display_df.loc[idx_min]
+			idx_max = table_df[value_col].astype(float).idxmax()
+			idx_min = table_df[value_col].astype(float).idxmin()
+			max_row = table_df.loc[idx_max]
+			min_row = table_df.loc[idx_min]
 			lines.append(
-				f"Highest country: {max_row['country']} (\u20B1{float(max_row['total_revenue']):,.2f})  •  "
-				f"Lowest country: {min_row['country']} (\u20B1{float(min_row['total_revenue']):,.2f})"
+				f"Highest country: {max_row['country']} (\u20B1{float(max_row[value_col]):,.2f})  •  "
+				f"Lowest country: {min_row['country']} (\u20B1{float(min_row[value_col]):,.2f})"
 			)
 		elif level == "city":
 			# Line 1: cities by rollup totals for the selected scope
 			metric_category = selected_category if selected_category else "All Categories"
 			city_totals_hilo = df[(df["country"] == country) & (df["category"] == metric_category) & (df["city"] != "All Cities")]
 			if not city_totals_hilo.empty:
-				idx_max = city_totals_hilo["total_revenue"].astype(float).idxmax()
-				idx_min = city_totals_hilo["total_revenue"].astype(float).idxmin()
+				idx_max = city_totals_hilo[value_col].astype(float).idxmax()
+				idx_min = city_totals_hilo[value_col].astype(float).idxmin()
 				max_row = city_totals_hilo.loc[idx_max]
 				min_row = city_totals_hilo.loc[idx_min]
 				lines.append(
-					f"Highest city: {max_row['city']} (\u20B1{float(max_row['total_revenue']):,.2f})  •  "
-					f"Lowest city: {min_row['city']} (\u20B1{float(min_row['total_revenue']):,.2f})"
+					f"Highest city: {max_row['city']} (\u20B1{float(max_row[value_col]):,.2f})  •  "
+					f"Lowest city: {min_row['city']} (\u20B1{float(min_row[value_col]):,.2f})"
 				)
-			# Line 2: categories within current selection (city-category rows in display_df)
-			if not display_df.empty:
-				idx_max_c = display_df["total_revenue"].astype(float).idxmax()
-				idx_min_c = display_df["total_revenue"].astype(float).idxmin()
-				max_row_c = display_df.loc[idx_max_c]
-				min_row_c = display_df.loc[idx_min_c]
+			# Line 2: categories within current selection (all city-category rows in table_df)
+			if not table_df.empty:
+				idx_max_c = table_df[value_col].astype(float).idxmax()
+				idx_min_c = table_df[value_col].astype(float).idxmin()
+				max_row_c = table_df.loc[idx_max_c]
+				min_row_c = table_df.loc[idx_min_c]
 				lines.append(
-					f"Highest category: {max_row_c['category']} in {max_row_c['city']} (\u20B1{float(max_row_c['total_revenue']):,.2f})  •  "
-					f"Lowest category: {min_row_c['category']} in {min_row_c['city']} (\u20B1{float(min_row_c['total_revenue']):,.2f})"
+					f"Highest category: {max_row_c['category']} in {max_row_c['city']} (\u20B1{float(max_row_c[value_col]):,.2f})  •  "
+					f"Lowest category: {min_row_c['category']} in {min_row_c['city']} (\u20B1{float(min_row_c[value_col]):,.2f})"
 				)
 		else:  # category level
-			if not display_df.empty:
-				idx_max = display_df["total_revenue"].astype(float).idxmax()
-				idx_min = display_df["total_revenue"].astype(float).idxmin()
-				max_row = display_df.loc[idx_max]
-				min_row = display_df.loc[idx_min]
+			if not table_df.empty:
+				idx_max = table_df[value_col].astype(float).idxmax()
+				idx_min = table_df[value_col].astype(float).idxmin()
+				max_row = table_df.loc[idx_max]
+				min_row = table_df.loc[idx_min]
 				lines.append(
-					f"Highest category: {max_row['category']} (\u20B1{float(max_row['total_revenue']):,.2f})  •  "
-					f"Lowest category: {min_row['category']} (\u20B1{float(min_row['total_revenue']):,.2f})"
+					f"Highest category: {max_row['category']} (\u20B1{float(max_row[value_col]):,.2f})  •  "
+					f"Lowest category: {min_row['category']} (\u20B1{float(min_row[value_col]):,.2f})"
 				)
 
 		top_bottom_text = [html.Div(line) for line in lines] if lines else ""

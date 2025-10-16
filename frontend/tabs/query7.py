@@ -2,11 +2,7 @@ from dash import html, dcc, Input, Output, State
 import dash
 from dash import dash_table
 import pandas as pd
-import plotly.express as px
 from common import COLORS, make_api_request
-
-# Use a safe template
-px.defaults.template = "plotly_white"
 
 
 def layout():
@@ -18,13 +14,27 @@ def layout():
             html.Div([
                 html.Div([
                     html.Label("Country:"),
-                    dcc.Input(id="q7-country", type="text", placeholder="Leave empty for all"),
-                ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "220px"}),
+                    dcc.Dropdown(
+                        id="q7-country",
+                        options=[],
+                        value=None,
+                        placeholder="All countries",
+                        clearable=True,
+                        style={"minWidth": "240px"}
+                    ),
+                ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "260px"}),
 
                 html.Div([
                     html.Label("City:"),
-                    dcc.Input(id="q7-city", type="text", placeholder="Leave empty for all"),
-                ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "220px"}),
+                    dcc.Dropdown(
+                        id="q7-city",
+                        options=[],
+                        value=None,
+                        placeholder="All cities",
+                        clearable=True,
+                        style={"minWidth": "240px"}
+                    ),
+                ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "260px"}),
 
                 html.Div([
                     html.Label("Category:"),
@@ -65,30 +75,45 @@ def layout():
                         "borderRadius": "6px",
                         "cursor": "pointer",
                         "marginTop": "22px",
+                        "marginRight": "8px",
+                    },
+                ),
+                html.Button(
+                    "Back",
+                    id="q7-back",
+                    n_clicks=0,
+                    style={
+                        "backgroundColor": COLORS["secondary"],
+                        "color": "white",
+                        "border": "none",
+                        "padding": "10px 16px",
+                        "borderRadius": "6px",
+                        "cursor": "pointer",
+                        "marginTop": "22px",
                     },
                 ),
             ], style={"marginBottom": "20px"}),
 
-            # KPI Cards
+            # Top riders by metric (now above KPI cards)
+            html.Div([
+                html.H4("Top Riders by Metric"),
+                html.Div(id="q7-top-metrics", style={"display": "grid", "gridTemplateColumns": "repeat(2, 1fr)", "gap": "12px"}),
+            ], style={"marginBottom": "16px"}),
+
+            # KPI Cards (trimmed)
             html.Div(id="q7-kpis", style={"display": "flex", "gap": "16px", "marginBottom": "16px"}),
 
-            # Leaderboard + details
+            # Rider details table (full width)
             html.Div([
-                html.Div([
-                    dcc.Graph(id="q7-leaderboard")
-                ], style={"width": "52%", "display": "inline-block", "verticalAlign": "top"}),
-
-                html.Div([
-                    html.H4("Rider Details"),
-                    dash_table.DataTable(
-                        id="q7-table",
-                        page_action="none",
-                        virtualization=True,
-                        style_table={"height": "520px", "overflowY": "auto"},
-                        style_header={"backgroundColor": COLORS["primary"], "color": "white", "fontWeight": "bold"},
-                        style_cell={"backgroundColor": COLORS["card"], "color": COLORS["text"], "textAlign": "center", "padding": "8px"},
-                    )
-                ], style={"width": "46%", "display": "inline-block", "marginLeft": "2%", "verticalAlign": "top"}),
+                html.H4("Rider Details"),
+                dash_table.DataTable(
+                    id="q7-table",
+                    page_action="native",
+                    page_size=20,
+                    style_table={"maxHeight": "520px", "overflowY": "auto"},
+                    style_header={"backgroundColor": COLORS["primary"], "color": "white", "fontWeight": "bold"},
+                    style_cell={"backgroundColor": COLORS["card"], "color": COLORS["text"], "textAlign": "center", "padding": "8px"},
+                )
             ])
         ], style={"padding": "20px", "backgroundColor": COLORS["background"], "borderRadius": "10px"})
     ])
@@ -111,10 +136,51 @@ def register_callbacks(app):
             return [{"label": c, "value": c} for c in cats]
         return []
 
+    # Populate Country/City options using Query 8 (no extra aggregation)
+    @app.callback(
+        [Output("q7-country", "options"), Output("q7-city", "options")],
+        [Input("q7-year", "value"), Input("q7-country", "value")],
+        prevent_initial_call=False,
+    )
+    def load_countries_cities(year, country):
+        rows, _ = make_api_request("query8", {"year": year, "country": country or None, "city": None, "category": None})
+        df = pd.DataFrame(rows)
+        country_opts = []
+        city_opts = []
+        if not df.empty:
+            # Countries: rollup rows (All Cities, All Categories), excluding Grand Total
+            df_num = df.copy()
+            if "total_revenue" in df_num.columns:
+                df_num["total_revenue"] = pd.to_numeric(df_num["total_revenue"], errors="coerce")
+            countries = df[(df["city"] == "All Cities") & (df["category"] == "All Categories") & (df["country"] != "Grand Total")]["country"].dropna().unique().tolist()
+            country_opts = [{"label": c, "value": c} for c in sorted(countries)]
+            # Cities: rollup city totals at All Categories for selected country
+            if country:
+                cities = df[(df["country"] == country) & (df["city"] != "All Cities") & (df["category"] == "All Categories")]["city"].dropna().unique().tolist()
+                city_opts = [{"label": c, "value": c} for c in sorted(cities)]
+        return country_opts, city_opts
+
+    # Back button: clear city, then country
+    @app.callback(
+        [Output("q7-city", "value"), Output("q7-country", "value")],
+        Input("q7-back", "n_clicks"),
+        State("q7-city", "value"),
+        State("q7-country", "value"),
+        prevent_initial_call=True,
+    )
+    def back_drill(n, city, country):
+        if not n:
+            raise dash.exceptions.PreventUpdate
+        if city:
+            return None, country
+        if country:
+            return None, None
+        raise dash.exceptions.PreventUpdate
+
     @app.callback(
         [
             Output("q7-kpis", "children"),
-            Output("q7-leaderboard", "figure"),
+            Output("q7-top-metrics", "children"),
             Output("q7-table", "data"),
             Output("q7-table", "columns"),
         ],
@@ -189,11 +255,6 @@ def register_callbacks(app):
                 html.H3(f"${total_sales_sum:,.2f}", style={"margin": 0})
             ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
             html.Div([
-                html.P("Top Performing Rider", style={"margin": 0, "fontWeight": "bold"}),
-                html.H3(f"{top_rider_name}", style={"margin": 0}),
-                html.P(f"${top_rider_sales:,.2f}", style={"margin": 0, "color": "#555"}),
-            ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
-            html.Div([
                 html.P("Avg. Customers Served of Riders", style={"margin": 0, "fontWeight": "bold"}),
                 html.H3(f"{avg_customers_served:,.0f}", style={"margin": 0})
             ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
@@ -201,54 +262,43 @@ def register_callbacks(app):
                 html.P("Count of Elite Riders", style={"margin": 0, "fontWeight": "bold"}),
                 html.H3(f"{elite_count:,}", style={"margin": 0})
             ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
-            html.Div([
-                html.P("Top Rider by Deliveries", style={"margin": 0, "fontWeight": "bold"}),
-                html.H3(f"{top_deliveries_name}", style={"margin": 0}),
-                html.P(f"{top_deliveries_count:,} deliveries", style={"margin": 0, "color": "#555"}),
-            ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
         ]
 
-        # Leaderboard - simple y=courier_name, limit hover to name + total sales
-        if not df.empty and "courier_name" in df.columns and "total_sales" in df.columns:
-            df_disp = df.copy()
-            # Order by total_sales descending so top appears first
-            df_disp = df_disp.sort_values("total_sales", ascending=False)
+        # Build Top Metrics cards
+        def metric_card(title, name, value_fmt):
+            return html.Div([
+                html.P(title, style={"margin": 0, "fontWeight": "bold"}),
+                html.H3(name or "—", style={"margin": 0}),
+                html.P(value_fmt, style={"margin": 0, "color": "#555"}),
+            ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"})
 
-            # Create ordinal rank labels based on total_sales (highest = 1st)
-            def ordinal(n: int) -> str:
-                return "%d%s" % (n, "th" if 11 <= (n % 100) <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th"))
+        def top_by(col):
+            if col in df.columns and not df.empty:
+                s = pd.to_numeric(df[col], errors="coerce")
+                if s.notna().any():
+                    idx = s.idxmax()
+                    rider_name = str(df.at[idx, "courier_name"]) if "courier_name" in df.columns and idx in df.index else "—"
+                    rider_id = str(df.at[idx, "rider_id"]) if "rider_id" in df.columns and idx in df.index else "—"
+                    rider = f"{rider_name} (ID: {rider_id})" if rider_name != "—" and rider_id != "—" else rider_name
+                    val = s.at[idx] if pd.notna(s.at[idx]) else None
+                    return rider, val
+            return "—", None
 
-            sales_numeric = pd.to_numeric(df_disp["total_sales"], errors="coerce")
-            ranks = sales_numeric.rank(method="dense", ascending=False).astype("Int64")
-            df_disp["rank_label"] = ranks.apply(lambda x: ordinal(int(x)) if pd.notna(x) else "")
+        ts_name, ts_val = top_by("total_sales")
+        aov_name, aov_val = top_by("avg_order_value")
+        cs_name, cs_val = top_by("customers_served")
+        growth_name, growth_val = top_by("sales_growth_pct")
 
-            fig = px.bar(
-                df_disp,
-                y="courier_name",
-                x="total_sales",
-                orientation="h",
-                color="vehicle_type" if "vehicle_type" in df_disp.columns else None,
-                text="rank_label",
-                title="Top Rider Leaderboard (by Total Sales)",
-                template="plotly_white",
-            )
-            fig.update_traces(textposition="outside")
-            # Show only name and total sales in hover
-            fig.update_traces(hovertemplate="Rider: %{y}<br>Total Sales: %{x:$,.2f}<extra></extra>")
-            fig.update_layout(
-                yaxis_title="Rider",
-                xaxis_title="Total Sales",
-            )
-        else:
-            fig = px.bar(title="No data available")
+        top_metrics = [
+            metric_card("Highest Total Sales Rider", ts_name, (f"${ts_val:,.2f}" if ts_val is not None else "—")),
+            metric_card("Highest Average Order Value Rider", aov_name, (f"${aov_val:,.2f}" if aov_val is not None else "—")),
+            metric_card("Most Customers Served Rider", cs_name, (f"{int(cs_val):,}" if cs_val is not None else "—")),
+            metric_card("Fastest Growing Rider (QoQ)", growth_name, (f"{growth_val:.2f}%" if growth_val is not None else "—")),
+        ]
 
-        # Rider Details table: limit to top 10 by total_sales
-        if not df.empty and "total_sales" in df.columns:
-            df_top10 = df.sort_values("total_sales", ascending=False).head(10)
-        else:
-            df_top10 = df.head(10)
+        # Rider Details table: show all returned rows (paginated by DataTable)
+        table_df = df.copy()
+        table_columns = [{"name": c, "id": c} for c in table_df.columns]
+        table_data = table_df.to_dict("records")
 
-        table_columns = [{"name": c, "id": c} for c in df_top10.columns]
-        table_data = df_top10.to_dict("records")
-
-        return kpis, fig, table_data, table_columns
+        return kpis, top_metrics, table_data, table_columns
