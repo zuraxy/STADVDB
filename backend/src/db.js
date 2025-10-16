@@ -13,7 +13,6 @@ try {
   const parsed = new URL(connectionString);
   console.log('[db] connecting to:', parsed.hostname);
   const isLocal = ['localhost', '127.0.0.1', '::1'].includes(parsed.hostname);
-  // allow forcing SSL via env var for cloud DBs (e.g. SUPABASE)
   if (process.env.DB_FORCE_SSL === 'true') {
     sslOption = { rejectUnauthorized: false };
   } else {
@@ -28,32 +27,26 @@ const pool = new Pool({
   ssl: sslOption,
   max: 10,
   idleTimeoutMillis: 30000,
-  
-  // Add more logging
-  async onConnect(client) {
-    console.log('[db] 🔧 onConnect triggered!!!'); // This should show if it runs
-    try {
-      const testResult = await client.query('SHOW is_superuser');
-      console.log('[db] User privileges:', testResult.rows[0].is_superuser);
-      
-      await client.query(`
-        SET work_mem = '128MB';
-        SET enable_hashagg = on;
-        SET random_page_cost = 1.1;
-      `);
-      console.log('[db] ✅ Connection configured with available optimizations');
-    } catch (error) {
-      console.log('[db] ❌ Using default settings (pooler limitations):', error.message);
-    }
-  }
 });
 
-// Add this to see pool events
 pool.on('connect', () => {
   console.log('[db] 🔌 Pool connect event fired');
 });
 
+// ACTUAL check for work_mem after pool creation
+(async () => {
+  try {
+    const client = await pool.connect();
+    // Set work_mem and check value
+    await client.query(`SET work_mem = '128MB';`);
+    const result = await client.query('SHOW work_mem;');
+    console.log('[db] ✅ work_mem:', result.rows[0].work_mem);
+    client.release();
+  } catch (error) {
+    console.log('[db] ❌ Could not check work_mem:', error.message);
+  }
+})();
+
 console.log('[db] 📦 Pool created successfully');
 
-// CHANGE THIS LINE - Use CommonJS export instead of ES module export
 module.exports = { pool };

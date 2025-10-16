@@ -180,8 +180,9 @@ async function runPerformanceTests() {
         await testQueryPerformance('QUERY5 - Rider Rankings', queries.QUERY5, ['Philippines']);
         await testQueryPerformance('QUERY6 - Vehicle Deliveries', queries.QUERY6, [2024, 10]);
         
-        // Fix for QUERY7 if needed - skip for now until fixed
-        // await testQueryPerformance('QUERY7 - Top Percentile Analysis', queries.QUERY7, ['2024-01-01', '2024-12-31', 20, 'month']);
+        // QUERY7 - Top Percentile Riders (NOW FIXED!)
+        // Parameters: [country, city, category, percentile_threshold, year, quarter]
+        await testQueryPerformance('QUERY7 - Top Percentile Riders', queries.QUERY7, ['Philippines', null, null, 90, 2024, 4]);
         
         await testQueryPerformance('QUERY8 - Revenue ROLLUP', queries.QUERY8, [2025, 'Philippines', 'Canton', null]);
         await testQueryPerformance('QUERY9 - Enhanced Revenue ROLLUP', queries.QUERY9, [2025, null, null, null]);

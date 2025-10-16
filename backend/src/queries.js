@@ -139,77 +139,100 @@ WHERE
 GROUP BY ROLLUP (d.year, d.month, dr.vehicle_type)
 ORDER BY d.year, d.month, dr.vehicle_type;`;
 
-// Query #7  -> Top percentile categories by quantity with regional sales analysis and YoY growth
-// $1::date  -> start_date (e.g., '2023-01-01')
-// $2::date  -> end_date   (e.g., '2024-12-31')
-// $3::int   -> top_percent (e.g., 20 for top 20%)
-// $4::text  -> granularity ('year', 'quarter', 'month')
+// Query #7 -> Top percentile riders by sales with regional analysis and quarter-over-quarter growth
+// $1::text -> country (optional, pass NULL for all countries, e.g., 'Philippines')
+// $2::text -> city (optional, pass NULL for all cities, e.g., 'Canton')
+// $3::text -> category (optional, pass NULL for all categories, e.g., 'Electronics')
+// $4::int  -> percentile_threshold (e.g., 90 for top 10%, 80 for top 20%)
+// $5::int  -> year (e.g., 2024)
+// $6::int  -> quarter (e.g., 4 for Q4)
 const QUERY7 = 
 `WITH base AS (
-    SELECT 
-        fo.order_date,
-        EXTRACT(YEAR FROM fo.order_date)::int AS yr,
-        EXTRACT(QUARTER FROM fo.order_date)::int AS qtr,
-        EXTRACT(MONTH FROM fo.order_date)::int AS mon,
-        fo.total_price,
-        fo.quantity,
-        dp.category,
-        du.country AS region,
-        du.user_id AS customer_id
-    FROM fact_orders fo
-    JOIN dim_product dp ON fo.product_id = dp.product_id
-    JOIN dim_user du ON fo.user_id = du.user_id
-    WHERE fo.order_date BETWEEN $1::date AND $2::date
-),
-ranked_products AS (
-    SELECT 
-        category,
-        SUM(quantity) AS total_qty,
-        NTILE(100) OVER (ORDER BY SUM(quantity) DESC) AS percentile_rank
-    FROM base
-    GROUP BY category
-),
-filtered AS (
-    SELECT b.*
-    FROM base b
-    JOIN ranked_products rp ON b.category = rp.category
-    WHERE rp.percentile_rank <= $3::int
+    -- Step 0: Gather the raw data with user-input filters
+    SELECT
+        f.fact_id,
+        f.rider_id,
+        f.user_id,
+        f.product_id,
+        f.total_price,
+        f.quantity,
+        d.year,
+        d.quarter,
+        u.city,
+        u.country,
+        p.category,
+        r.courier_name,
+        r.vehicle_type,
+        r.gender AS rider_gender
+    FROM fact_orders AS f
+    JOIN dim_date AS d ON f.delivery_date_id = d.date_id
+    JOIN dim_user AS u ON f.user_id = u.user_id
+    JOIN dim_rider AS r ON f.rider_id = r.rider_id
+    JOIN dim_product AS p ON f.product_id = p.product_id
+    WHERE
+        ($1::text IS NULL OR u.country = $1::text)
+        AND ($2::text IS NULL OR u.city = $2::text)
+        AND ($3::text IS NULL OR p.category = $3::text)
 ),
 agg AS (
-    SELECT 
-        region,
-        category,
-        CASE 
-            WHEN $4 = 'year' THEN yr::text
-            WHEN $4 = 'quarter' THEN yr::text || '-Q' || qtr::text
-            WHEN $4 = 'month' THEN yr::text || '-' || LPAD(mon::text, 2, '0')
-        END AS period,
+    -- Step 1: Aggregate rider performance by region and quarter
+    SELECT
+        country,
+        city,
+        rider_id,
+        courier_name,
+        vehicle_type,
+        rider_gender,
+        year,
+        quarter,
+        COUNT(DISTINCT user_id) AS customers_served,
         SUM(total_price) AS total_sales,
-        COUNT(DISTINCT customer_id) AS customers
-    FROM filtered
-    GROUP BY region, category, period
+        AVG(total_price) AS avg_order_value
+    FROM base
+    GROUP BY country, city, rider_id, courier_name, vehicle_type, rider_gender, year, quarter
+),
+ranked AS (
+    -- Step 2: Compute percentile rank of riders per region and quarter
+    SELECT
+        a.*,
+        PERCENT_RANK() OVER (
+            PARTITION BY country, city, year, quarter 
+            ORDER BY total_sales DESC
+        ) * 100 AS sales_percentile
+    FROM agg a
 ),
 growth AS (
-    SELECT 
-        a1.region,
-        a1.category,
-        a1.period,
-        ROUND(a1.total_sales / NULLIF(a1.customers, 0), 2) AS avg_spend_per_customer,
-        ROUND(((a1.total_sales - a2.total_sales) / NULLIF(a2.total_sales, 0)) * 100, 2) AS sales_growth_pct
-    FROM agg a1
-    LEFT JOIN agg a2
-        ON a1.region = a2.region
-        AND a1.category = a2.category
-        AND (
-            ($4 = 'year' AND a1.period::int = a2.period::int + 1)
-            OR ($4 = 'quarter' AND SPLIT_PART(a1.period, '-Q', 1)::int = SPLIT_PART(a2.period, '-Q', 1)::int + 1
-                                AND SPLIT_PART(a1.period, '-Q', 2)::int = SPLIT_PART(a2.period, '-Q', 2)::int)
-            OR ($4 = 'month' AND TO_DATE(a1.period || '-01', 'YYYY-MM-DD') = TO_DATE(a2.period || '-01', 'YYYY-MM-DD') + INTERVAL '1 month')
-        )
+    -- Step 3: Compare rider performance quarter-over-quarter
+    SELECT
+        r1.country,
+        r1.city,
+        r1.rider_id,
+        r1.courier_name,
+        r1.vehicle_type,
+        r1.rider_gender,
+        CONCAT(r1.year, '-Q', r1.quarter) AS period,
+        r1.total_sales,
+        r1.avg_order_value,
+        r1.customers_served,
+        r1.sales_percentile,
+        ROUND(
+            ((r1.total_sales - r2.total_sales) / NULLIF(r2.total_sales, 0)) * 100,
+            2
+        ) AS sales_growth_pct
+    FROM ranked r1
+    LEFT JOIN ranked r2
+        ON r1.rider_id = r2.rider_id 
+        AND r1.country = r2.country 
+        AND r1.city = r2.city
+        AND r1.year = r2.year + (CASE WHEN r1.quarter = 1 THEN 1 ELSE 0 END)
+        AND r1.quarter = (CASE WHEN r1.quarter = 1 THEN 4 ELSE r1.quarter - 1 END)
 )
+-- Final Step: Select only the top percentile riders for the specified period
 SELECT *
 FROM growth
-ORDER BY region, category, period;`;
+WHERE sales_percentile >= $4::int 
+    AND period = CONCAT($5::int, '-Q', $6::int)
+ORDER BY country, city, period, sales_percentile DESC;`;
 
 // Query #8 -> Revenue analysis with ROLLUP by country, city, and category for a specific year
 // $1::int  -> year (required, e.g., 2025)
