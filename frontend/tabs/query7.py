@@ -66,7 +66,7 @@ def layout():
                 html.Button(
                     "Update",
                     id="q7-submit",
-                    n_clicks=0,
+                    n_clicks=1,
                     style={
                         "backgroundColor": COLORS["primary"],
                         "color": "white",
@@ -251,16 +251,8 @@ def register_callbacks(app):
 
         kpis = [
             html.Div([
-                html.P("Total Sales from Top Riders", style={"margin": 0, "fontWeight": "bold"}),
-                html.H3(f"${total_sales_sum:,.2f}", style={"margin": 0})
-            ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
-            html.Div([
                 html.P("Avg. Customers Served of Riders", style={"margin": 0, "fontWeight": "bold"}),
                 html.H3(f"{avg_customers_served:,.0f}", style={"margin": 0})
-            ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
-            html.Div([
-                html.P("Count of Elite Riders", style={"margin": 0, "fontWeight": "bold"}),
-                html.H3(f"{elite_count:,}", style={"margin": 0})
             ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
         ]
 

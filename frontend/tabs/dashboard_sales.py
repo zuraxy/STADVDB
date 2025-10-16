@@ -12,6 +12,17 @@ def layout():
 
     sections.append(html.H2("Sales & Revenue Performance", style={"marginBottom": "16px"}))
 
+    # Flexible Sales Summary (Query 8) - moved to top
+    sections.append(html.Div(
+        sales_summary.layout().children,
+        style={
+            "backgroundColor": COLORS["card"],
+            "padding": "10px",
+            "borderRadius": "10px",
+            "marginBottom": "16px",
+        },
+    ))
+
     # Revenue Trends (Query 1)
     sections.append(html.Div(
         revenue.layout().children,  # use the existing inner content
@@ -26,17 +37,6 @@ def layout():
     # Moving Average (Query 4)
     sections.append(html.Div(
         moving_avg.layout().children,
-        style={
-            "backgroundColor": COLORS["card"],
-            "padding": "10px",
-            "borderRadius": "10px",
-            "marginBottom": "16px",
-        },
-    ))
-
-    # Flexible Sales Summary (Query 8)
-    sections.append(html.Div(
-        sales_summary.layout().children,
         style={
             "backgroundColor": COLORS["card"],
             "padding": "10px",
