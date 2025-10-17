@@ -20,6 +20,7 @@ from etl_modules import (
 )
 
 def main():
+    start_time = datetime.now()
     try:
         # 1. Initialize connections
         mysql_conn_str, supabase_conn_str = load_env_variables()
@@ -72,6 +73,8 @@ def main():
         record_etl_run(supabase_engine, current_run_timestamp)
         
         print(f"ETL completed successfully at {current_run_timestamp}")
+        elapsed = datetime.now() - start_time
+        print(f"ETL total runtime: {elapsed}")
         
     except Exception as e:
         print(f"Critical error in ETL process: {e}")
