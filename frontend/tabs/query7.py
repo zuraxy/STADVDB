@@ -4,6 +4,15 @@ from dash import dash_table
 import pandas as pd
 from common import COLORS, make_api_request
 
+# Query #7 -> Top percentile riders by sales with regional analysis and quarter-over-quarter growth
+# Backend /query7 expects query params mapping to the SQL placeholders:
+# $1::text -> country (optional, pass NULL for all countries, e.g., 'Philippines')
+# $2::text -> city (optional, pass NULL for all cities, e.g., 'Canton')
+# $3::text -> category (optional, pass NULL for all categories, e.g., 'Electronics')
+# $4::int  -> percentile_threshold (sent as `percentile`, e.g., 90 for top 10%, 80 for top 20%)
+# $5::int  -> year (e.g., 2024)
+# $6::int  -> quarter (e.g., 4 for Q4)
+
 
 def layout():
     return dcc.Tab(label="Top Riders (Q7)", children=[
@@ -120,15 +129,16 @@ def layout():
 
 
 def register_callbacks(app):
-    # Populate categories dropdown from backend (reuse query9 which includes category column)
+    # Populate categories dropdown from backend using query8 (returns a category column)
     @app.callback(
         Output("q7-category", "options"),
-        Input("q7-category", "id"),  # dummy input to trigger once
+        Input("q7-year", "value"),
         prevent_initial_call=False
     )
-    def load_categories(_):
-        # Attempt to fetch categories using a lightweight call
-        rows, _ = make_api_request("query9", {"year": None, "country": None, "city": None, "category": None})
+    def load_categories(year):
+        # Fetch available categories for the selected year
+        params = {"year": year} if year is not None else {"year": 2025}
+        rows, _ = make_api_request("query8", params)
         df = pd.DataFrame(rows)
         if "category" in df.columns:
             cats = [c for c in df["category"].dropna().unique().tolist() if str(c).strip() and str(c).lower() != "all categories"]
@@ -204,6 +214,8 @@ def register_callbacks(app):
             "year": year,
             "quarter": quarter,
         }
+        # Drop None-valued keys to avoid sending literal "None" strings to backend
+        params = {k: v for k, v in params.items() if v is not None}
 
         rows, _ = make_api_request("query7", params)
         df = pd.DataFrame(rows)
