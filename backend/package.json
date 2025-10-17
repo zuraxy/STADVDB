@@ -12,7 +12,7 @@
     "@supabase/supabase-js": "^2.7.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "nodemon": "^2.0.20",
+    "nodemon": "^3.1.10",
     "pg": "^8.16.3"
   }
 }
