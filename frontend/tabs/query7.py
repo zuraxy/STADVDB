@@ -103,14 +103,11 @@ def layout():
                 ),
             ], style={"marginBottom": "20px"}),
 
-            # Top riders by metric (now above KPI cards)
+            # Top riders by metric
             html.Div([
                 html.H4("Top Riders by Metric"),
                 html.Div(id="q7-top-metrics", style={"display": "grid", "gridTemplateColumns": "repeat(2, 1fr)", "gap": "12px"}),
             ], style={"marginBottom": "16px"}),
-
-            # KPI Cards (trimmed)
-            html.Div(id="q7-kpis", style={"display": "flex", "gap": "16px", "marginBottom": "16px"}),
 
             # Rider details table (full width)
             html.Div([
@@ -189,7 +186,6 @@ def register_callbacks(app):
 
     @app.callback(
         [
-            Output("q7-kpis", "children"),
             Output("q7-top-metrics", "children"),
             Output("q7-table", "data"),
             Output("q7-table", "columns"),
@@ -227,46 +223,7 @@ def register_callbacks(app):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # KPI Scorecards (formatting only based on returned rows)
-        total_sales_sum = float(df["total_sales"].sum()) if "total_sales" in df.columns else 0.0
-        # Top performing rider from returned rows (no extra aggregation)
-        top_rider_name = "—"
-        top_rider_sales = 0.0
-        if not df.empty and "courier_name" in df.columns and "total_sales" in df.columns:
-            s = pd.to_numeric(df["total_sales"], errors="coerce")
-            if s.notna().any():
-                top_idx = s.idxmax()
-                top_rider_name = str(df.at[top_idx, "courier_name"]) if top_idx in df.index else "—"
-                try:
-                    top_rider_sales = float(s.at[top_idx])
-                except Exception:
-                    top_rider_sales = 0.0
-        avg_customers_served = float(df["customers_served"].mean()) if "customers_served" in df.columns and len(df) else 0.0
-        elite_count = int(df["rider_id"].nunique()) if "rider_id" in df.columns else 0
-
-        # Derive deliveries count per rider row using SUM/AVG relationship: count ≈ total_sales / avg_order_value
-        # This avoids extra aggregation and uses only fields returned by backend QUERY7
-        top_deliveries_name = "—"
-        top_deliveries_count = 0
-        if "total_sales" in df.columns and "avg_order_value" in df.columns and not df.empty:
-            ts = pd.to_numeric(df["total_sales"], errors="coerce")
-            aov = pd.to_numeric(df["avg_order_value"], errors="coerce")
-            deliveries_calc = (ts / aov).where((aov > 0) & ts.notna() & aov.notna())
-            if deliveries_calc.notna().any():
-                # Round to nearest whole delivery
-                deliveries_calc = deliveries_calc.round()
-                max_idx = deliveries_calc.idxmax()
-                if max_idx in df.index:
-                    top_deliveries_count = int(deliveries_calc.at[max_idx]) if pd.notna(deliveries_calc.at[max_idx]) else 0
-                    if "courier_name" in df.columns:
-                        top_deliveries_name = str(df.at[max_idx, "courier_name"]) or "—"
-
-        kpis = [
-            html.Div([
-                html.P("Avg. Customers Served of Riders", style={"margin": 0, "fontWeight": "bold"}),
-                html.H3(f"{avg_customers_served:,.0f}", style={"margin": 0})
-            ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "flex": 1, "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"}),
-        ]
+        # No extra KPIs; only top two metric cards are displayed
 
         # Build Top Metrics cards
         def metric_card(title, name, value_fmt):
@@ -288,16 +245,27 @@ def register_callbacks(app):
                     return rider, val
             return "—", None
 
+        def bottom_by(col):
+            if col in df.columns and not df.empty:
+                s = pd.to_numeric(df[col], errors="coerce")
+                if s.notna().any():
+                    idx = s.idxmin()
+                    rider_name = str(df.at[idx, "courier_name"]) if "courier_name" in df.columns and idx in df.index else "—"
+                    rider_id = str(df.at[idx, "rider_id"]) if "rider_id" in df.columns and idx in df.index else "—"
+                    rider = f"{rider_name} (ID: {rider_id})" if rider_name != "—" and rider_id != "—" else rider_name
+                    val = s.at[idx] if pd.notna(s.at[idx]) else None
+                    return rider, val
+            return "—", None
+
         ts_name, ts_val = top_by("total_sales")
         aov_name, aov_val = top_by("avg_order_value")
-        cs_name, cs_val = top_by("customers_served")
-        growth_name, growth_val = top_by("sales_growth_pct")
-
+        ts_min_name, ts_min_val = bottom_by("total_sales")
+        aov_min_name, aov_min_val = bottom_by("avg_order_value")
         top_metrics = [
             metric_card("Highest Total Sales Rider", ts_name, (f"${ts_val:,.2f}" if ts_val is not None else "—")),
             metric_card("Highest Average Order Value Rider", aov_name, (f"${aov_val:,.2f}" if aov_val is not None else "—")),
-            metric_card("Most Customers Served Rider", cs_name, (f"{int(cs_val):,}" if cs_val is not None else "—")),
-            metric_card("Fastest Growing Rider (QoQ)", growth_name, (f"{growth_val:.2f}%" if growth_val is not None else "—")),
+            metric_card("Lowest Total Sales Rider", ts_min_name, (f"${ts_min_val:,.2f}" if ts_min_val is not None else "—")),
+            metric_card("Lowest Average Order Value Rider", aov_min_name, (f"${aov_min_val:,.2f}" if aov_min_val is not None else "—")),
         ]
 
         # Rider Details table: show all returned rows (paginated by DataTable)
@@ -305,4 +273,4 @@ def register_callbacks(app):
         table_columns = [{"name": c, "id": c} for c in table_df.columns]
         table_data = table_df.to_dict("records")
 
-        return kpis, top_metrics, table_data, table_columns
+        return top_metrics, table_data, table_columns
