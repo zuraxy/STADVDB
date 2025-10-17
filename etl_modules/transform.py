@@ -12,6 +12,16 @@ def _singularize_simple(token: str) -> str:
         return t[:-1]                # bags -> bag, toys -> toy, gadgets -> gadget
     return t
 
+def _normalize_gender(value):
+    if pd.isna(value):
+        return None
+    s = str(value).strip().lower()
+    if s in ('F', 'Female'):
+        return 'F'
+    if s in ('M', 'Male'):
+        return 'M'
+    return None
+
 def transform_product_dimension(products_df):
     """Transform product data into dim_product table"""
     dim_product = products_df[['id', 'name', 'category', 'price', 'updatedAt']].copy()
@@ -28,6 +38,8 @@ def transform_user_dimension(users_df):
     """Transform user data into dim_user table"""
     dim_user = users_df[['id', 'city', 'country', 'gender', 'dateOfBirth', 'updatedAt']].copy()
     dim_user = dim_user.rename(columns={'id': 'user_id', 'dateOfBirth': 'date_of_birth_raw'})
+    # Normalize gender to 'F' or 'M'
+    dim_user['gender'] = dim_user['gender'].apply(_normalize_gender)
     dim_user = dim_user.drop_duplicates(subset=['user_id'])
 
     # Parse date_of_birth with multiple formats
