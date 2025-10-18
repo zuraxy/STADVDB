@@ -139,30 +139,33 @@ WHERE
 GROUP BY ROLLUP (d.year, d.month, dr.vehicle_type)
 ORDER BY d.year, d.month, dr.vehicle_type;`;
 
-// Query #7 -> Top percentile riders by revenue in a specific country and quarter
-// $1::text -> country (required, e.g., 'Philippines')
-// $2::int  -> year (required, e.g., 2025)
-// $3::int  -> quarter (required, e.g., 1)
-// $4::int  -> percentile_threshold (e.g., 10 for top 10%, 20 for top 20%)
+//This query identifies the top X% of riders in total revenue in a particular COUNTRY in a particular quarterly time period with time based on delivery date. Include also previous sales records
+// (to put simply, Top X% riders in _ Country, _ Period)
+
+// $1::text -> year
+// $2::text -> quarter
+// $3::text -> previous year 
+// $4::int  -> previous quarter
+// $5::text  -> country
+// $6::int -> percentile
 const QUERY7 = 
 `WITH rider_quarterly AS (
     SELECT
         du.country, 
         fo.rider_id,
-        dd.year, dd.quarter, 
+        dd.year,dd.quarter, 
         SUM(fo.total_price) AS total_sales,
         COUNT(DISTINCT fo.user_id) AS customers_served
     FROM fact_orders AS fo
     JOIN dim_date AS dd 
         ON fo.delivery_date_id = dd.date_id
         AND (
-            (dd.year = $2::int AND dd.quarter = $3::int)  -- current quarter
-             OR (dd.year = CASE WHEN $3::int = 1 THEN $2::int - 1 ELSE $2::int END 
-                AND dd.quarter = CASE WHEN $3::int = 1 THEN 4 ELSE $3::int - 1 END)  -- previous quarter
+            (dd.year = $1::int AND dd.quarter = $2::int)  -- current quarter
+             OR (dd.year = $3::int AND dd.quarter = $4::int)  -- previous quarter
         )
     JOIN dim_user AS du 
         ON fo.user_id = du.user_id
-        AND du.country = $1::text
+        AND du.country = $5::text
     GROUP BY du.country, fo.rider_id, dd.year, dd.quarter
 ),
 
@@ -200,16 +203,14 @@ SELECT
     CONCAT(year, '-Q', quarter) AS period,
     rider_id,
     total_sales,
-    prev_quarter_sales, 
-    sales_growth_pct,
-    customers_served, 
-    sales_percentile
+    prev_quarter_sales, sales_growth_pct,
+    customers_served, sales_percentile
 FROM ranked_with_growth
 WHERE
-    year = $2::int
-    AND quarter = $3::int
-    AND sales_percentile <= $4::int   
-ORDER BY country, total_sales DESC;`;
+   CONCAT(year, '-Q', quarter) = CONCAT($1::int, '-Q', $2::int)
+    AND sales_percentile <= $6::int  
+ORDER BY country, total_sales DESC;
+`;
 
 // Query #8 -> Revenue analysis with ROLLUP by country, city, and category for a specific year
 // $1::int  -> year (required, e.g., 2025)
