@@ -127,14 +127,12 @@ app.get('/query6', async (req, res) => {
 
 // Query 7: Top Percentile Riders
 app.get('/query7', async (req, res) => {
-  const country = req.query.country || null;
-  const city = req.query.city || null;
-  const category = req.query.category || null;
-  const percentile_threshold = req.query.percentile || 90;
-  const year = req.query.year ? parseInt(req.query.year) : 2024;
-  const quarter = req.query.quarter ? parseInt(req.query.quarter) : 4;
+  const country = req.query.country || 'Philippines'; // Now required, provide default
+  const year = req.query.year ? parseInt(req.query.year) : 2025;
+  const quarter = req.query.quarter ? parseInt(req.query.quarter) : 1;
+  const percentile_threshold = req.query.percentile ? parseInt(req.query.percentile) : 10;
   
-  const params = [country, city, category, percentile_threshold, year, quarter];
+  const params = [country, year, quarter, percentile_threshold];
 
   const startTime = process.hrtime.bigint();
   try {
