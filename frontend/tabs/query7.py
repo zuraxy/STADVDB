@@ -1,75 +1,49 @@
 from dash import html, dcc, Input, Output, State
 import dash
 from dash import dash_table
+import plotly.express as px
 import pandas as pd
 from common import COLORS, make_api_request
 
-# Query #7 -> Top percentile riders by sales with regional analysis and quarter-over-quarter growth
-# Backend /query7 expects query params mapping to the SQL placeholders:
-# $1::text -> country (optional, pass NULL for all countries, e.g., 'Philippines')
-# $2::text -> city (optional, pass NULL for all cities, e.g., 'Canton')
-# $3::text -> category (optional, pass NULL for all categories, e.g., 'Electronics')
-# $4::int  -> percentile_threshold (sent as `percentile`, e.g., 90 for top 10%, 80 for top 20%)
-# $5::int  -> year (e.g., 2024)
-# $6::int  -> quarter (e.g., 4 for Q4)
+# New Query #7 backend contract (/query7):
+# Params: country (text, optional), percentile (int, e.g., 10 for Top 10%), year (int), quarter (1-4)
+# Returns rows for the selected period only with columns:
+# country, period (e.g., '2025-Q1'), rider_id, total_sales, prev_quarter_sales,
+# sales_growth_pct, customers_served, sales_percentile
 
 
 def layout():
     return dcc.Tab(label="Top Riders (Q7)", children=[
         html.Div([
-            html.H2("Top Riders Analytical Report", style={"marginBottom": "16px"}),
+            html.H2("Top Percentile Riders", style={"marginBottom": "16px"}),
 
-            # Filters (Slice & Dice) - mirror backend parameters exactly
+            # Filters mapped 1:1 to backend params
             html.Div([
                 html.Div([
                     html.Label("Country:"),
                     dcc.Dropdown(
                         id="q7-country",
-                        options=[],
-                        value=None,
-                        placeholder="All countries",
-                        clearable=True,
+                        options=[{"label": "Philippines", "value": "Philippines"}],
+                        value="Philippines",
+                        placeholder="Select country",
+                        clearable=False,
                         style={"minWidth": "240px"}
                     ),
                 ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "260px"}),
 
                 html.Div([
-                    html.Label("City:"),
-                    dcc.Dropdown(
-                        id="q7-city",
-                        options=[],
-                        value=None,
-                        placeholder="All cities",
-                        clearable=True,
-                        style={"minWidth": "240px"}
-                    ),
+                    html.Label("Percentile threshold (Top X%):"),
+                    dcc.Input(id="q7-percentile", type="number", min=0, max=100, step=1, value=10),
                 ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "260px"}),
-
-                html.Div([
-                    html.Label("Category:"),
-                    dcc.Dropdown(
-                        id="q7-category",
-                        options=[],
-                        value=None,
-                        placeholder="Select a category (optional)",
-                        clearable=True,
-                        style={"minWidth": "220px"}
-                    ),
-                ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "240px"}),
-
-                html.Div([
-                    html.Label("Percentile Threshold (e.g., 90 = Top 10%):"),
-                    dcc.Input(id="q7-percentile", type="number", min=0, max=100, step=1, value=90),
-                ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "280px"}),
 
                 html.Div([
                     html.Label("Year:"),
-                    dcc.Input(id="q7-year", type="number", placeholder="e.g. 2024", value=2024),
+                    dcc.Input(id="q7-year", type="number", placeholder="e.g. 2025", value=2025),
                 ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "160px"}),
 
                 html.Div([
                     html.Label("Quarter (1-4):"),
-                    dcc.Input(id="q7-quarter", type="number", min=1, max=4, step=1, value=4),
+                    dcc.Input(id="q7-quarter", type="number", min=1, max=4, step=1, value=1),
                 ], style={"display": "inline-block", "marginRight": "16px", "minWidth": "160px"}),
 
                 html.Button(
@@ -84,34 +58,27 @@ def layout():
                         "borderRadius": "6px",
                         "cursor": "pointer",
                         "marginTop": "22px",
-                        "marginRight": "8px",
                     },
                 ),
-                html.Button(
-                    "Back",
-                    id="q7-back",
-                    n_clicks=0,
-                    style={
-                        "backgroundColor": COLORS["secondary"],
-                        "color": "white",
-                        "border": "none",
-                        "padding": "10px 16px",
-                        "borderRadius": "6px",
-                        "cursor": "pointer",
-                        "marginTop": "22px",
-                    },
-                ),
-            ], style={"marginBottom": "20px"}),
-
-            # Top riders by metric
-            html.Div([
-                html.H4("Top Riders by Metric"),
-                html.Div(id="q7-top-metrics", style={"display": "grid", "gridTemplateColumns": "repeat(2, 1fr)", "gap": "12px"}),
             ], style={"marginBottom": "16px"}),
 
-            # Rider details table (full width)
+            # KPI highlights (no aggregation beyond simple selection)
             html.Div([
-                html.H4("Rider Details"),
+                html.Div(id="q7-kpi-cards", style={"display": "grid", "gridTemplateColumns": "repeat(3, 1fr)", "gap": "12px"}),
+            ], style={"marginBottom": "16px"}),
+
+            # Charts
+            html.Div([
+                dcc.Loading(dcc.Graph(id="q7-bar-total-sales"), type="circle"),
+            ], style={"backgroundColor": COLORS['card'], "padding": "12px", "borderRadius": "10px", "marginBottom": "14px"}),
+
+            html.Div([
+                dcc.Loading(dcc.Graph(id="q7-scatter-growth"), type="circle"),
+            ], style={"backgroundColor": COLORS['card'], "padding": "12px", "borderRadius": "10px", "marginBottom": "14px"}),
+
+            # Raw rows table
+            html.Div([
+                html.H4("Rider rows (backend output)"),
                 dash_table.DataTable(
                     id="q7-table",
                     page_action="native",
@@ -126,151 +93,126 @@ def layout():
 
 
 def register_callbacks(app):
-    # Populate categories dropdown from backend using query8 (returns a category column)
+    # Populate Country dropdown from Query 8 we just get the list of countries any query where country retursn works
     @app.callback(
-        Output("q7-category", "options"),
+        Output("q7-country", "options"),
         Input("q7-year", "value"),
-        prevent_initial_call=False
-    )
-    def load_categories(year):
-        # Fetch available categories for the selected year
-        params = {"year": year} if year is not None else {"year": 2025}
-        rows, _ = make_api_request("query8", params)
-        df = pd.DataFrame(rows)
-        if "category" in df.columns:
-            cats = [c for c in df["category"].dropna().unique().tolist() if str(c).strip() and str(c).lower() != "all categories"]
-            cats.sort()
-            return [{"label": c, "value": c} for c in cats]
-        return []
-
-    # Populate Country/City options using Query 8 (no extra aggregation)
-    @app.callback(
-        [Output("q7-country", "options"), Output("q7-city", "options")],
-        [Input("q7-year", "value"), Input("q7-country", "value")],
         prevent_initial_call=False,
     )
-    def load_countries_cities(year, country):
-        rows, _ = make_api_request("query8", {"year": year, "country": country or None, "city": None, "category": None})
+    def load_countries(year):
+        rows, _ = make_api_request("query8", {"year": year or 2025})
         df = pd.DataFrame(rows)
-        country_opts = []
-        city_opts = []
-        if not df.empty:
-            # Countries: rollup rows (All Cities, All Categories), excluding Grand Total
-            df_num = df.copy()
-            if "total_revenue" in df_num.columns:
-                df_num["total_revenue"] = pd.to_numeric(df_num["total_revenue"], errors="coerce")
-            countries = df[(df["city"] == "All Cities") & (df["category"] == "All Categories") & (df["country"] != "Grand Total")]["country"].dropna().unique().tolist()
-            country_opts = [{"label": c, "value": c} for c in sorted(countries)]
-            # Cities: rollup city totals at All Categories for selected country
-            if country:
-                cities = df[(df["country"] == country) & (df["city"] != "All Cities") & (df["category"] == "All Categories")]["city"].dropna().unique().tolist()
-                city_opts = [{"label": c, "value": c} for c in sorted(cities)]
-        return country_opts, city_opts
+        options = [{"label": "Philippines", "value": "Philippines"}]
+        if not df.empty and "country" in df.columns:
+            mask = (df.get("city").fillna("") == "All Cities") & (df.get("category").fillna("") == "All Categories") & (df.get("country").fillna("") != "Grand Total")
+            country_vals = df.loc[mask, "country"].dropna().unique().tolist()
 
-    # Back button: clear city, then country
-    @app.callback(
-        [Output("q7-city", "value"), Output("q7-country", "value")],
-        Input("q7-back", "n_clicks"),
-        State("q7-city", "value"),
-        State("q7-country", "value"),
-        prevent_initial_call=True,
-    )
-    def back_drill(n, city, country):
-        if not n:
-            raise dash.exceptions.PreventUpdate
-        if city:
-            return None, country
-        if country:
-            return None, None
-        raise dash.exceptions.PreventUpdate
+            if "Philippines" not in country_vals:
+                country_vals.append("Philippines")
+            country_vals = sorted(set(country_vals))
+            options = [{"label": c, "value": c} for c in country_vals]
+        return options
 
     @app.callback(
         [
-            Output("q7-top-metrics", "children"),
+            Output("q7-kpi-cards", "children"),
+            Output("q7-bar-total-sales", "figure"),
+            Output("q7-scatter-growth", "figure"),
             Output("q7-table", "data"),
             Output("q7-table", "columns"),
         ],
         Input("q7-submit", "n_clicks"),
         State("q7-country", "value"),
-        State("q7-city", "value"),
-        State("q7-category", "value"),
         State("q7-percentile", "value"),
         State("q7-year", "value"),
         State("q7-quarter", "value"),
     )
-    def update_q7(n_clicks, country, city, category, percentile, year, quarter):
+    def update_q7(n_clicks, country, percentile, year, quarter):
         if not n_clicks:
             raise dash.exceptions.PreventUpdate
 
+        country = country or "Philippines"
+        percentile = 10 if (percentile is None or percentile == "") else int(percentile)
+        year = 2025 if (year is None or year == "") else int(year)
+        quarter = 1 if (quarter is None or quarter == "") else int(quarter)
+
         params = {
-            "country": country if country else None,
-            "city": city if city else None,
-            "category": category if category else None,
-            "percentile": percentile if percentile is not None else 90,
+            "country": country,
+            "percentile": percentile,
             "year": year,
             "quarter": quarter,
         }
-        # Drop None-valued keys to avoid sending literal "None" strings to backend
-        params = {k: v for k, v in params.items() if v is not None}
 
         rows, _ = make_api_request("query7", params)
         df = pd.DataFrame(rows)
 
-        # Ensure fields are present and numeric where needed; no extra aggregations beyond formatting
-        for col in [
-            "total_sales", "avg_order_value", "customers_served", "sales_percentile", "sales_growth_pct"
-        ]:
+        for col in ["total_sales", "prev_quarter_sales", "sales_growth_pct", "customers_served", "sales_percentile"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # No extra KPIs; only top two metric cards are displayed
-
-        # Build Top Metrics cards
-        def metric_card(title, name, value_fmt):
+        def kpi_card(title, value):
             return html.Div([
                 html.P(title, style={"margin": 0, "fontWeight": "bold"}),
-                html.H3(name or "—", style={"margin": 0}),
-                html.P(value_fmt, style={"margin": 0, "color": "#555"}),
+                html.H3(value if value is not None else "—", style={"margin": 0}),
             ], style={"backgroundColor": COLORS["card"], "padding": "14px", "borderRadius": "8px", "textAlign": "center", "boxShadow": "0 2px 6px rgba(0,0,0,0.08)"})
 
-        def top_by(col):
-            if col in df.columns and not df.empty:
-                s = pd.to_numeric(df[col], errors="coerce")
-                if s.notna().any():
-                    idx = s.idxmax()
-                    rider_name = str(df.at[idx, "courier_name"]) if "courier_name" in df.columns and idx in df.index else "—"
-                    rider_id = str(df.at[idx, "rider_id"]) if "rider_id" in df.columns and idx in df.index else "—"
-                    rider = f"{rider_name} (ID: {rider_id})" if rider_name != "—" and rider_id != "—" else rider_name
-                    val = s.at[idx] if pd.notna(s.at[idx]) else None
-                    return rider, val
-            return "—", None
-
-        def bottom_by(col):
-            if col in df.columns and not df.empty:
-                s = pd.to_numeric(df[col], errors="coerce")
-                if s.notna().any():
-                    idx = s.idxmin()
-                    rider_name = str(df.at[idx, "courier_name"]) if "courier_name" in df.columns and idx in df.index else "—"
-                    rider_id = str(df.at[idx, "rider_id"]) if "rider_id" in df.columns and idx in df.index else "—"
-                    rider = f"{rider_name} (ID: {rider_id})" if rider_name != "—" and rider_id != "—" else rider_name
-                    val = s.at[idx] if pd.notna(s.at[idx]) else None
-                    return rider, val
-            return "—", None
-
-        ts_name, ts_val = top_by("total_sales")
-        aov_name, aov_val = top_by("avg_order_value")
-        ts_min_name, ts_min_val = bottom_by("total_sales")
-        aov_min_name, aov_min_val = bottom_by("avg_order_value")
-        top_metrics = [
-            metric_card("Highest Total Sales Rider", ts_name, (f"${ts_val:,.2f}" if ts_val is not None else "—")),
-            metric_card("Highest Average Order Value Rider", aov_name, (f"${aov_val:,.2f}" if aov_val is not None else "—")),
-            metric_card("Lowest Total Sales Rider", ts_min_name, (f"${ts_min_val:,.2f}" if ts_min_val is not None else "—")),
-            metric_card("Lowest Average Order Value Rider", aov_min_name, (f"${aov_min_val:,.2f}" if aov_min_val is not None else "—")),
+        cards = [
+            kpi_card("Period", df["period"].iloc[0] if not df.empty and "period" in df.columns else f"{year}-Q{quarter}"),
+            kpi_card("Country", country),
+            kpi_card("Top Percentile", f"Top {percentile}%"),
         ]
 
-        # Rider Details table: show all returned rows (paginated by DataTable)
-        table_df = df.copy()
-        table_columns = [{"name": c, "id": c} for c in table_df.columns]
-        table_data = table_df.to_dict("records")
+        if not df.empty and "total_sales" in df.columns:
+            idx = df["total_sales"].idxmax()
+            if idx is not None:
+                rid = df.at[idx, "rider_id"] if "rider_id" in df.columns else None
+                val = df.at[idx, "total_sales"]
+                cards.append(kpi_card("Top Rider by Sales","Rider: " f"{rid} | ${val:,.2f}" if pd.notna(val) else str(rid)))
+        if not df.empty and "sales_growth_pct" in df.columns:
+            idx = df["sales_growth_pct"].idxmax()
+            if idx is not None:
+                rid = df.at[idx, "rider_id"] if "rider_id" in df.columns else None
+                val = df.at[idx, "sales_growth_pct"]
+                cards.append(kpi_card("Best QoQ Growth", "Rider:" f"{rid} | {val:.2f}%" if pd.notna(val) else str(rid)))
 
-        return top_metrics, table_data, table_columns
+        if df.empty:
+            bar_fig = px.scatter(title="No data for selection")
+            bar_fig.add_annotation(text="No data available", xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False)
+            scatter_fig = bar_fig
+            table_data, table_cols = [], []
+        else:
+            plot_df = df.copy()
+
+            if "total_sales" in plot_df.columns:
+                plot_df = plot_df.sort_values("total_sales", ascending=False)
+
+            bar_fig = px.bar(
+                plot_df,
+                x="rider_id",
+                y="total_sales",
+                color="sales_growth_pct" if "sales_growth_pct" in plot_df.columns else None,
+                title="Total Sales by Rider",
+                labels={"rider_id": "Rider", "total_sales": "Total Sales", "sales_growth_pct": "QoQ %"},
+                text="sales_percentile" if "sales_percentile" in plot_df.columns else None,
+            )
+            bar_fig.update_traces(texttemplate="%{text:.1f}%" if "sales_percentile" in plot_df.columns else None)
+            bar_fig.update_layout(xaxis_title="Rider", yaxis_title="Total Sales")
+
+
+            scatter_fig = px.scatter(
+                plot_df,
+                x="prev_quarter_sales" if "prev_quarter_sales" in plot_df.columns else None,
+                y="total_sales" if "total_sales" in plot_df.columns else None,
+                size="customers_served" if "customers_served" in plot_df.columns else None,
+                color="sales_growth_pct" if "sales_growth_pct" in plot_df.columns else None,
+                hover_data=[c for c in ["rider_id", "sales_percentile", "period", "country"] if c in plot_df.columns],
+                title="Quarter-over-Quarter Performance",
+                labels={"prev_quarter_sales": "Prev Quarter", "total_sales": "Current Quarter"},
+            )
+            scatter_fig.update_layout(xaxis_title="Prev Quarter Sales", yaxis_title="Current Quarter Sales")
+
+            # Table
+            table_cols = [{"name": c, "id": c} for c in df.columns]
+            table_data = df.to_dict("records")
+
+        return cards, bar_fig, scatter_fig, table_data, table_cols
