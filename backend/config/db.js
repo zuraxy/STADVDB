@@ -10,14 +10,14 @@ const nodes = {
   }),
   Node2: new Pool({
     host: 'ccscloud.dlsu.edu.ph',
-    port: 60133,
+    port: 60833,
     user: 'postgres',
     password: '',
     database: 'testdb2',
   }),
   Node3: new Pool({
     host: 'ccscloud.dlsu.edu.ph',
-    port: 60134,
+    port: 60834,
     user: 'postgres',
     password: '',
     database: 'testdb3',

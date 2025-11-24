@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const nodes = require('../db');
+const nodes = require('../config/db');
 
 router.get('/test/:node', async (req, res) => {
   const nodeName = req.params.node;
