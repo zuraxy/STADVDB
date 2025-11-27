@@ -8,22 +8,60 @@ from sqlalchemy.engine.url import make_url
 from dotenv import load_dotenv
 
 def load_env_variables():
-    """Load environment variables from .env file"""
+    """Load environment variables from .env file
+
+    Tolerant lookup: accept multiple common env var names for backward compatibility.
+    Returns (mysql_conn_str, supabase_conn_str_optimized)
+    """
     load_dotenv()
-    mysql_conn_str = os.environ.get("MYSQL_CONNECTION_STRING")
-    supabase_conn_str = os.environ.get("SUPABASE_CONNECTION_STRING")
-    
-    # Optimize Supabase connection string
-    parsed_url = urllib.parse.urlparse(supabase_conn_str)
-    query_params = urllib.parse.parse_qs(parsed_url.query)
-    query_params.update({
-        'connect_timeout': ['30']  # Only keep the connect_timeout parameter
-    })
-    new_query = urllib.parse.urlencode(query_params, doseq=True)
-    url_parts = list(parsed_url)
-    url_parts[4] = new_query
-    supabase_conn_str_optimized = urllib.parse.urlunparse(url_parts)
-    
+
+    # Prefer canonical names but accept common legacy/alternate names
+    mysql_keys = ["MYSQL_CONNECTION_STRING", "MYSQL_CONN_STR", "MYSQL_URL", "MYSQL_CONNECTION"]
+    supabase_keys = ["SUPABASE_CONNECTION_STRING", "SUPABASE_CONN_STR", "SUPABASE_POOL_STRING", "SUPABASE_CONNECTION"]
+
+    def first_env(keys):
+        for k in keys:
+            v = os.environ.get(k)
+            if v:
+                return k, v
+        return None, None
+
+    used_mysql_key, mysql_conn_str = first_env(mysql_keys)
+    used_sup_key, supabase_conn_str = first_env(supabase_keys)
+
+    if mysql_conn_str is None:
+        print("Warning: MYSQL connection string not found in environment. Checked keys: " + ", ".join(mysql_keys))
+    elif used_mysql_key != mysql_keys[0]:
+        print(f"Warning: using fallback env var '{used_mysql_key}' for MySQL connection string")
+
+    if supabase_conn_str is None:
+        print("Warning: SUPABASE connection string not found in environment. Checked keys: " + ", ".join(supabase_keys))
+    elif used_sup_key != supabase_keys[0]:
+        print(f"Warning: using fallback env var '{used_sup_key}' for Supabase connection string")
+
+    # Optimize Supabase connection string by ensuring a reasonable connect_timeout param
+    supabase_conn_str_optimized = supabase_conn_str
+    if supabase_conn_str:
+        try:
+            parsed_url = urllib.parse.urlparse(supabase_conn_str)
+            query_params = urllib.parse.parse_qs(parsed_url.query)
+            # set or override connect_timeout (use list values to be compatible with urlencode doseq)
+            query_params.setdefault('connect_timeout', ['30'])
+            new_query = urllib.parse.urlencode(query_params, doseq=True)
+            parsed_url_with_query = parsed_url._replace(query=new_query)
+            # Ensure all components are strings before un-parsing
+            parts = []
+            for comp in parsed_url_with_query:
+                if comp is None:
+                    parts.append("")
+                elif isinstance(comp, str):
+                    parts.append(comp)
+                else:
+                    parts.append(str(comp))
+            supabase_conn_str_optimized = urllib.parse.urlunparse(parts)
+        except Exception as e:
+            print(f"Warning: failed to parse/optimize SUPABASE connection string ({e}), using original value")
+
     return mysql_conn_str, supabase_conn_str_optimized
 
 def create_robust_engine(conn_str, retries=5, delay=5, pool_size=5, max_overflow=10, name=None):
