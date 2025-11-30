@@ -99,26 +99,26 @@ export default function App() {
                 <div className="p-6 bg-green-50 border-2 border-green-200 rounded-lg">
                   <h3 className="font-bold text-green-800 mb-3">Node 1: Central Node</h3>
                   <ul className="space-y-2 text-sm text-green-700">
-                    <li>• Stores complete dataset</li>
+                    <li>• Stores complete orders dataset</li>
                     <li>• Acts as master replica</li>
-                    <li>• All departments included</li>
+                    <li>• All orders included</li>
                     <li>• Primary transaction coordinator</li>
                   </ul>
                 </div>
                 <div className="p-6 bg-yellow-50 border-2 border-yellow-200 rounded-lg">
-                  <h3 className="font-bold text-yellow-800 mb-3">Node 2: Sales Fragment</h3>
+                  <h3 className="font-bold text-yellow-800 mb-3">Node 2: Fragment 1</h3>
                   <ul className="space-y-2 text-sm text-yellow-700">
                     <li>• Horizontal fragmentation</li>
-                    <li>• Department = 'Sales'</li>
-                    <li>• Optimized for sales queries</li>
+                    <li>• Even order_id partition</li>
+                    <li>• Optimized for distributed queries</li>
                     <li>• Regional distribution ready</li>
                   </ul>
                 </div>
                 <div className="p-6 bg-blue-50 border-2 border-blue-200 rounded-lg">
-                  <h3 className="font-bold text-blue-800 mb-3">Node 3: Engineering/HR</h3>
+                  <h3 className="font-bold text-blue-800 mb-3">Node 3: Fragment 2</h3>
                   <ul className="space-y-2 text-sm text-blue-700">
                     <li>• Complementary fragment</li>
-                    <li>• Department ≠ 'Sales'</li>
+                    <li>• Odd order_id partition</li>
                     <li>• No data overlap with Node 2</li>
                     <li>• Node 2 + Node 3 = Node 1</li>
                   </ul>

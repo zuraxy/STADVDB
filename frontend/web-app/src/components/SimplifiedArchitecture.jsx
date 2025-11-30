@@ -35,23 +35,23 @@ export function SimplifiedArchitecture({ activeScenario, isRunning }) {
             { 
               id: 1, 
               title: 'Central Node',
-              subtitle: 'All Records',
+              subtitle: 'All Orders',
               color: 'from-green-400 to-emerald-500',
               data: 'Complete Dataset'
             },
             { 
               id: 2, 
               title: 'Fragment Node',
-              subtitle: 'Sales Dept',
+              subtitle: 'Even Orders',
               color: 'from-yellow-400 to-orange-500',
-              data: 'Sales Only'
+              data: 'Fragment 1'
             },
             { 
               id: 3, 
               title: 'Fragment Node',
-              subtitle: 'Engineering/HR',
+              subtitle: 'Odd Orders',
               color: 'from-blue-400 to-indigo-500',
-              data: 'Non-Sales'
+              data: 'Fragment 2'
             }
           ].map((node, index) => (
             <motion.div
@@ -141,12 +141,12 @@ export function SimplifiedArchitecture({ activeScenario, isRunning }) {
             <div className="flex items-center gap-4 text-sm">
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-yellow-500" />
-                <span className="text-gray-700">Node 2: Sales</span>
+                <span className="text-gray-700">Node 2: Even Order IDs</span>
               </div>
               <div className="w-px h-4 bg-gray-300" />
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-blue-500" />
-                <span className="text-gray-700">Node 3: Engineering/HR</span>
+                <span className="text-gray-700">Node 3: Odd Order IDs</span>
               </div>
               <div className="w-px h-4 bg-gray-300" />
               <span className="text-cyan-700 font-semibold">= Node 1 Complete Data</span>

@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Database, Server, Activity, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
+import { Database, Server, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import { fetchAllOrders } from '../services/api';
 
 export function DatabaseDashboard() {
   const [data, setData] = useState({
@@ -12,32 +14,44 @@ export function DatabaseDashboard() {
     node3: []
   });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [nodeStatus, setNodeStatus] = useState({
-    node1: 'active',
-    node2: 'active',
-    node3: 'active'
+    node1: 'checking',
+    node2: 'checking',
+    node3: 'checking'
   });
 
-  // Mock data - replace with actual API calls
-  useEffect(() => {
-    // Simulate data fetch
-    setTimeout(() => {
-      setData({
-        node1: [
-          { id: 1, name: 'Alice', email: 'alice@example.com', department: 'Sales', salary: 50000 },
-          { id: 2, name: 'Bob', email: 'bob@example.com', department: 'Engineering', salary: 75000 },
-          { id: 3, name: 'Charlie', email: 'charlie@example.com', department: 'Sales', salary: 55000 },
-        ],
-        node2: [
-          { id: 1, name: 'Alice', email: 'alice@example.com', department: 'Sales', salary: 50000 },
-          { id: 3, name: 'Charlie', email: 'charlie@example.com', department: 'Sales', salary: 55000 },
-        ],
-        node3: [
-          { id: 2, name: 'Bob', email: 'bob@example.com', department: 'Engineering', salary: 75000 },
-        ]
+  const fetchData = async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const orders = await fetchAllOrders();
+      
+      setData(orders);
+      setNodeStatus({
+        node1: orders.node1.length >= 0 ? 'online' : 'error',
+        node2: orders.node2.length >= 0 ? 'online' : 'error',
+        node3: orders.node3.length >= 0 ? 'online' : 'error'
       });
+    } catch (err) {
+      console.error('Failed to fetch orders:', err);
+      setError(err.message || 'Failed to connect to database nodes');
+      setNodeStatus({
+        node1: 'error',
+        node2: 'error',
+        node3: 'error'
+      });
+    } finally {
       setLoading(false);
-    }, 1000);
+    }
+  };
+
+  useEffect(() => {
+    fetchData();
+    // Auto-refresh every 5 seconds
+    const interval = setInterval(fetchData, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   const getStatusColor = (status) => {
@@ -49,7 +63,7 @@ export function DatabaseDashboard() {
       case 'error':
         return 'bg-red-500';
       default:
-        return 'bg-gray-500';
+        return 'bg-gray-400';
     }
   };
 
@@ -66,8 +80,40 @@ export function DatabaseDashboard() {
     }
   };
 
+  const formatDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    return new Date(dateString).toLocaleString();
+  };
+
+  const formatUUID = (uuid) => {
+    if (!uuid) return 'N/A';
+    return `${uuid.substring(0, 8)}...${uuid.substring(uuid.length - 8)}`;
+  };
+
   return (
     <div className="space-y-6">
+      {/* Header with Refresh Button */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-gray-800">Database Overview</h2>
+        <Button
+          onClick={fetchData}
+          disabled={loading}
+          variant="outline"
+          className="flex items-center gap-2"
+        >
+          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
+      </div>
+
+      {/* Error Display */}
+      {error && (
+        <div className="p-4 bg-red-50 border-2 border-red-200 rounded-lg text-red-700">
+          <p className="font-semibold">Error loading data:</p>
+          <p className="text-sm">{error}</p>
+        </div>
+      )}
+
       {/* Header with Node Status */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {['node1', 'node2', 'node3'].map((node, index) => (
@@ -96,7 +142,7 @@ export function DatabaseDashboard() {
                       {data[node]?.length || 0}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {index === 0 ? 'All Records' : index === 1 ? 'Sales Dept' : 'Engineering/HR'}
+                      {index === 0 ? 'All Orders' : index === 1 ? 'Fragment 1' : 'Fragment 2'}
                     </p>
                   </div>
                   <div className={`w-2 h-2 rounded-full ${getStatusColor(nodeStatus[node])} animate-pulse`} />
@@ -115,11 +161,11 @@ export function DatabaseDashboard() {
             <div className="flex items-center justify-between">
               <div>
                 <CardTitle>Node 1 - Central Database</CardTitle>
-                <CardDescription>Complete dataset across all departments</CardDescription>
+                <CardDescription>Complete dataset with all orders</CardDescription>
               </div>
               <Badge variant="outline" className="bg-green-50 text-green-700 border-green-300">
                 <Activity className="w-3 h-3 mr-1" />
-                Live
+                {nodeStatus.node1 === 'active' ? 'Live' : 'Offline'}
               </Badge>
             </div>
           </CardHeader>
@@ -133,25 +179,37 @@ export function DatabaseDashboard() {
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-cyan-50">
-                      <TableHead className="font-semibold">ID</TableHead>
-                      <TableHead className="font-semibold">Name</TableHead>
-                      <TableHead className="font-semibold">Email</TableHead>
-                      <TableHead className="font-semibold">Department</TableHead>
-                      <TableHead className="font-semibold">Salary</TableHead>
+                      <TableHead className="font-semibold">Order ID</TableHead>
+                      <TableHead className="font-semibold">Quantity</TableHead>
+                      <TableHead className="font-semibold">Created At</TableHead>
+                      <TableHead className="font-semibold">Updated At</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.node1.map((row) => (
-                      <TableRow key={row.id} className="hover:bg-cyan-50/50 transition-colors">
-                        <TableCell className="font-medium">{row.id}</TableCell>
-                        <TableCell>{row.name}</TableCell>
-                        <TableCell>{row.email}</TableCell>
-                        <TableCell>
-                          <Badge variant="secondary">{row.department}</Badge>
+                    {data.node1.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4} className="text-center text-gray-500 py-8">
+                          No orders found
                         </TableCell>
-                        <TableCell>${row.salary.toLocaleString()}</TableCell>
                       </TableRow>
-                    ))}
+                    ) : (
+                      data.node1.map((row) => (
+                        <TableRow key={row.order_id} className="hover:bg-cyan-50/50 transition-colors">
+                          <TableCell className="font-mono text-sm" title={row.order_id}>
+                            {formatUUID(row.order_id)}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">{row.quantity}</Badge>
+                          </TableCell>
+                          <TableCell className="text-sm text-gray-600">
+                            {formatDate(row.created_at)}
+                          </TableCell>
+                          <TableCell className="text-sm text-gray-600">
+                            {formatDate(row.updated_at)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -164,31 +222,43 @@ export function DatabaseDashboard() {
           {/* Node 2 */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Node 2 - Sales Fragment</CardTitle>
-              <CardDescription>Department: Sales only</CardDescription>
+              <CardTitle className="text-base">Node 2 - Fragment 1</CardTitle>
+              <CardDescription>Horizontal partition (even order_id)</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="border rounded-lg overflow-hidden">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-yellow-50">
-                      <TableHead className="text-xs">ID</TableHead>
-                      <TableHead className="text-xs">Name</TableHead>
-                      <TableHead className="text-xs">Department</TableHead>
+                      <TableHead className="text-xs">Order ID</TableHead>
+                      <TableHead className="text-xs">Quantity</TableHead>
+                      <TableHead className="text-xs">Created</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.node2.map((row) => (
-                      <TableRow key={row.id} className="hover:bg-yellow-50/50">
-                        <TableCell className="text-sm">{row.id}</TableCell>
-                        <TableCell className="text-sm">{row.name}</TableCell>
-                        <TableCell className="text-sm">
-                          <Badge variant="secondary" className="bg-yellow-100">
-                            {row.department}
-                          </Badge>
+                    {data.node2.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-center text-gray-500 py-4 text-sm">
+                          No orders
                         </TableCell>
                       </TableRow>
-                    ))}
+                    ) : (
+                      data.node2.map((row) => (
+                        <TableRow key={row.order_id} className="hover:bg-yellow-50/50">
+                          <TableCell className="font-mono text-xs" title={row.order_id}>
+                            {formatUUID(row.order_id)}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <Badge variant="secondary" className="bg-yellow-100">
+                              {row.quantity}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-xs text-gray-600">
+                            {formatDate(row.created_at)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -198,31 +268,43 @@ export function DatabaseDashboard() {
           {/* Node 3 */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Node 3 - Engineering/HR Fragment</CardTitle>
-              <CardDescription>Department: Non-Sales</CardDescription>
+              <CardTitle className="text-base">Node 3 - Fragment 2</CardTitle>
+              <CardDescription>Horizontal partition (odd order_id)</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="border rounded-lg overflow-hidden">
                 <Table>
                   <TableHeader>
                     <TableRow className="bg-blue-50">
-                      <TableHead className="text-xs">ID</TableHead>
-                      <TableHead className="text-xs">Name</TableHead>
-                      <TableHead className="text-xs">Department</TableHead>
+                      <TableHead className="text-xs">Order ID</TableHead>
+                      <TableHead className="text-xs">Quantity</TableHead>
+                      <TableHead className="text-xs">Created</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.node3.map((row) => (
-                      <TableRow key={row.id} className="hover:bg-blue-50/50">
-                        <TableCell className="text-sm">{row.id}</TableCell>
-                        <TableCell className="text-sm">{row.name}</TableCell>
-                        <TableCell className="text-sm">
-                          <Badge variant="secondary" className="bg-blue-100">
-                            {row.department}
-                          </Badge>
+                    {data.node3.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={3} className="text-center text-gray-500 py-4 text-sm">
+                          No orders
                         </TableCell>
                       </TableRow>
-                    ))}
+                    ) : (
+                      data.node3.map((row) => (
+                        <TableRow key={row.order_id} className="hover:bg-blue-50/50">
+                          <TableCell className="font-mono text-xs" title={row.order_id}>
+                            {formatUUID(row.order_id)}
+                          </TableCell>
+                          <TableCell className="text-sm">
+                            <Badge variant="secondary" className="bg-blue-100">
+                              {row.quantity}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-xs text-gray-600">
+                            {formatDate(row.created_at)}
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
                   </TableBody>
                 </Table>
               </div>
