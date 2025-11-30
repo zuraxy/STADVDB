@@ -34,6 +34,27 @@ Complete guide for deploying the STADVDB distributed database system to virtual 
 
 ## Initial Deployment
 
+### Step 0: Check PostgreSQL Port (IMPORTANT!)
+
+**On ALL 3 VMs, verify what port PostgreSQL is actually using:**
+
+```bash
+# Check PostgreSQL port
+sudo ss -tlnp | grep postgres
+
+# Or check config file
+sudo grep "^port" /etc/postgresql/18/main/postgresql.conf
+```
+
+**Common scenarios:**
+- Port `5432` - Standard PostgreSQL port (most common)
+- Port `3306` - MySQL's default port (unusual but possible if configured)
+- External ports like `60832`, `60833`, `60834` - Port forwarding mappings
+
+**Take note of the actual port - you'll need it for the .env file!**
+
+---
+
 ### Step 1: Clone Repository on VM1
 
 ```bash
@@ -57,11 +78,19 @@ cd STADVDB
 sudo nano /etc/postgresql/18/main/pg_hba.conf
 ```
 
-Add at the end:
+Change authentication methods and add VM network access:
 ```conf
+# "local" is for Unix domain socket connections only
+local   all             all                                     trust
+# IPv4 local connections:
+host    all             all             127.0.0.1/32            trust
+# IPv6 local connections:
+host    all             all             ::1/128                 trust
 # Allow connections from VM network
 host    all             all             10.2.14.0/16            trust
 ```
+
+**Note:** Change `scram-sha-256` or `md5` to `trust` to avoid password authentication issues.
 
 #### Edit postgresql.conf
 ```bash
@@ -77,18 +106,34 @@ listen_addresses = '*'
 ```bash
 sudo systemctl restart postgresql@18-main
 
-# Allow firewall access
+# Allow firewall access (use YOUR actual PostgreSQL port!)
+# Check your port first: sudo ss -tlnp | grep postgres
 sudo ufw allow from 10.2.14.0/16 to any port 5432
+# Or if PostgreSQL is on port 3306:
+# sudo ufw allow from 10.2.14.0/16 to any port 3306
 ```
 
 #### Test Connectivity (from VM1)
 ```bash
-# Test connection to VM2
-psql -h 10.2.14.133 -U postgres -d node1db -c "SELECT 1;"
+# First, verify your actual PostgreSQL port
+sudo ss -tlnp | grep postgres
 
-# Test connection to VM3
-psql -h 10.2.14.134 -U postgres -d node2db -c "SELECT 1;"
+# Test local connection (use your actual port!)
+psql -h localhost -p 5432 -U postgres -d node0db -c "SELECT 1;"
+# Or if port is 3306:
+# psql -h localhost -p 3306 -U postgres -d node0db -c "SELECT 1;"
+
+# Test connection to VM2 (adjust port if needed)
+psql -h ccscloud.dlsu.edu.ph -p 60833 -U postgres -d node1db -c "SELECT 1;"
+
+# Test connection to VM3 (adjust port if needed)
+psql -h ccscloud.dlsu.edu.ph -p 60834 -U postgres -d node2db -c "SELECT 1;"
 ```
+
+**If tests fail:**
+- Check PostgreSQL is running: `sudo systemctl status postgresql@18-main`
+- Verify pg_hba.conf was saved: `sudo systemctl restart postgresql@18-main`
+- Check firewall: `sudo ufw status`
 
 ---
 
@@ -118,26 +163,55 @@ npm install
 nano .env
 ```
 
-**Paste this (update IPs with your actual VM IPs):**
+**⚠️ CRITICAL: Update with YOUR actual PostgreSQL port and IPs!**
+
+**If PostgreSQL is on standard port 5432:**
 ```env
 NODE1_HOST=localhost
 NODE1_PORT=5432
 NODE1_USER=postgres
-NODE1_PASSWORD=
+NODE1_PASSWORD=""
 NODE1_DB=node0db
 
-NODE2_HOST=10.2.14.133
-NODE2_PORT=5432
+NODE2_HOST=ccscloud.dlsu.edu.ph
+NODE2_PORT=60833
 NODE2_USER=postgres
-NODE2_PASSWORD=
+NODE2_PASSWORD=""
 NODE2_DB=node1db
 
-NODE3_HOST=10.2.14.134
-NODE3_PORT=5432
+NODE3_HOST=ccscloud.dlsu.edu.ph
+NODE3_PORT=60834
 NODE3_USER=postgres
-NODE3_PASSWORD=
+NODE3_PASSWORD=""
 NODE3_DB=node2db
 ```
+
+**If PostgreSQL is on port 3306 (check with `sudo ss -tlnp | grep postgres`):**
+```env
+NODE1_HOST=localhost
+NODE1_PORT=3306
+NODE1_USER=postgres
+NODE1_PASSWORD=""
+NODE1_DB=node0db
+
+NODE2_HOST=ccscloud.dlsu.edu.ph
+NODE2_PORT=60833
+NODE2_USER=postgres
+NODE2_PASSWORD=""
+NODE2_DB=node1db
+
+NODE3_HOST=ccscloud.dlsu.edu.ph
+NODE3_PORT=60834
+NODE3_USER=postgres
+NODE3_PASSWORD=""
+NODE3_DB=node2db
+```
+
+**Important Notes:**
+- ⚠️ `NODE1_PASSWORD=""` with quotes is REQUIRED! Not `NODE1_PASSWORD=` (causes "password must be a string" error)
+- ⚠️ `NODE1_HOST` MUST be `localhost` (not ccscloud.dlsu.edu.ph) since backend runs on VM1
+- ⚠️ Use the actual PostgreSQL port from Step 0
+- ⚠️ Update NODE2_HOST/NODE3_HOST with actual IPs or use external port forwarding
 
 Save: `Ctrl+X`, `Y`, `Enter`
 
@@ -163,6 +237,23 @@ pm2 logs stadvdb-backend
 curl http://localhost:3000/api/test-connections
 ```
 
+**Expected successful response:**
+```json
+{
+  "success": true,
+  "connections": {
+    "Node1": {"status": "connected", "timestamp": "..."},
+    "Node2": {"status": "connected", "timestamp": "..."},
+    "Node3": {"status": "connected", "timestamp": "..."}
+  }
+}
+```
+
+**If you see errors:**
+- `"status": "failed"` for Node1 → Check .env port matches actual PostgreSQL port
+- `"password must be a string"` → Change `NODE1_PASSWORD=` to `NODE1_PASSWORD=""`
+- `"connection refused"` → PostgreSQL not running or wrong port in .env
+
 ---
 
 ### Step 5: Deploy Frontend on VM1
@@ -177,16 +268,28 @@ npm install
 nano .env
 ```
 
+**⚠️ CRITICAL: Use relative URL, NOT localhost:3000!**
+
 **Paste:**
 ```env
-VITE_API_URL=http://localhost:3000/api
+VITE_API_URL=/api
 ```
+
+**Why `/api` and not `http://localhost:3000/api`?**
+- ❌ `http://localhost:3000/api` - Only works on the server, NOT from your browser
+- ✅ `/api` - Works from any browser because Nginx proxies it to the backend
+
+When you use `/api`, browsers make requests to `http://YOUR_VM_IP/api/...` which Nginx proxies to `http://localhost:3000/api/...`
 
 Save: `Ctrl+X`, `Y`, `Enter`
 
 ```bash
 # Build for production
 npm run build
+
+# ⚠️ VERIFY: Make sure build doesn't contain localhost:3000
+grep -r "localhost:3000" dist/
+# Should return NOTHING. If you see results, your .env is wrong!
 
 # This creates a 'dist' folder with optimized static files
 ```
@@ -425,6 +528,43 @@ chmod +x ~/update-stadvdb.sh
 
 ## Troubleshooting
 
+### "Password Must Be String" Error
+
+**Error:** `SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string`
+
+**Problem:** Password field in .env is undefined instead of empty string
+
+**Fix:**
+```bash
+cd ~/STADVDB/backend
+nano .env
+```
+
+Change from:
+```env
+NODE1_PASSWORD=      # ❌ Wrong - blank/undefined
+```
+
+To (with quotes):
+```env
+NODE1_PASSWORD=""    # ✅ Correct - empty string
+```
+
+Apply to all nodes:
+```env
+NODE1_PASSWORD=""
+NODE2_PASSWORD=""
+NODE3_PASSWORD=""
+```
+
+Restart:
+```bash
+pm2 restart stadvdb-backend
+curl http://localhost:3000/api/test-connections
+```
+
+---
+
 ### Backend Won't Start
 
 ```bash
@@ -436,19 +576,72 @@ pm2 logs stadvdb-backend
 sudo lsof -i :3000
 # Kill process: sudo kill -9 <PID>
 
-# 2. Database connection failed
+# 2. Database connection failed - MOST COMMON!
 # Check .env file
 cat ~/STADVDB/backend/.env
-# Test database connections
-psql -h localhost -U postgres -d node0db
-psql -h 10.2.14.133 -U postgres -d node1db
-psql -h 10.2.14.134 -U postgres -d node2db
+
+# Verify PostgreSQL port
+sudo ss -tlnp | grep postgres
+
+# Make sure .env port matches actual PostgreSQL port!
+# If PostgreSQL is on 3306, .env should have NODE1_PORT=3306
+# If PostgreSQL is on 5432, .env should have NODE1_PORT=5432
+
+# Test database connections (use correct port!)
+psql -h localhost -p 5432 -U postgres -d node0db
+# Or if port is 3306:
+# psql -h localhost -p 3306 -U postgres -d node0db
+
+# Test remote nodes
+psql -h ccscloud.dlsu.edu.ph -p 60833 -U postgres -d node1db
+psql -h ccscloud.dlsu.edu.ph -p 60834 -U postgres -d node2db
 
 # 3. Missing .env file
 cd ~/STADVDB/backend
 ls -la .env
 # If missing, create it (see Step 4 above)
 ```
+
+---
+
+### Frontend Shows "Failed to Fetch" Error
+
+**Error in browser console:** `Failed to fetch` or `ERR_BLOCKED_BY_CLIENT`
+
+**Problem:** Frontend built with `http://localhost:3000/api` instead of `/api`
+
+**Fix:**
+```bash
+cd ~/STADVDB/frontend/web-app
+
+# Check current .env
+cat .env
+# If it shows VITE_API_URL=http://localhost:3000/api, that's the problem!
+
+# Fix it
+echo "VITE_API_URL=/api" > .env
+
+# Clean build cache
+rm -rf dist node_modules/.vite
+
+# Rebuild
+npm run build
+
+# Verify no localhost:3000 in build
+grep -r "localhost:3000" dist/ || echo "✅ Good!"
+
+# Redeploy
+sudo rm -rf /var/www/stadvdb/*
+sudo cp -r dist/* /var/www/stadvdb/
+
+# Restart Nginx
+sudo systemctl restart nginx
+```
+
+**In browser:**
+- Hard refresh: `Ctrl+Shift+R` (Windows/Linux) or `Cmd+Shift+R` (Mac)
+- Open DevTools (F12) → Network tab
+- Requests should now go to `/api/...` not `http://localhost:3000/api/...`
 
 ---
 
@@ -663,24 +856,35 @@ Internet / Browser
 
 #### Backend (.env)
 ```env
-NODE1_HOST=localhost        # VM1 (local)
-NODE2_HOST=10.2.14.133      # VM2 IP
-NODE3_HOST=10.2.14.134      # VM3 IP
-NODE1_PORT=5432
-NODE2_PORT=5432
-NODE3_PORT=5432
+NODE1_HOST=localhost              # VM1 (local connection)
+NODE1_PORT=5432                   # Or 3306 - check with: sudo ss -tlnp | grep postgres
 NODE1_USER=postgres
-NODE2_USER=postgres
-NODE3_USER=postgres
+NODE1_PASSWORD=""                 # ⚠️ Empty string with quotes!
 NODE1_DB=node0db
+
+NODE2_HOST=ccscloud.dlsu.edu.ph   # External host or VM2 IP
+NODE2_PORT=60833                  # External port or 5432
+NODE2_USER=postgres
+NODE2_PASSWORD=""                 # ⚠️ Empty string with quotes!
 NODE2_DB=node1db
+
+NODE3_HOST=ccscloud.dlsu.edu.ph   # External host or VM3 IP
+NODE3_PORT=60834                  # External port or 5432
+NODE3_USER=postgres
+NODE3_PASSWORD=""                 # ⚠️ Empty string with quotes!
 NODE3_DB=node2db
 ```
 
+**⚠️ Critical:** 
+- Password field MUST have quotes: `NODE1_PASSWORD=""` not `NODE1_PASSWORD=`
+- Verify PostgreSQL port: `sudo ss -tlnp | grep postgres`
+
 #### Frontend (.env)
 ```env
-VITE_API_URL=http://localhost:3000/api
+VITE_API_URL=/api
 ```
+
+**⚠️ Critical:** Use `/api` (relative URL), NOT `http://localhost:3000/api`!
 
 **Note:** Frontend .env is embedded at build time. After changing it, you must rebuild:
 ```bash
@@ -831,4 +1035,13 @@ For issues or questions:
 ---
 
 **Last Updated:** November 30, 2025
-**Version:** 1.0.0
+**Version:** 1.1.0
+
+**Changelog:**
+- Added PostgreSQL port verification (Step 0)
+- Fixed frontend API URL to use relative path `/api`
+- Added password authentication troubleshooting
+- Added "Failed to Fetch" error resolution
+- Updated .env examples with correct password format
+- Added build verification steps
+- Improved error messages and troubleshooting
