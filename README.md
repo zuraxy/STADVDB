@@ -37,6 +37,13 @@ To find a file within our cloned stadvdb folder:
 
 To use our sql dump and load to database:
 `postgres@STADVDB44-Server0:~$ psql -d nodexdb -f /var/lib/postgresql/STADVDB/MCO2.ETLs/truncated_dump.sql`
+`cd /var/lib/postgresql/STADVDB` -> `git pull` to update
+
+to reset schema for node2 and 3
+`psql -U postgres -d node1db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
+`psql -U postgres -d node1db -f <(pg_dump -U postgres -d node1db --schema-only)`
+`psql -U postgres -d node1db -f /var/lib/postgresql/STADVDB/MCO2.ETLs/schema_only_dump.sql --schema-only`
+
 
 ==========================================================================================
 UUID TABLE SCHEMA FOR ALL NODES
