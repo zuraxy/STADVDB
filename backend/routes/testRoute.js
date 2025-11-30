@@ -27,10 +27,12 @@ router.get('/test-connections', async (req, res) => {
   const results = {};
   
   try {
-    // Changed 'pools' to 'nodes'
-    for (const [nodeName, pool] of Object.entries(nodes)) {
+    // Filter out non-Pool properties like testConnections
+    const nodeNames = ['Node1', 'Node2', 'Node3'];
+    
+    for (const nodeName of nodeNames) {
       try {
-        const client = await pool.connect();
+        const client = await nodes[nodeName].connect();
         const result = await client.query('SELECT NOW()');
         results[nodeName] = {
           status: 'connected',
