@@ -23,17 +23,20 @@ updated postgres from pg14 to pg18 (pg14 isnt in standard ubuntu library yet hen
 `exit` to get to root
 
 `pg_lsclusters` to check port
-`root@STADVDB44-ServerX:~# sudo systemctl <stop>/<restart> postgresql` to start/stop server
-`sudo nano /etc/postgresql/14/main/postgresql.conf` to configurate port et al
+`root@STADVDB44-ServerX:~# sudo systemctl <start>/<stop>/<restart> postgresql` to restart/stop server
+`sudo nano /etc/postgresql/18/main/postgresql.conf` to configurate port et al
 
 `CREATE DATABASE nodexdb;` to create database
-`psql -d nodexdb` to go to database
+`sudo -u postgres psql -c "SELECT version();"` to check database version
+`postgres-# psql -d nodexdb` to go to database
+`nodexdb=# \dt` to describe structure
+`nodexdb=# SELECT * FROM public.orders LIMIT 50;` to viewrows
 
 To find a file within our cloned stadvdb folder:
 `postgres@STADVDB44-Server0:~$ find ~/STADVDB -name "truncated_dump.sql"`
 
 To use our sql dump and load to database:
-`postgres@STADVDB44-Server0:~$ psql -d node0db -f /var/lib/postgresql/STADVDB/MCO2.ETLs/truncated_dump.sql`
+`postgres@STADVDB44-Server0:~$ psql -d nodexdb -f /var/lib/postgresql/STADVDB/MCO2.ETLs/truncated_dump.sql`
 
 ==========================================================================================
 UUID TABLE SCHEMA FOR ALL NODES
@@ -73,6 +76,9 @@ CREATE TABLE op_log (
 CREATE INDEX idx_oplog_origin_ts ON op_log(origin_node, ts);
 CREATE INDEX idx_oplog_lamport ON op_log(lamport);
 
+===========================================================================================
+OPLOG_ACKNOWLEDGEMENTS
+===========================================================================================
 CREATE TABLE IF NOT EXISTS log_acknowledgements (
   op_id uuid REFERENCES op_log(op_id) ON DELETE CASCADE,
   node text NOT NULL,
