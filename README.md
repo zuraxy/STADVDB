@@ -10,6 +10,18 @@ software installed in VMs done via:
 `\q` to exit postgres
 `exit` to get to root
 
+`pg_lsclusters` to check port
+`root@STADVDB44-ServerX:~# sudo systemctl <stop>/<restart> postgresql` to start/stop server
+`sudo nano /etc/postgresql/14/main/postgresql.conf` to configurate port et al
+
+`CREATE DATABASE nodexdb;` to create database
+
+To find a file within our cloned stadvdb folder:
+`postgres@STADVDB44-Server0:~$ find ~/STADVDB -name "truncated_dump.sql"`
+
+To use our sql dump and load to database:
+`postgres@STADVDB44-Server0:~$ psql -d node0db -f /var/lib/postgresql/STADVDB/MCO2.ETLs/truncated_dump.sql`
+
 ==========================================================================================
 UUID TABLE SCHEMA FOR ALL NODES
 =========================================================================================
