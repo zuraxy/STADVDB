@@ -4,6 +4,18 @@ software installed in VMs done via:
 `sudo apt update`
 `sudo apt install -y postgresql postgresql-contrib python3 python3-venv python3-pip git gh`
 
+updated postgres from pg14 to pg18 (pg14 isnt in standard ubuntu library yet hence use link)
+`sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'`
+`sudo apt install gnupg gnupg1 gnupg2`
+`wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -`
+`sudo apt update`
+`sudo apt install postgresql-18`
+`sudo systemctl stop postgresql@14-main`
+`sudo systemctl disable postgresql@14-main`
+`sudo systemctl enable postgresql@18-main`
+`sudo systemctl start postgresql`
+`psql --version` should now be 18.1
+
 `sudo -i -u postgres` to enter postgres user
 `psql` to enter postgres from user
 
@@ -15,6 +27,7 @@ software installed in VMs done via:
 `sudo nano /etc/postgresql/14/main/postgresql.conf` to configurate port et al
 
 `CREATE DATABASE nodexdb;` to create database
+`psql -d nodexdb` to go to database
 
 To find a file within our cloned stadvdb folder:
 `postgres@STADVDB44-Server0:~$ find ~/STADVDB -name "truncated_dump.sql"`
