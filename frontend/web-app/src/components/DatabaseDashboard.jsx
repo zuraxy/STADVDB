@@ -1,24 +1,23 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Database, Server, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
+import { Database, Server, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders } from '../services/api';
+import { fetchAllOrders, testAllConnections } from '../services/api';
 
 export function DatabaseDashboard() {
-  const [data, setData] = useState({
-    node1: [],
-    node2: [],
-    node3: []
-  });
+  const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRecords, setTotalRecords] = useState(0);
   const [nodeStatus, setNodeStatus] = useState({
-    node1: 'checking',
-    node2: 'checking',
-    node3: 'checking'
+    Node1: 'checking',
+    Node2: 'checking',
+    Node3: 'checking'
   });
 
   const fetchData = async () => {
@@ -26,39 +25,76 @@ export function DatabaseDashboard() {
     setError(null);
     
     try {
-      const orders = await fetchAllOrders();
+      // First, check which nodes are online
+      const connectionStatus = await testAllConnections();
       
-      setData(orders);
-      setNodeStatus({
-        node1: orders.node1.length >= 0 ? 'online' : 'error',
-        node2: orders.node2.length >= 0 ? 'online' : 'error',
-        node3: orders.node3.length >= 0 ? 'online' : 'error'
-      });
+      // Update node status based on connection test
+      const newStatus = {};
+      if (connectionStatus.success && connectionStatus.connections) {
+        Object.keys(connectionStatus.connections).forEach(nodeName => {
+          const nodeInfo = connectionStatus.connections[nodeName];
+          newStatus[nodeName] = nodeInfo.status === 'connected' ? 'online' : 'error';
+        });
+        setNodeStatus(newStatus);
+      }
+      
+      // Fetch all orders from Node1 (central node)
+      const ordersResponse = await fetchAllOrders(currentPage, 10);
+      
+      if (ordersResponse.success) {
+        setData(ordersResponse.data || []);
+        if (ordersResponse.pagination) {
+          setTotalPages(ordersResponse.pagination.totalPages);
+          setTotalRecords(ordersResponse.pagination.total);
+        }
+      } else {
+        throw new Error('Failed to fetch orders');
+      }
     } catch (err) {
-      console.error('Failed to fetch orders:', err);
+      console.error('Failed to fetch data:', err);
       setError(err.message || 'Failed to connect to database nodes');
       setNodeStatus({
-        node1: 'error',
-        node2: 'error',
-        node3: 'error'
+        Node1: 'error',
+        Node2: 'error',
+        Node3: 'error'
       });
     } finally {
       setLoading(false);
     }
   };
 
+  const checkNodeStatus = async () => {
+    try {
+      const connectionStatus = await testAllConnections();
+      
+      if (connectionStatus.success && connectionStatus.connections) {
+        const newStatus = {};
+        Object.keys(connectionStatus.connections).forEach(nodeName => {
+          const nodeInfo = connectionStatus.connections[nodeName];
+          newStatus[nodeName] = nodeInfo.status === 'connected' ? 'online' : 'error';
+        });
+        setNodeStatus(newStatus);
+      }
+    } catch (err) {
+      console.error('Failed to check node status:', err);
+    }
+  };
+
   useEffect(() => {
     fetchData();
-    // Auto-refresh every 5 seconds
-    const interval = setInterval(fetchData, 5000);
-    return () => clearInterval(interval);
+  }, [currentPage]);
+
+  useEffect(() => {
+    // Check node status every 5 seconds
+    const statusInterval = setInterval(checkNodeStatus, 5000);
+    return () => clearInterval(statusInterval);
   }, []);
 
   const getStatusColor = (status) => {
     switch (status) {
-      case 'active':
+      case 'online':
         return 'bg-green-500';
-      case 'warning':
+      case 'checking':
         return 'bg-yellow-500';
       case 'error':
         return 'bg-red-500';
@@ -69,10 +105,10 @@ export function DatabaseDashboard() {
 
   const getStatusIcon = (status) => {
     switch (status) {
-      case 'active':
+      case 'online':
         return <CheckCircle2 className="w-4 h-4 text-green-600" />;
-      case 'warning':
-        return <AlertCircle className="w-4 h-4 text-yellow-600" />;
+      case 'checking':
+        return <Loader2 className="w-4 h-4 animate-spin text-gray-600" />;
       case 'error':
         return <AlertCircle className="w-4 h-4 text-red-600" />;
       default:
@@ -116,7 +152,7 @@ export function DatabaseDashboard() {
 
       {/* Header with Node Status */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {['node1', 'node2', 'node3'].map((node, index) => (
+        {['Node1', 'Node2', 'Node3'].map((node, index) => (
           <motion.div
             key={node}
             initial={{ opacity: 0, y: 20 }}
@@ -139,10 +175,10 @@ export function DatabaseDashboard() {
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
                     <p className="text-2xl font-bold text-cyan-700">
-                      {data[node]?.length || 0}
+                      {index === 0 ? totalRecords : 0}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {index === 0 ? 'All Orders' : index === 1 ? 'Fragment 1' : 'Fragment 2'}
+                      {index === 0 ? 'All Orders' : index === 1 ? 'Fragment 1-5' : 'Fragment 6-10'}
                     </p>
                   </div>
                   <div className={`w-2 h-2 rounded-full ${getStatusColor(nodeStatus[node])} animate-pulse`} />
@@ -163,9 +199,9 @@ export function DatabaseDashboard() {
                 <CardTitle>Node 1 - Central Database</CardTitle>
                 <CardDescription>Complete dataset with all orders</CardDescription>
               </div>
-              <Badge variant="outline" className="bg-green-50 text-green-700 border-green-300">
+              <Badge variant="outline" className={nodeStatus.Node1 === 'online' ? 'bg-green-50 text-green-700 border-green-300' : 'bg-red-50 text-red-700 border-red-300'}>
                 <Activity className="w-3 h-3 mr-1" />
-                {nodeStatus.node1 === 'active' ? 'Live' : 'Offline'}
+                {nodeStatus.Node1 === 'online' ? 'Live' : 'Offline'}
               </Badge>
             </div>
           </CardHeader>
@@ -181,37 +217,58 @@ export function DatabaseDashboard() {
                     <TableRow className="bg-cyan-50">
                       <TableHead className="font-semibold">Order ID</TableHead>
                       <TableHead className="font-semibold">Quantity</TableHead>
-                      <TableHead className="font-semibold">Created At</TableHead>
-                      <TableHead className="font-semibold">Updated At</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.node1.length === 0 ? (
+                    {data.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="text-center text-gray-500 py-8">
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-8">
                           No orders found
                         </TableCell>
                       </TableRow>
                     ) : (
-                      data.node1.map((row) => (
+                      data.map((row) => (
                         <TableRow key={row.order_id} className="hover:bg-cyan-50/50 transition-colors">
-                          <TableCell className="font-mono text-sm" title={row.order_id}>
-                            {formatUUID(row.order_id)}
+                          <TableCell className="font-mono text-sm">
+                            {row.order_id}
                           </TableCell>
                           <TableCell>
                             <Badge variant="secondary">{row.quantity}</Badge>
-                          </TableCell>
-                          <TableCell className="text-sm text-gray-600">
-                            {formatDate(row.created_at)}
-                          </TableCell>
-                          <TableCell className="text-sm text-gray-600">
-                            {formatDate(row.updated_at)}
                           </TableCell>
                         </TableRow>
                       ))
                     )}
                   </TableBody>
                 </Table>
+              </div>
+            )}
+            
+            {/* Pagination Controls */}
+            {!loading && totalPages > 1 && (
+              <div className="flex items-center justify-between pt-4 border-t">
+                <div className="text-sm text-gray-600">
+                  Showing page {currentPage} of {totalPages} ({totalRecords.toLocaleString()} total records)
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+                    disabled={currentPage === 1}
+                    variant="outline"
+                    size="sm"
+                  >
+                    <ChevronLeft className="w-4 h-4 mr-1" />
+                    Previous
+                  </Button>
+                  <Button
+                    onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+                    disabled={currentPage === totalPages}
+                    variant="outline"
+                    size="sm"
+                  >
+                    Next
+                    <ChevronRight className="w-4 h-4 ml-1" />
+                  </Button>
+                </div>
               </div>
             )}
           </CardContent>
@@ -222,8 +279,16 @@ export function DatabaseDashboard() {
           {/* Node 2 */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Node 2 - Fragment 1</CardTitle>
-              <CardDescription>Horizontal partition (even order_id)</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Node 2 - Fragment 1</CardTitle>
+                  <CardDescription>Orders 1-5 (Horizontal partition)</CardDescription>
+                </div>
+                <Badge variant="outline" className={nodeStatus.Node2 === 'online' ? 'bg-green-50 text-green-700 border-green-300' : 'bg-red-50 text-red-700 border-red-300'}>
+                  <Activity className="w-3 h-3 mr-1" />
+                  {nodeStatus.Node2 === 'online' ? 'Live' : 'Offline'}
+                </Badge>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="border rounded-lg overflow-hidden">
@@ -232,33 +297,14 @@ export function DatabaseDashboard() {
                     <TableRow className="bg-yellow-50">
                       <TableHead className="text-xs">Order ID</TableHead>
                       <TableHead className="text-xs">Quantity</TableHead>
-                      <TableHead className="text-xs">Created</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.node2.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={3} className="text-center text-gray-500 py-4 text-sm">
-                          No orders
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      data.node2.map((row) => (
-                        <TableRow key={row.order_id} className="hover:bg-yellow-50/50">
-                          <TableCell className="font-mono text-xs" title={row.order_id}>
-                            {formatUUID(row.order_id)}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            <Badge variant="secondary" className="bg-yellow-100">
-                              {row.quantity}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-xs text-gray-600">
-                            {formatDate(row.created_at)}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
+                    <TableRow>
+                      <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
+                        Fragment-specific data not loaded
+                      </TableCell>
+                    </TableRow>
                   </TableBody>
                 </Table>
               </div>
@@ -268,8 +314,16 @@ export function DatabaseDashboard() {
           {/* Node 3 */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Node 3 - Fragment 2</CardTitle>
-              <CardDescription>Horizontal partition (odd order_id)</CardDescription>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="text-base">Node 3 - Fragment 2</CardTitle>
+                  <CardDescription>Orders 6-10 (Horizontal partition)</CardDescription>
+                </div>
+                <Badge variant="outline" className={nodeStatus.Node3 === 'online' ? 'bg-green-50 text-green-700 border-green-300' : 'bg-red-50 text-red-700 border-red-300'}>
+                  <Activity className="w-3 h-3 mr-1" />
+                  {nodeStatus.Node3 === 'online' ? 'Live' : 'Offline'}
+                </Badge>
+              </div>
             </CardHeader>
             <CardContent>
               <div className="border rounded-lg overflow-hidden">
@@ -278,33 +332,14 @@ export function DatabaseDashboard() {
                     <TableRow className="bg-blue-50">
                       <TableHead className="text-xs">Order ID</TableHead>
                       <TableHead className="text-xs">Quantity</TableHead>
-                      <TableHead className="text-xs">Created</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {data.node3.length === 0 ? (
-                      <TableRow>
-                        <TableCell colSpan={3} className="text-center text-gray-500 py-4 text-sm">
-                          No orders
-                        </TableCell>
-                      </TableRow>
-                    ) : (
-                      data.node3.map((row) => (
-                        <TableRow key={row.order_id} className="hover:bg-blue-50/50">
-                          <TableCell className="font-mono text-xs" title={row.order_id}>
-                            {formatUUID(row.order_id)}
-                          </TableCell>
-                          <TableCell className="text-sm">
-                            <Badge variant="secondary" className="bg-blue-100">
-                              {row.quantity}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="text-xs text-gray-600">
-                            {formatDate(row.created_at)}
-                          </TableCell>
-                        </TableRow>
-                      ))
-                    )}
+                    <TableRow>
+                      <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
+                        Fragment-specific data not loaded
+                      </TableCell>
+                    </TableRow>
                   </TableBody>
                 </Table>
               </div>

@@ -30,23 +30,33 @@ const fetchAPI = async (endpoint, options = {}) => {
 
 /**
  * Fetch orders from a specific node
- * @param {number} nodeId - Node number (1, 2, or 3)
+ * @param {string} nodeId - Node name ('Node1', 'Node2', or 'Node3')
  * @returns {Promise<Object>} Response with success flag and orders data
  */
 export const fetchOrdersFromNode = async (nodeId) => {
-  return fetchAPI(`/node${nodeId}/orders`);
+  return fetchAPI(`/fetch/${nodeId}`);
 };
 
 /**
- * Fetch orders from all nodes
+ * Fetch all orders from Node1 (central node)
+ * @param {number} page - Page number (default: 1)
+ * @param {number} limit - Items per page (default: 10)
+ * @returns {Promise<Object>} Response with paginated orders
+ */
+export const fetchAllOrders = async (page = 1, limit = 10) => {
+  return fetchAPI(`/fetch/allOrder?page=${page}&limit=${limit}`);
+};
+
+/**
+ * Fetch orders from all three nodes
  * @returns {Promise<Object>} Object with node1, node2, node3 arrays
  */
-export const fetchAllOrders = async () => {
+export const fetchOrdersFromAllNodes = async () => {
   try {
     const [res1, res2, res3] = await Promise.all([
-      fetchOrdersFromNode(1),
-      fetchOrdersFromNode(2),
-      fetchOrdersFromNode(3),
+      fetchOrdersFromNode('Node1'),
+      fetchOrdersFromNode('Node2'),
+      fetchOrdersFromNode('Node3'),
     ]);
 
     return {
@@ -55,121 +65,31 @@ export const fetchAllOrders = async () => {
       node3: res3.data || [],
     };
   } catch (error) {
-    console.error('Error fetching all orders:', error);
+    console.error('Error fetching orders from all nodes:', error);
     throw error;
   }
-};
-
-/**
- * Create a new order
- * @param {Object} orderData - Order data {quantity, payload}
- * @returns {Promise<Object>} Created order response
- */
-export const createOrder = async (orderData) => {
-  return fetchAPI('/orders', {
-    method: 'POST',
-    body: JSON.stringify(orderData),
-  });
-};
-
-/**
- * Update an existing order
- * @param {string} orderId - UUID of the order
- * @param {Object} orderData - Updated order data
- * @returns {Promise<Object>} Updated order response
- */
-export const updateOrder = async (orderId, orderData) => {
-  return fetchAPI(`/orders/${orderId}`, {
-    method: 'PUT',
-    body: JSON.stringify(orderData),
-  });
-};
-
-/**
- * Delete an order
- * @param {string} orderId - UUID of the order
- * @returns {Promise<Object>} Deletion response
- */
-export const deleteOrder = async (orderId) => {
-  return fetchAPI(`/orders/${orderId}`, {
-    method: 'DELETE',
-  });
 };
 
 // ==================== NODE STATUS ====================
 
 /**
- * Get status of a specific node
- * @param {number} nodeId - Node number (1, 2, or 3)
- * @returns {Promise<Object>} Node status information
+ * Test connection to a specific node
+ * @param {string} nodeId - Node name ('Node1', 'Node2', or 'Node3')
+ * @returns {Promise<Object>} Node connection test result
  */
-export const getNodeStatus = async (nodeId) => {
-  return fetchAPI(`/node${nodeId}/status`);
+export const testNodeConnection = async (nodeId) => {
+  return fetchAPI(`/test/${nodeId}`);
 };
 
 /**
- * Get status of all nodes
- * @returns {Promise<Object>} Status of all nodes
+ * Test connections to all database nodes
+ * @returns {Promise<Object>} Connection status for all nodes
  */
-export const getAllNodeStatus = async () => {
-  try {
-    const [status1, status2, status3] = await Promise.all([
-      getNodeStatus(1),
-      getNodeStatus(2),
-      getNodeStatus(3),
-    ]);
-
-    return {
-      node1: status1.data || {},
-      node2: status2.data || {},
-      node3: status3.data || {},
-    };
-  } catch (error) {
-    console.error('Error fetching node status:', error);
-    throw error;
-  }
+export const testAllConnections = async () => {
+  return fetchAPI('/test-connections');
 };
 
-// ==================== CONCURRENCY OPERATIONS ====================
-
-/**
- * Execute a concurrency test scenario
- * @param {string} scenario - Scenario type
- * @param {Object} params - Scenario parameters
- * @returns {Promise<Object>} Scenario execution results
- */
-export const executeConcurrencyScenario = async (scenario, params = {}) => {
-  return fetchAPI('/concurrency/execute', {
-    method: 'POST',
-    body: JSON.stringify({ scenario, ...params }),
-  });
-};
-
-/**
- * Test transaction isolation
- * @param {string} isolationLevel - Isolation level to test
- * @returns {Promise<Object>} Test results
- */
-export const testTransactionIsolation = async (isolationLevel) => {
-  return fetchAPI('/concurrency/isolation', {
-    method: 'POST',
-    body: JSON.stringify({ isolationLevel }),
-  });
-};
-
-/**
- * Test locking mechanism
- * @param {string} lockType - Lock type (FOR SHARE, FOR UPDATE)
- * @returns {Promise<Object>} Lock test results
- */
-export const testLocking = async (lockType) => {
-  return fetchAPI('/concurrency/locking', {
-    method: 'POST',
-    body: JSON.stringify({ lockType }),
-  });
-};
-
-// ==================== UTILITIES ====================
+// ==================== HEALTH CHECK ====================
 
 /**
  * Health check endpoint
