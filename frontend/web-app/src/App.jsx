@@ -3,8 +3,9 @@ import { DatabaseDashboard } from './components/DatabaseDashboard';
 import { SimplifiedArchitecture } from './components/SimplifiedArchitecture';
 import { ConcurrencyScenarios } from './components/ConcurrencyScenarios';
 import { TransactionFlow } from './components/TransactionFlow';
+import { CrudPage } from './components/CrudPage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
-import { Database, Activity, Network } from 'lucide-react';
+import { Database, Activity, Network, Edit } from 'lucide-react';
 
 export default function App() {
   const [activeScenario, setActiveScenario] = useState(null);
@@ -32,13 +33,20 @@ export default function App() {
 
         {/* Main Tabbed Interface */}
         <Tabs defaultValue="dashboard" className="w-full">
-          <TabsList className="grid w-full grid-cols-3 mb-6 bg-gray-100 border border-gray-200 p-1 rounded-lg">
+          <TabsList className="grid w-full grid-cols-4 mb-6 bg-gray-100 border border-gray-200 p-1 rounded-lg">
             <TabsTrigger 
               value="dashboard" 
               className="data-[state=active]:bg-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-700 transition-all duration-150 rounded-md font-medium"
             >
               <Database className="w-4 h-4 mr-2" />
               Database Dashboard
+            </TabsTrigger>
+            <TabsTrigger 
+              value="crud" 
+              className="data-[state=active]:bg-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-700 transition-all duration-150 rounded-md font-medium"
+            >
+              <Edit className="w-4 h-4 mr-2" />
+              Order Management
             </TabsTrigger>
             <TabsTrigger 
               value="concurrency"
@@ -61,7 +69,12 @@ export default function App() {
             <DatabaseDashboard />
           </TabsContent>
 
-          {/* Tab 2: Concurrency Scenarios */}
+          {/* Tab 2: CRUD Operations */}
+          <TabsContent value="crud" className="space-y-6">
+            <CrudPage />
+          </TabsContent>
+
+          {/* Tab 3: Concurrency Scenarios */}
           <TabsContent value="concurrency" className="space-y-6">
             <div className="bg-white rounded-lg border-2 border-cyan-200 p-6">
               <SimplifiedArchitecture 
@@ -86,7 +99,7 @@ export default function App() {
             </div>
           </TabsContent>
 
-          {/* Tab 3: Architecture Overview */}
+          {/* Tab 4: Architecture Overview */}
           <TabsContent value="architecture" className="space-y-6">
             <div className="bg-white rounded-lg border-2 border-cyan-200 p-8">
               <SimplifiedArchitecture 
