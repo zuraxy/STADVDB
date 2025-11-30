@@ -100,6 +100,7 @@ def main():
         with supabase_engine.begin() as conn:
             # ensure uuid extension (for DB-side defaults if ever used)
             conn.execute(text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'))
+            conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
             conn.execute(
                 text(
                     """
@@ -109,6 +110,38 @@ def main():
                         payload JSONB,
                         created_at TIMESTAMPTZ DEFAULT now(),
                         updated_at TIMESTAMPTZ DEFAULT now()
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS op_log (
+                        op_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        origin_node TEXT NOT NULL,
+                        op_type TEXT NOT NULL,
+                        table_name TEXT NOT NULL,
+                        row_id UUID NOT NULL,
+                        payload JSONB,
+                        ts TIMESTAMPTZ DEFAULT now(),
+                        lamport BIGINT DEFAULT 0,
+                        applied BOOLEAN DEFAULT false,
+                        applied_ts TIMESTAMPTZ
+                    )
+                    """
+                )
+            )
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_oplog_origin_ts ON op_log(origin_node, ts)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS idx_oplog_lamport ON op_log(lamport)"))
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS log_acknowledgements (
+                        op_id UUID REFERENCES op_log(op_id) ON DELETE CASCADE,
+                        node TEXT NOT NULL,
+                        ack_ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        PRIMARY KEY (op_id, node)
                     )
                     """
                 )
