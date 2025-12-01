@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -34,12 +35,10 @@ async def create_order(pool: Pool, order: OrderCreate, origin_node: str) -> Orde
 	async with pool.acquire() as conn:
 		async with conn.transaction():
 			lamport_value = await lamport_utils.next_lamport(conn, origin_node)
-			# Convert payload dict to JSON string for PostgreSQL JSONB
-			payload_json = json.dumps(order.payload) if order.payload else None
 			await conn.execute(
 				"""
 				INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-				VALUES ($1, $2, $3::jsonb, $4, $4)
+				VALUES ($1, $2, $3, $4, $4)
 				ON CONFLICT (order_id)
 				DO UPDATE
 					SET quantity = EXCLUDED.quantity,
@@ -48,15 +47,18 @@ async def create_order(pool: Pool, order: OrderCreate, origin_node: str) -> Orde
 				""",
 				order_id,
 				order.quantity,
-				payload_json,
+				order.payload,
 				now,
 			)
+			# Convert op_log payload to JSON string for JSONB
+			op_payload = _order_payload(order.quantity, order.payload)
+			op_payload_json = json.dumps(op_payload)
 			await conn.execute(
 				"""
 				INSERT INTO op_log (
 					op_id, origin_node, op_type, table_name, row_id, payload,
 					ts, lamport, applied, applied_ts
-				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,NULL)
+				) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,false,NULL)
 				ON CONFLICT (op_id) DO NOTHING
 				""",
 				op_id,
@@ -64,7 +66,7 @@ async def create_order(pool: Pool, order: OrderCreate, origin_node: str) -> Orde
 				"upsert",
 				"orders",
 				order_id,
-				_order_payload(order.quantity, order.payload),
+				op_payload_json,
 				now,
 				lamport_value,
 			)
@@ -135,12 +137,15 @@ async def update_order(pool: Pool, order_id: UUID, order: OrderUpdate, origin_no
 				order_id,
 			)
 			lamport_value = await lamport_utils.next_lamport(conn, origin_node)
+			# Convert op_log payload to JSON string for JSONB
+			op_payload = _order_payload(new_quantity, new_payload)
+			op_payload_json = json.dumps(op_payload)
 			await conn.execute(
 				"""
 				INSERT INTO op_log (
 					op_id, origin_node, op_type, table_name, row_id, payload,
 					ts, lamport, applied, applied_ts
-				) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,NULL)
+				) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,false,NULL)
 				ON CONFLICT (op_id) DO NOTHING
 				""",
 				uuid4(),
@@ -148,7 +153,7 @@ async def update_order(pool: Pool, order_id: UUID, order: OrderUpdate, origin_no
 				"upsert",
 				"orders",
 				order_id,
-				_order_payload(new_quantity, new_payload),
+				op_payload_json,
 				now,
 				lamport_value,
 			)
@@ -168,12 +173,14 @@ async def delete_order(pool: Pool, order_id: UUID, origin_node: str) -> bool:
 			deleted = result.endswith("DELETE 1")
 			if deleted:
 				lamport_value = await lamport_utils.next_lamport(conn, origin_node)
+				# Convert empty dict to JSON string for JSONB
+				op_payload_json = json.dumps({})
 				await conn.execute(
 					"""
 					INSERT INTO op_log (
 						op_id, origin_node, op_type, table_name, row_id, payload,
 						ts, lamport, applied, applied_ts
-					) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,false,NULL)
+					) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,false,NULL)
 					ON CONFLICT (op_id) DO NOTHING
 					""",
 					uuid4(),
@@ -181,7 +188,7 @@ async def delete_order(pool: Pool, order_id: UUID, origin_node: str) -> bool:
 					"delete",
 					"orders",
 					order_id,
-					{},
+					op_payload_json,
 					_utcnow(),
 					lamport_value,
 				)
