@@ -37,15 +37,34 @@ To find a file within our cloned stadvdb folder:
 
 To use our sql dump and load to database:
 `postgres@STADVDB44-Server0:~$ psql -d nodexdb -f /var/lib/postgresql/STADVDB/MCO2.ETLs/truncated_dump.sql`
-`cd /var/lib/postgresql/STADVDB` -> `git pull` to update
+`cd /var/lib/postgresql/STADVDB; git pull` to update
 
 to reset schema for node1 and 2
-`psql -U postgres -d node1db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
-`psql -U postgres -d node1db -f <(pg_dump -U postgres -d node1db --schema-only)`
-`psql -U postgres -d node1db -f /var/lib/postgresql/STADVDB/MCO2.ETLs/schema_only_dump.sql --schema-only`
+`psql -U postgres -d node2db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
+`psql -U postgres -d node2db -f <(pg_dump -U postgres -d node1db --schema-only)`
+`psql -U postgres -d node2db -f /var/lib/postgresql/STADVDB/MCO2.ETLs/schema_only_dump.sql`
 
 initialize node1 and node2:
-`psql -U postgres -d node1db -c "\copy orders FROM 'node1_data.csv' CSV"`
+`psql -U postgres -d node2db -c "\copy orders FROM '/var/lib/postgresql/STADVDB/MCO2.ETLs/node2.csv' CSV HEADER"`
+`ALTER TABLE orders ADD CONSTRAINT qty_1to5 CHECK (quantity <= 5);` on node1
+`ALTER TABLE orders ADD CONSTRAINT qty_6to10 CHECK (quantity > 5);` on node2
+
+create replication role:
+`sudo -u postgres psql -d node0db -c "CREATE ROLE repl WITH LOGIN PASSWORD 'REPL_PASS';"`
+
+create publications in node0:
+`DROP PUBLICATION IF EXISTS pub_node1;`
+`CREATE PUBLICATION pub_node1 FOR TABLE public.orders WHERE (quantity <= 5);`
+
+`DROP PUBLICATION IF EXISTS pub_node2;`
+`CREATE PUBLICATION pub_node2 FOR TABLE public.orders WHERE (quantity > 5);`
+
+make node1 subscribe to node0 publication:
+`DROP SUBSCRIPTION IF EXISTS sub_to_node0_for_node1;`
+`CREATE SUBSCRIPTION sub_to_node0_for_node1 CONNECTION 'host=10.2.14.132 port=3306 dbname=node0db user=repl password=REPL_PASS' PUBLICATION pub_node1 WITH (copy_data = false);`
+
+`DROP SUBSCRIPTION IF EXISTS sub_to_node0_for_node2;`
+`CREATE SUBSCRIPTION sub_to_node0_for_node2 CONNECTION 'host=10.2.14.132 port=3306 dbname=node0db user=repl password=REPL_PASS' PUBLICATION pub_node2 WITH (copy_data = false);`
 
 ==========================================================================================
 UUID TABLE SCHEMA FOR ALL NODES
@@ -61,12 +80,6 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at timestamptz DEFAULT now(),
   updated_at timestamptz DEFAULT now()
 );
-
--- On Node1:
-ALTER TABLE orders ADD CONSTRAINT qty_1to5 CHECK (quantity <= 5);
-
--- On Node2:
-ALTER TABLE orders ADD CONSTRAINT qty_6to10 CHECK (quantity > 5);
 =========================================================================================
 Logs
 =========================================================================================
