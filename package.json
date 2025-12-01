@@ -1,0 +1,14 @@
+{
+  "name": "stadvdb-mco2",
+  "version": "1.0.0",
+  "description": "Distributed Database System",
+  "scripts": {
+    "dev": "concurrently \"npm run backend\" \"npm run frontend\"",
+    "backend": "cd backend && npm run dev",
+    "frontend": "cd frontend/web-app && npm run dev",
+    "install-all": "npm install && cd backend && npm install && cd ../frontend/web-app && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
