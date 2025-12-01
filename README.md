@@ -1,111 +1,102 @@
-# STADVDB MCO2
-notes:
-software installed in VMs done via:
-`sudo apt update`
-`sudo apt install -y postgresql postgresql-contrib python3 python3-venv python3-pip git gh`
+# Distributed Replication Service
 
-updated postgres from pg14 to pg18 (pg14 isnt in standard ubuntu library yet hence use link)
-`sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'`
-`sudo apt install gnupg gnupg1 gnupg2`
-`wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -`
-`sudo apt update`
-`sudo apt install postgresql-18`
-`sudo systemctl stop postgresql@14-main`
-`sudo systemctl disable postgresql@14-main`
-`sudo systemctl enable postgresql@18-main`
-`sudo systemctl start postgresql`
-`psql --version` should now be 18.1
+This project provides a FastAPI-based service that runs on every node (Node0/Node1/Node2) inside the Proxmox cluster. Each node exposes CRUD APIs for `orders`, a pull-based replication endpoint, and background workers that replicate and apply operations using Postgres 18 + asyncpg.
 
-`sudo -i -u postgres` to enter postgres user
-`psql` to enter postgres from user
+## Architecture Overview
 
-`\q` to exit postgres
-`exit` to get to root
+- **FastAPI app (`app/main.py`)** – mounts CRUD, replication, and admin routes and orchestrates background workers.
+- **Replication model** – every node polls its peers every 5 seconds via `GET /oplog?since_lamport=<n>`, inserts missing ops, and keeps Lamport ordering guarantees when applying them.
+- **Applier worker** – replays local `op_log` rows (idempotent upserts) into `orders` and writes acknowledgements into `log_acknowledgements`.
+- **Routing rules** – all writes flow to the configured master (default `node0`). A node can be promoted via `/promote` to accept partitioned writes (Node1 `qty <= PARTITION_RULE`, Node2 `qty > PARTITION_RULE`).
+- **Delivery semantics** – at-least-once; op application relies on `INSERT ... ON CONFLICT` to remain idempotent.
 
-`pg_lsclusters` to check port
-`root@STADVDB44-ServerX:~# sudo systemctl <start>/<stop>/<restart> postgresql` to restart/stop server
-`sudo nano /etc/postgresql/18/main/postgresql.conf` to configurate port et al
+## Environment Variables
 
-`CREATE DATABASE nodexdb;` to create database
-`sudo -u postgres psql -c "SELECT version();"` to check database version
-`postgres-# psql -d nodexdb` to go to database
-`nodexdb=# \dt` to describe structure
-`nodexdb=# SELECT * FROM public.orders LIMIT 50;` to viewrows
+See `.env.example` for a ready-to-edit template. Core values:
 
-To find a file within our cloned stadvdb folder:
-`postgres@STADVDB44-Server0:~$ find ~/STADVDB -name "truncated_dump.sql"`
+| Variable | Description |
+| --- | --- |
+| `DATABASE_DSN` | Postgres DSN for the node-local database. |
+| `NODE_NAME` | Logical name (`node0`, `node1`, `node2`). |
+| `DEFAULT_MASTER` / `DEFAULT_MASTER_URL` | Name/url of the master that should receive writes. |
+| `PEER_NODES` | JSON array or comma list of peers. Supports `name=url` format. |
+| `POLL_INTERVAL` | Seconds between replication polls (default 5). |
+| `APPLIER_INTERVAL` | Seconds between applier batches (default 2). |
+| `PROMOTED` | Boot-time promotion flag (use `/promote` for runtime changes). |
+| `PARTITION_RULE` | Quantity threshold for partitioned writes (default 5). |
 
-To use our sql dump and load to database:
-`postgres@STADVDB44-Server0:~$ psql -d nodexdb -f /var/lib/postgresql/STADVDB/MCO2.ETLs/truncated_dump.sql`
-`cd /var/lib/postgresql/STADVDB; git pull` to update
+## Getting Started
 
-to reset schema for node1 and 2
-`psql -U postgres -d node2db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
-`psql -U postgres -d node2db -f <(pg_dump -U postgres -d node1db --schema-only)`
-`psql -U postgres -d node2db -f /var/lib/postgresql/STADVDB/MCO2.ETLs/schema_only_dump.sql`
+1. **Install dependencies**
+   ```bash
+   python -m venv .venv
+   .\.venv\Scripts\activate   # PowerShell on Windows
+   pip install -r requirements.txt  # add fastapi, uvicorn, asyncpg, httpx, pytest, pytest-asyncio
+   ```
+2. **Configure Postgres** – ensure each node DB contains the required tables shown in `DEPLOYMENT.md` (orders, op_log, log_acknowledgements).
+3. **Copy environment file**
+   ```bash
+   cp .env.example .env
+   # edit .env with per-node DSN, NODE_NAME, ports, peer URLs
+   ```
 
-initialize node1 and node2:
-`psql -U postgres -d node2db -c "\copy orders FROM '/var/lib/postgresql/STADVDB/MCO2.ETLs/node2.csv' CSV HEADER"`
-`ALTER TABLE orders ADD CONSTRAINT qty_1to5 CHECK (quantity <= 5);` on node1
-`ALTER TABLE orders ADD CONSTRAINT qty_6to10 CHECK (quantity > 5);` on node2
+## Running Locally (multi-node simulation)
 
-create replication role:
-`sudo -u postgres psql -d node0db -c "CREATE ROLE repl WITH LOGIN PASSWORD 'REPL_PASS';"`
+Run three shells, each with its own port + env overrides:
 
-create publications in node0:
-`DROP PUBLICATION IF EXISTS pub_node1;`
-`CREATE PUBLICATION pub_node1 FOR TABLE public.orders WHERE (quantity <= 5);`
+```bash
+# Node0 (master)
+set DATABASE_DSN=postgresql://postgres:postgres@localhost:5432/node0db
+set NODE_NAME=node0
+set DEFAULT_MASTER=node0
+set DEFAULT_MASTER_URL=http://localhost:8000
+set PEER_NODES=[{"name":"node0","url":"http://localhost:8000"},{"name":"node1","url":"http://localhost:8001"},{"name":"node2","url":"http://localhost:8002"}]
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 
-`DROP PUBLICATION IF EXISTS pub_node2;`
-`CREATE PUBLICATION pub_node2 FOR TABLE public.orders WHERE (quantity > 5);`
+# Node1 (partition qty <= 5)
+set NODE_NAME=node1
+set DATABASE_DSN=postgresql://postgres:postgres@localhost:5433/node1db
+uvicorn app.main:app --host 0.0.0.0 --port 8001
 
-make node1 subscribe to node0 publication:
-`DROP SUBSCRIPTION IF EXISTS sub_to_node0_for_node1;`
-`CREATE SUBSCRIPTION sub_to_node0_for_node1 CONNECTION 'host=10.2.14.132 port=3306 dbname=node0db user=repl password=REPL_PASS' PUBLICATION pub_node1 WITH (copy_data = false);`
+# Node2 (partition qty > 5)
+set NODE_NAME=node2
+set DATABASE_DSN=postgresql://postgres:postgres@localhost:5434/node2db
+uvicorn app.main:app --host 0.0.0.0 --port 8002
+```
 
-`DROP SUBSCRIPTION IF EXISTS sub_to_node0_for_node2;`
-`CREATE SUBSCRIPTION sub_to_node0_for_node2 CONNECTION 'host=10.2.14.132 port=3306 dbname=node0db user=repl password=REPL_PASS' PUBLICATION pub_node2 WITH (copy_data = false);`
+Each replica automatically starts replication + applier workers after connecting to its database.
 
-==========================================================================================
-UUID TABLE SCHEMA FOR ALL NODES
-=========================================================================================
--- for uuid, use built-in (uuid functions)[https://www.postgresql.org/docs/current/functions-uuid.html] such as gen_random_uuid(), uuidv4(), or uuidv7(). perhaps need to install uuid-ossp.
+## CRUD + Admin APIs
 
-CREATE EXTENSION IF NOT EXISTS uuid-ossp;
+- `POST /orders` – Creates an order on the master or permitted promoted node. Body matches `OrderCreate` (quantity + payload + optional UUID).
+- `GET /orders/{order_id}?local=true` – Read locally (for stale view) or proxy to master.
+- `PUT /orders/{order_id}` / `DELETE /orders/{order_id}` – Update/delete with the same routing semantics as create.
+- `GET /oplog` – Peer pull endpoint returning ops ordered by Lamport + origin.
+- `GET /health` – DB connectivity check.
+- `GET /status/replication` – Exposes worker metrics, last seen Lamport per peer, and applier stats.
+- `POST /promote {"promote": true}` – Toggle promotion flag to allow partitioned writes when the master is unavailable (remember to demote later to avoid split brain). Future cross-partition transactions are marked as TODO in the code.
 
-CREATE TABLE IF NOT EXISTS orders (
-  order_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  quantity int NOT NULL,
-  payload jsonb,         -- self contained data. This helps our oplog and makes a particular row/record be standalone.
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
-);
-=========================================================================================
-Logs
-=========================================================================================
-CREATE TABLE op_log (
-  op_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),  -- unique event id
-  origin_node text NOT NULL,                         -- 'node1','node2','node3'
-  op_type text NOT NULL,                             -- 'INSERT','UPDATE','DELETE'
-  table_name text NOT NULL,                          -- 'orders'
-  row_id uuid NOT NULL,                              -- the PK of the row affected
-  payload jsonb,                                     -- entire row (for insert/update)
-  ts timestamptz DEFAULT now(),
-  lamport bigint DEFAULT 0,                          -- Lamport timestamp (see below)
-  applied boolean DEFAULT false,
-  applied_ts timestamptz
-);
-CREATE INDEX idx_oplog_origin_ts ON op_log(origin_node, ts);
-CREATE INDEX idx_oplog_lamport ON op_log(lamport);
+## Simulating Failover
 
-===========================================================================================
-OPLOG_ACKNOWLEDGEMENTS
-===========================================================================================
-CREATE TABLE IF NOT EXISTS log_acknowledgements (
-  op_id uuid REFERENCES op_log(op_id) ON DELETE CASCADE,
-  node text NOT NULL,
-  ack_ts timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (op_id, node)
-);
+1. Start Node0, Node1, Node2 as above.
+2. Stop Node0.
+3. On Node1 call `POST /promote` with `{"promote": true}`.
+4. Submit `POST /orders` with `quantity <= PARTITION_RULE` to Node1. Requests outside the partition still fail until master returns.
+5. When Node0 is back, call `POST /promote {"promote": false}` on Node1/Node2.
 
-===========================================================================================
+## Tests
+
+Unit tests focus on worker logic (poller + applier) using pytest + asyncio:
+
+```bash
+pytest app/tests
+```
+
+The tests mock peer responses and DB interactions to keep feedback tight. Integration tests against a live Postgres + multiple FastAPI processes can be layered on later.
+
+## Roadmap / TODOs
+
+- Implement `/workers/gc.py` once quorum-wide acknowledgement tracking is in place.
+- Add cross-partition distributed transaction coordinator (currently marked as TODO around the write path).
+- Expand unit tests to cover HTTP forwarding + partition enforcement.
+- Provide docker-compose for local tri-node setups if needed later.
