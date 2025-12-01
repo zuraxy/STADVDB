@@ -268,3 +268,56 @@ async def insert_ack(conn, op_id: UUID, node: str) -> None:
 		node,
 		_utcnow(),
 	)
+
+
+# Read-only operations for frontend
+async def get_all_orders(pool: Pool, limit: int = 100, offset: int = 0) -> list[OrderRead]:
+	"""Fetch all orders with pagination."""
+	async with pool.acquire() as conn:
+		rows = await conn.fetch(
+			"""
+			SELECT order_id, customer_name, quantity, total_price, created_at, updated_at
+			FROM orders
+			ORDER BY created_at DESC
+			LIMIT $1 OFFSET $2
+			""",
+			limit,
+			offset,
+		)
+		return [OrderRead(**dict(row)) for row in rows]
+
+
+async def count_orders(pool: Pool) -> int:
+	"""Get total count of orders."""
+	async with pool.acquire() as conn:
+		count = await conn.fetchval("SELECT COUNT(*) FROM orders")
+		return count
+
+
+async def get_node_stats(pool: Pool, node_name: str) -> dict:
+	"""Get statistics for a specific node."""
+	async with pool.acquire() as conn:
+		# Count total orders
+		total_orders = await conn.fetchval("SELECT COUNT(*) FROM orders")
+		
+		# Count pending operations (not yet applied)
+		pending_ops = await conn.fetchval(
+			"SELECT COUNT(*) FROM op_log WHERE applied = false"
+		)
+		
+		# Get last operation timestamp
+		last_op_ts = await conn.fetchval(
+			"SELECT MAX(ts) FROM op_log"
+		)
+		
+		# Count total operations
+		total_ops = await conn.fetchval("SELECT COUNT(*) FROM op_log")
+		
+		return {
+			"node_name": node_name,
+			"total_orders": total_orders,
+			"pending_operations": pending_ops,
+			"total_operations": total_ops,
+			"last_operation": last_op_ts.isoformat() if last_op_ts else None,
+			"status": "connected"
+		}

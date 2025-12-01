@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from .config import get_settings
 from .db import close_db, get_pool, init_db
-from .routes import admin, orders, replication
+from .routes import admin, orders, replication, reads
 from .utils.http_client import HTTPClient
 from .workers.applier import ApplierWorker
 from .workers.replicator import ReplicatorWorker
@@ -22,6 +22,7 @@ app.state.promoted = settings.promoted
 app.include_router(admin.router)
 app.include_router(orders.router)
 app.include_router(replication.router)
+app.include_router(reads.router, prefix="/read", tags=["Read"])
 
 
 @app.on_event("startup")

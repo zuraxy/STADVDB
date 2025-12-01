@@ -103,3 +103,40 @@ export const healthCheck = async () => {
  * Export API base URL for direct use if needed
  */
 export { API_BASE_URL };
+
+// ==================== READ ENDPOINTS (Python Backend) ====================
+
+/**
+ * Fetch all orders with pagination from Python backend
+ * @param {number} limit - Maximum number of orders to return (1-1000, default 100)
+ * @param {number} offset - Number of orders to skip (default 0)
+ * @returns {Promise<Array>} Array of order objects
+ */
+export const fetchAllOrdersPython = async (limit = 100, offset = 0) => {
+  return fetchAPI(`/read/orders?limit=${limit}&offset=${offset}`);
+};
+
+/**
+ * Get total count of orders from Python backend
+ * @returns {Promise<Object>} Object with count property
+ */
+export const countOrders = async () => {
+  return fetchAPI('/read/count');
+};
+
+/**
+ * Get node statistics from Python backend
+ * @returns {Promise<Object>} Object with node stats (total_orders, pending_operations, etc.)
+ */
+export const getNodeStats = async () => {
+  return fetchAPI('/read/node-stats');
+};
+
+/**
+ * Get a specific order by ID from Python backend
+ * @param {string} orderId - UUID of the order
+ * @returns {Promise<Object>} Order object
+ */
+export const getOrderById = async (orderId) => {
+  return fetchAPI(`/read/orders/${orderId}`);
+};
