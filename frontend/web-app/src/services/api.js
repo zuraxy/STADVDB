@@ -36,6 +36,61 @@ export const fetchAllOrders = async () => {
   return fetchAPI('/orders');
 };
 
+/**
+ * Fetch a single order by ID
+ * @param {string} orderId - UUID of the order
+ * @returns {Promise<Object|null>} Order object or null if not found
+ */
+export const fetchOrder = async (orderId) => {
+  return fetchAPI(`/orders/${orderId}`);
+};
+
+/**
+ * Create a new order
+ * @param {Object} orderData - Order data { quantity: number, payload?: object }
+ * @returns {Promise<Object>} Created order object
+ */
+export const createOrder = async (orderData) => {
+  return fetchAPI('/orders', {
+    method: 'POST',
+    body: JSON.stringify(orderData),
+  });
+};
+
+/**
+ * Update an existing order
+ * @param {string} orderId - UUID of the order to update
+ * @param {Object} orderData - Updated data { quantity?: number, payload?: object }
+ * @returns {Promise<Object>} Updated order object
+ */
+export const updateOrder = async (orderId, orderData) => {
+  return fetchAPI(`/orders/${orderId}`, {
+    method: 'PUT',
+    body: JSON.stringify(orderData),
+  });
+};
+
+/**
+ * Delete an order
+ * @param {string} orderId - UUID of the order to delete
+ * @returns {Promise<void>}
+ */
+export const deleteOrder = async (orderId) => {
+  const response = await fetch(`${API_BASE_URL}/orders/${orderId}`, {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+  });
+  
+  if (!response.ok) {
+    throw new Error(`HTTP error! status: ${response.status}`);
+  }
+  
+  // DELETE returns 204 No Content, so no JSON to parse
+  return;
+};
+
 // ==================== NODE STATUS ====================
 
 /**

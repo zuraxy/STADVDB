@@ -6,6 +6,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription } from './ui/alert';
+import { fetchAllOrders, createOrder, updateOrder, deleteOrder } from '../services/api';
 
 export function CrudPage() {
   const [orders, setOrders] = useState([]);
@@ -15,25 +16,14 @@ export function CrudPage() {
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [formData, setFormData] = useState({ order_id: '', quantity: '' });
+  const [formData, setFormData] = useState({ quantity: '', payload: '' });
 
-  // Placeholder for future API integration
   const loadOrders = async () => {
     setLoading(true);
     setError(null);
     try {
-      // TODO: Replace with actual API call
-      // const response = await fetchAllOrders(1, 100);
-      // setOrders(response.data);
-      
-      // Mock data for now
-      setOrders([
-        { order_id: '1', quantity: 10 },
-        { order_id: '2', quantity: 25 },
-        { order_id: '3', quantity: 15 },
-        { order_id: '4', quantity: 30 },
-        { order_id: '5', quantity: 5 },
-      ]);
+      const response = await fetchAllOrders();
+      setOrders(response);
     } catch (err) {
       setError(err.message || 'Failed to load orders');
     } finally {
@@ -46,20 +36,22 @@ export function CrudPage() {
   }, []);
 
   const handleCreate = async () => {
-    if (!formData.order_id || !formData.quantity) {
-      setError('Please fill in all fields');
+    if (!formData.quantity) {
+      setError('Please enter a quantity');
       return;
     }
 
     setLoading(true);
     setError(null);
     try {
-      // TODO: Replace with actual API call
-      // await createOrder(formData);
+      const orderData = {
+        quantity: parseInt(formData.quantity),
+        payload: formData.payload ? JSON.parse(formData.payload) : null,
+      };
       
-      // Mock implementation
-      setOrders([...orders, { ...formData, quantity: parseInt(formData.quantity) }]);
-      setFormData({ order_id: '', quantity: '' });
+      await createOrder(orderData);
+      await loadOrders(); // Reload to get fresh data
+      setFormData({ quantity: '', payload: '' });
       setIsAdding(false);
       setSuccess('Order created successfully!');
       setTimeout(() => setSuccess(null), 3000);
@@ -79,17 +71,15 @@ export function CrudPage() {
     setLoading(true);
     setError(null);
     try {
-      // TODO: Replace with actual API call
-      // await updateOrder(orderId, { quantity: parseInt(formData.quantity) });
+      const orderData = {
+        quantity: parseInt(formData.quantity),
+        payload: formData.payload ? JSON.parse(formData.payload) : null,
+      };
       
-      // Mock implementation
-      setOrders(orders.map(order => 
-        order.order_id === orderId 
-          ? { ...order, quantity: parseInt(formData.quantity) }
-          : order
-      ));
+      await updateOrder(orderId, orderData);
+      await loadOrders(); // Reload to get fresh data
       setEditingId(null);
-      setFormData({ order_id: '', quantity: '' });
+      setFormData({ quantity: '', payload: '' });
       setSuccess('Order updated successfully!');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
@@ -100,18 +90,15 @@ export function CrudPage() {
   };
 
   const handleDelete = async (orderId) => {
-    if (!confirm(`Are you sure you want to delete order ${orderId}?`)) {
+    if (!confirm(`Are you sure you want to delete this order?`)) {
       return;
     }
 
     setLoading(true);
     setError(null);
     try {
-      // TODO: Replace with actual API call
-      // await deleteOrder(orderId);
-      
-      // Mock implementation
-      setOrders(orders.filter(order => order.order_id !== orderId));
+      await deleteOrder(orderId);
+      await loadOrders(); // Reload to get fresh data
       setSuccess('Order deleted successfully!');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
@@ -123,17 +110,21 @@ export function CrudPage() {
 
   const startEdit = (order) => {
     setEditingId(order.order_id);
-    setFormData({ order_id: order.order_id, quantity: order.quantity.toString() });
+    setFormData({ 
+      quantity: order.quantity.toString(),
+      payload: order.payload ? JSON.stringify(order.payload) : '',
+    });
     setIsAdding(false);
   };
 
   const cancelEdit = () => {
     setEditingId(null);
-    setFormData({ order_id: '', quantity: '' });
+    setFormData({ quantity: '', payload: '' });
   };
 
   const filteredOrders = orders.filter(order => 
-    order.order_id.toLowerCase().includes(searchTerm.toLowerCase())
+    order.order_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    order.quantity.toString().includes(searchTerm)
   );
 
   return (
@@ -198,21 +189,22 @@ export function CrudPage() {
           <CardContent>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="text-sm font-medium mb-2 block">Order ID</label>
-                <Input
-                  type="text"
-                  placeholder="Enter order ID"
-                  value={formData.order_id}
-                  onChange={(e) => setFormData({ ...formData, order_id: e.target.value })}
-                />
-              </div>
-              <div>
                 <label className="text-sm font-medium mb-2 block">Quantity</label>
                 <Input
                   type="number"
                   placeholder="Enter quantity"
                   value={formData.quantity}
                   onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
+                  min="1"
+                />
+              </div>
+              <div>
+                <label className="text-sm font-medium mb-2 block">Payload (Optional JSON)</label>
+                <Input
+                  type="text"
+                  placeholder='{"key": "value"}'
+                  value={formData.payload}
+                  onChange={(e) => setFormData({ ...formData, payload: e.target.value })}
                 />
               </div>
             </div>
@@ -228,7 +220,7 @@ export function CrudPage() {
               <Button
                 onClick={() => {
                   setIsAdding(false);
-                  setFormData({ order_id: '', quantity: '' });
+                  setFormData({ quantity: '', payload: '' });
                 }}
                 variant="outline"
               >
@@ -257,21 +249,23 @@ export function CrudPage() {
                   <TableRow className="bg-cyan-50">
                     <TableHead className="font-semibold">Order ID</TableHead>
                     <TableHead className="font-semibold">Quantity</TableHead>
+                    <TableHead className="font-semibold">Payload</TableHead>
+                    <TableHead className="font-semibold">Created At</TableHead>
                     <TableHead className="font-semibold text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredOrders.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={3} className="text-center text-gray-500 py-8">
+                      <TableCell colSpan={5} className="text-center text-gray-500 py-8">
                         No orders found
                       </TableCell>
                     </TableRow>
                   ) : (
                     filteredOrders.map((order) => (
                       <TableRow key={order.order_id} className="hover:bg-cyan-50/50">
-                        <TableCell className="font-mono">
-                          {order.order_id}
+                        <TableCell className="font-mono text-xs">
+                          {order.order_id.substring(0, 8)}...
                         </TableCell>
                         <TableCell>
                           {editingId === order.order_id ? (
@@ -280,10 +274,29 @@ export function CrudPage() {
                               value={formData.quantity}
                               onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
                               className="w-32"
+                              min="1"
                             />
                           ) : (
                             <Badge variant="secondary">{order.quantity}</Badge>
                           )}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {editingId === order.order_id ? (
+                            <Input
+                              type="text"
+                              value={formData.payload}
+                              onChange={(e) => setFormData({ ...formData, payload: e.target.value })}
+                              className="w-48"
+                              placeholder='{"key": "value"}'
+                            />
+                          ) : (
+                            <code className="text-gray-600">
+                              {order.payload ? JSON.stringify(order.payload) : 'null'}
+                            </code>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-xs text-gray-600">
+                          {new Date(order.created_at).toLocaleString()}
                         </TableCell>
                         <TableCell className="text-right">
                           {editingId === order.order_id ? (
