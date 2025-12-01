@@ -8,3 +8,4 @@ etl_modules/__pycache__/
 etl_modules/tests/__pycache__/
 __pycache__/
 .venv/
+.env
