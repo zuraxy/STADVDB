@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, status
 
 from .. import crud
 from ..config import Settings, get_settings
 from ..db import get_pool
-from ..models import OrderCreate, OrderRead, OrderUpdate
+from ..models import OrderCreate, OrderRead, OrderUpdate, PaginatedOrders
 
 router = APIRouter(tags=["orders"])
 
@@ -56,6 +56,30 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 		return await crud.create_order(pool, order, settings.node_name)
 	response = await _forward(request, "POST", "/orders", payload=order.model_dump())
 	return OrderRead(**response)
+
+
+@router.get("/orders", response_model=PaginatedOrders)
+async def list_orders(
+	request: Request,
+	page: int = Query(1, ge=1),
+	limit: int = Query(10, ge=1, le=100),
+):
+	settings = get_settings()
+	pool = get_pool()
+	if _is_master(settings):
+		orders, total = await crud.list_orders(pool, page, limit)
+		total_pages = max(1, (total + limit - 1) // limit)
+		return {
+			"data": orders,
+			"pagination": {
+				"page": page,
+				"limit": limit,
+				"total": total,
+				"total_pages": total_pages,
+			},
+		}
+	response = await _forward(request, "GET", f"/orders?page={page}&limit={limit}")
+	return response
 
 
 @router.get("/orders/{order_id}", response_model=Optional[OrderRead])

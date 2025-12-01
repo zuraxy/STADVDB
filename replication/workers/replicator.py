@@ -33,6 +33,7 @@ class ReplicatorWorker:
         self.last_seen: Dict[str, int] = {peer.base_url: -1 for peer in settings.peer_nodes}
         self.total_inserted = 0
         self.last_error: Optional[str] = None
+        self.peer_errors: Dict[str, Optional[str]] = {peer.base_url: None for peer in settings.peer_nodes}
 
     async def start(self) -> None:
         if self._task is None:
@@ -78,13 +79,16 @@ class ReplicatorWorker:
                 max_lamport = max(op.lamport for op in ops)
                 self.last_seen[peer.base_url] = max(self.last_seen.get(peer.base_url, -1), max_lamport)
             self.last_error = None
+            self.peer_errors[peer.base_url] = None
         except Exception as exc:  # pragma: no cover - exercised by integration tests
             _LOGGER.exception("Failed to replicate from %s", peer.base_url)
             self.last_error = str(exc)
+            self.peer_errors[peer.base_url] = str(exc)
 
     def metrics(self) -> Dict[str, object]:
         return {
             "last_seen": self.last_seen,
             "total_inserted": self.total_inserted,
             "last_error": self.last_error,
+            "peer_errors": self.peer_errors,
         }

@@ -1,11 +1,59 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Database, Server, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Database, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders, testAllConnections } from '../services/api';
+import { fetchAllOrders, fetchReplicationStatus } from '../services/api';
+
+const DEFAULT_NODE_CARDS = [
+  { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
+  { id: 'node1', title: 'Fragment Node 1', description: 'Horizontal partition segment 1' },
+  { id: 'node2', title: 'Fragment Node 2', description: 'Horizontal partition segment 2' },
+];
+
+const buildNodeState = (statusResponse) => {
+  const map = new Map(
+    DEFAULT_NODE_CARDS.map((card) => [card.id, { ...card, status: 'checking', error: null }]),
+  );
+  const normalizeKey = (name) => (name || '').toLowerCase();
+
+  if (statusResponse?.nodes?.length) {
+    statusResponse.nodes.forEach((node) => {
+      const key = normalizeKey(node.name);
+      if (!key) {
+        return;
+      }
+      const base = map.get(key) || {
+        id: key,
+        title: node.name || key,
+        description: node.role === 'peer' ? 'Replica node' : 'Cluster node',
+      };
+      map.set(key, {
+        ...base,
+        status: node.status || (node.error ? 'error' : 'online'),
+        error: node.error || null,
+        promoted: Boolean(node.promoted),
+        role: node.role || base.role,
+      });
+    });
+  } else if (statusResponse?.node) {
+    const key = normalizeKey(statusResponse.node);
+    const base = map.get(key) || {
+      id: key,
+      title: statusResponse.node,
+      description: 'Cluster node',
+    };
+    map.set(key, { ...base, status: 'online', promoted: Boolean(statusResponse.promoted) });
+  }
+
+  const ordered = DEFAULT_NODE_CARDS.map((card) => map.get(card.id)).filter(Boolean);
+  const extras = Array.from(map.entries())
+    .filter(([key]) => !DEFAULT_NODE_CARDS.some((card) => card.id === key))
+    .map(([, value]) => value);
+  return [...ordered, ...extras];
+};
 
 export function DatabaseDashboard() {
   const [data, setData] = useState([]);
@@ -14,69 +62,49 @@ export function DatabaseDashboard() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalRecords, setTotalRecords] = useState(0);
-  const [nodeStatus, setNodeStatus] = useState({
-    Node1: 'checking',
-    Node2: 'checking',
-    Node3: 'checking'
-  });
+  const [partitionRule, setPartitionRule] = useState(null);
+  const [nodeCards, setNodeCards] = useState(() => buildNodeState());
+
+  const applyReplicationStatus = useCallback((statusResponse, fallbackStatus = 'checking') => {
+    if (statusResponse) {
+      setNodeCards(buildNodeState(statusResponse));
+      setPartitionRule(statusResponse.partition_rule ?? null);
+    } else {
+      setNodeCards(DEFAULT_NODE_CARDS.map((card) => ({ ...card, status: fallbackStatus })));
+    }
+  }, [setNodeCards, setPartitionRule]);
 
   const fetchData = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
-      // First, check which nodes are online
-      const connectionStatus = await testAllConnections();
-      
-      // Update node status based on connection test
-      const newStatus = {};
-      if (connectionStatus.success && connectionStatus.connections) {
-        Object.keys(connectionStatus.connections).forEach(nodeName => {
-          const nodeInfo = connectionStatus.connections[nodeName];
-          newStatus[nodeName] = nodeInfo.status === 'connected' ? 'online' : 'error';
-        });
-        setNodeStatus(newStatus);
-      }
-      
-      // Fetch all orders from Node1 (central node)
-      const ordersResponse = await fetchAllOrders(currentPage, 10);
-      
-      if (ordersResponse.success) {
-        setData(ordersResponse.data || []);
-        if (ordersResponse.pagination) {
-          setTotalPages(ordersResponse.pagination.totalPages);
-          setTotalRecords(ordersResponse.pagination.total);
-        }
+      const [statusResponse, ordersResponse] = await Promise.all([
+        fetchReplicationStatus(),
+        fetchAllOrders(currentPage, 10),
+      ]);
+
+      applyReplicationStatus(statusResponse);
+
+      const rows = Array.isArray(ordersResponse)
+        ? ordersResponse
+        : ordersResponse?.data;
+      setData(rows || []);
+
+      const pagination = ordersResponse?.pagination;
+      if (pagination) {
+        setTotalPages(pagination.total_pages ?? pagination.totalPages ?? 1);
+        setTotalRecords(pagination.total ?? rows?.length ?? 0);
       } else {
-        throw new Error('Failed to fetch orders');
+        setTotalPages(1);
+        setTotalRecords(rows?.length ?? 0);
       }
     } catch (err) {
       console.error('Failed to fetch data:', err);
       setError(err.message || 'Failed to connect to database nodes');
-      setNodeStatus({
-        Node1: 'error',
-        Node2: 'error',
-        Node3: 'error'
-      });
+      applyReplicationStatus(null, 'error');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const checkNodeStatus = async () => {
-    try {
-      const connectionStatus = await testAllConnections();
-      
-      if (connectionStatus.success && connectionStatus.connections) {
-        const newStatus = {};
-        Object.keys(connectionStatus.connections).forEach(nodeName => {
-          const nodeInfo = connectionStatus.connections[nodeName];
-          newStatus[nodeName] = nodeInfo.status === 'connected' ? 'online' : 'error';
-        });
-        setNodeStatus(newStatus);
-      }
-    } catch (err) {
-      console.error('Failed to check node status:', err);
     }
   };
 
@@ -86,9 +114,13 @@ export function DatabaseDashboard() {
 
   useEffect(() => {
     // Check node status every 5 seconds
-    const statusInterval = setInterval(checkNodeStatus, 5000);
+    const statusInterval = setInterval(() => {
+      fetchReplicationStatus()
+        .then((statusResponse) => applyReplicationStatus(statusResponse))
+        .catch((err) => console.error('Failed to check node status:', err));
+    }, 5000);
     return () => clearInterval(statusInterval);
-  }, []);
+  }, [applyReplicationStatus]);
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -114,6 +146,43 @@ export function DatabaseDashboard() {
       default:
         return <Loader2 className="w-4 h-4 animate-spin text-gray-600" />;
     }
+  };
+
+  const getNodeStatusById = (id) => {
+    return nodeCards.find((card) => card.id === id)?.status || 'checking';
+  };
+
+  const getBadgeClasses = (status) => {
+    if (status === 'online') {
+      return 'bg-green-50 text-green-700 border-green-300';
+    }
+    if (status === 'error') {
+      return 'bg-red-50 text-red-700 border-red-300';
+    }
+    return 'bg-yellow-50 text-yellow-700 border-yellow-300';
+  };
+
+  const getBadgeLabel = (status) => {
+    if (status === 'online') {
+      return 'Live';
+    }
+    if (status === 'error') {
+      return 'Offline';
+    }
+    return 'Checking';
+  };
+
+  const describeNode = (card) => {
+    if (card.id === 'node0') {
+      return 'All Orders';
+    }
+    if (card.id === 'node1') {
+      return partitionRule ? `Quantity ≤ ${partitionRule}` : 'Fragment 1-5';
+    }
+    if (card.id === 'node2') {
+      return partitionRule ? `Quantity > ${partitionRule}` : 'Fragment 6-10';
+    }
+    return card.description;
   };
 
   const formatDate = (dateString) => {
@@ -152,9 +221,9 @@ export function DatabaseDashboard() {
 
       {/* Header with Node Status */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {['Node1', 'Node2', 'Node3'].map((node, index) => (
+        {nodeCards.map((card, index) => (
           <motion.div
-            key={node}
+            key={card.id}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.1 }}
@@ -165,23 +234,23 @@ export function DatabaseDashboard() {
                   <div className="flex items-center gap-2">
                     <Database className="w-5 h-5 text-cyan-600" />
                     <CardTitle className="text-sm font-medium">
-                      {index === 0 ? 'Central Node' : `Fragment Node ${index}`}
+                      {card.title}
                     </CardTitle>
                   </div>
-                  {getStatusIcon(nodeStatus[node])}
+                  {getStatusIcon(card.status)}
                 </div>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
                     <p className="text-2xl font-bold text-cyan-700">
-                      {index === 0 ? totalRecords : 0}
+                      {card.isPrimary ? totalRecords : 0}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {index === 0 ? 'All Orders' : index === 1 ? 'Fragment 1-5' : 'Fragment 6-10'}
+                      {describeNode(card)}
                     </p>
                   </div>
-                  <div className={`w-2 h-2 rounded-full ${getStatusColor(nodeStatus[node])} animate-pulse`} />
+                  <div className={`w-2 h-2 rounded-full ${getStatusColor(card.status)} animate-pulse`} />
                 </div>
               </CardContent>
             </Card>
@@ -199,9 +268,9 @@ export function DatabaseDashboard() {
                 <CardTitle>Node 1 - Central Database</CardTitle>
                 <CardDescription>Complete dataset with all orders</CardDescription>
               </div>
-              <Badge variant="outline" className={nodeStatus.Node1 === 'online' ? 'bg-green-50 text-green-700 border-green-300' : 'bg-red-50 text-red-700 border-red-300'}>
+              <Badge variant="outline" className={getBadgeClasses(getNodeStatusById('node0'))}>
                 <Activity className="w-3 h-3 mr-1" />
-                {nodeStatus.Node1 === 'online' ? 'Live' : 'Offline'}
+                {getBadgeLabel(getNodeStatusById('node0'))}
               </Badge>
             </div>
           </CardHeader>
@@ -284,9 +353,9 @@ export function DatabaseDashboard() {
                   <CardTitle className="text-base">Node 2 - Fragment 1</CardTitle>
                   <CardDescription>Orders 1-5 (Horizontal partition)</CardDescription>
                 </div>
-                <Badge variant="outline" className={nodeStatus.Node2 === 'online' ? 'bg-green-50 text-green-700 border-green-300' : 'bg-red-50 text-red-700 border-red-300'}>
+                <Badge variant="outline" className={getBadgeClasses(getNodeStatusById('node1'))}>
                   <Activity className="w-3 h-3 mr-1" />
-                  {nodeStatus.Node2 === 'online' ? 'Live' : 'Offline'}
+                  {getBadgeLabel(getNodeStatusById('node1'))}
                 </Badge>
               </div>
             </CardHeader>
@@ -319,9 +388,9 @@ export function DatabaseDashboard() {
                   <CardTitle className="text-base">Node 3 - Fragment 2</CardTitle>
                   <CardDescription>Orders 6-10 (Horizontal partition)</CardDescription>
                 </div>
-                <Badge variant="outline" className={nodeStatus.Node3 === 'online' ? 'bg-green-50 text-green-700 border-green-300' : 'bg-red-50 text-red-700 border-red-300'}>
+                <Badge variant="outline" className={getBadgeClasses(getNodeStatusById('node2'))}>
                   <Activity className="w-3 h-3 mr-1" />
-                  {nodeStatus.Node3 === 'online' ? 'Live' : 'Offline'}
+                  {getBadgeLabel(getNodeStatusById('node2'))}
                 </Badge>
               </div>
             </CardHeader>

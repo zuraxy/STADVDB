@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -27,6 +27,18 @@ class OrderRead(OrderBase):
 	order_id: UUID
 	created_at: datetime
 	updated_at: datetime
+
+
+class PaginationMeta(BaseModel):
+	page: int = Field(..., ge=1)
+	limit: int = Field(..., ge=1)
+	total: int = Field(..., ge=0)
+	total_pages: int = Field(..., ge=1)
+
+
+class PaginatedOrders(BaseModel):
+	data: List[OrderRead]
+	pagination: PaginationMeta
 
 
 class PromoteToggle(BaseModel):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from asyncpg import Pool
@@ -72,6 +72,24 @@ async def create_order(pool: Pool, order: OrderCreate, origin_node: str) -> Orde
 		created_at=now,
 		updated_at=now,
 	)
+
+
+async def list_orders(pool: Pool, page: int, limit: int) -> Tuple[List[OrderRead], int]:
+	offset = (page - 1) * limit
+	async with pool.acquire() as conn:
+		rows = await conn.fetch(
+			"""
+			SELECT order_id, quantity, payload, created_at, updated_at
+			FROM orders
+			ORDER BY updated_at DESC
+			LIMIT $1 OFFSET $2
+			""",
+			limit,
+			offset,
+		)
+		total = await conn.fetchval("SELECT COUNT(*) FROM orders")
+	orders = [OrderRead(**dict(row)) for row in rows]
+	return orders, int(total or 0)
 
 
 async def update_order(pool: Pool, order_id: UUID, order: OrderUpdate, origin_node: str) -> Optional[OrderRead]:
