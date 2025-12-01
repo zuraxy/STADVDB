@@ -1,5 +1,6 @@
 // API Service - Centralized data fetching functions
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
+const REPLICATION_API_BASE_URL = import.meta.env.VITE_REPLICATION_API_URL || 'http://localhost:8000';
 
 /**
  * Generic fetch wrapper with error handling
@@ -22,6 +23,27 @@ const fetchAPI = async (endpoint, options = {}) => {
     return data;
   } catch (error) {
     console.error(`API Error (${endpoint}):`, error);
+    throw error;
+  }
+};
+
+const fetchReplication = async (endpoint, options = {}) => {
+  try {
+    const response = await fetch(`${REPLICATION_API_BASE_URL}${endpoint}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      ...options,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Replication API error! status: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error(`Replication API Error (${endpoint}):`, error);
     throw error;
   }
 };
@@ -102,7 +124,7 @@ export const healthCheck = async () => {
 /**
  * Export API base URL for direct use if needed
  */
-export { API_BASE_URL };
+export { API_BASE_URL, REPLICATION_API_BASE_URL };
 
 // ==================== TRANSACTION ORCHESTRATOR ====================
 
@@ -112,7 +134,7 @@ export { API_BASE_URL };
  * @returns {Promise<Object>} Details containing run_id
  */
 export const runOrchestratorScenario = async (payload) => {
-  return fetchAPI('/orchestrator/run', {
+  return fetchReplication('/orchestrator/run', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
@@ -124,7 +146,7 @@ export const runOrchestratorScenario = async (payload) => {
  * @returns {Promise<Object>} Run snapshot
  */
 export const getOrchestratorStatus = async (runId) => {
-  return fetchAPI(`/orchestrator/status/${runId}`);
+  return fetchReplication(`/orchestrator/status/${runId}`);
 };
 
 /**
@@ -133,7 +155,7 @@ export const getOrchestratorStatus = async (runId) => {
  * @returns {Promise<Object>} Log array
  */
 export const getOrchestratorLogs = async (runId) => {
-  return fetchAPI(`/orchestrator/logs/${runId}`);
+  return fetchReplication(`/orchestrator/logs/${runId}`);
 };
 
 /**
@@ -142,7 +164,7 @@ export const getOrchestratorLogs = async (runId) => {
  * @returns {Promise<Object>} Confirmation payload
  */
 export const abortOrchestratorRun = async (runId) => {
-  return fetchAPI(`/orchestrator/abort/${runId}`, {
+  return fetchReplication(`/orchestrator/abort/${runId}`, {
     method: 'POST',
   });
 };
