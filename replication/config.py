@@ -6,7 +6,15 @@ import json
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import List, Optional
+
+from dotenv import load_dotenv
+
+# Load .env file from the replication directory
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+	load_dotenv(_env_path)
 
 
 @dataclass(frozen=True)
