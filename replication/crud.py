@@ -88,7 +88,16 @@ async def list_orders(pool: Pool, page: int, limit: int) -> Tuple[List[OrderRead
 			offset,
 		)
 		total = await conn.fetchval("SELECT COUNT(*) FROM orders")
-	orders = [OrderRead(**dict(row)) for row in rows]
+	
+	orders = []
+	for row in rows:
+		row_dict = dict(row)
+		# Parse JSONB payload if it's a string
+		if isinstance(row_dict.get('payload'), str):
+			import json
+			row_dict['payload'] = json.loads(row_dict['payload']) if row_dict['payload'] else None
+		orders.append(OrderRead(**row_dict))
+	
 	return orders, int(total or 0)
 
 
@@ -101,8 +110,15 @@ async def update_order(pool: Pool, order_id: UUID, order: OrderUpdate, origin_no
 			)
 			if row is None:
 				return None
+			
+			# Parse payload if it's a string
+			existing_payload = row["payload"]
+			if isinstance(existing_payload, str):
+				import json
+				existing_payload = json.loads(existing_payload) if existing_payload else None
+			
 			new_quantity = order.quantity or row["quantity"]
-			new_payload = order.payload if order.payload is not None else row["payload"]
+			new_payload = order.payload if order.payload is not None else existing_payload
 			now = _utcnow()
 			await conn.execute(
 				"UPDATE orders SET quantity=$1, payload=$2, updated_at=$3 WHERE order_id=$4",
@@ -173,7 +189,14 @@ async def get_order(pool: Pool, order_id: UUID) -> Optional[OrderRead]:
 		)
 	if row is None:
 		return None
-	return OrderRead(**dict(row))
+	
+	row_dict = dict(row)
+	# Parse JSONB payload if it's a string
+	if isinstance(row_dict.get('payload'), str):
+		import json
+		row_dict['payload'] = json.loads(row_dict['payload']) if row_dict['payload'] else None
+	
+	return OrderRead(**row_dict)
 
 
 async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:

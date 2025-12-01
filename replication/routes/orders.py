@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from .. import crud
 from ..config import Settings, get_settings
 from ..db import get_pool
-from ..models import OrderCreate, OrderRead, OrderUpdate, PaginatedOrders
+from ..models import OrderCreate, OrderRead, OrderUpdate
 
 router = APIRouter(tags=["orders"])
 
