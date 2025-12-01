@@ -103,3 +103,46 @@ export const healthCheck = async () => {
  * Export API base URL for direct use if needed
  */
 export { API_BASE_URL };
+
+// ==================== TRANSACTION ORCHESTRATOR ====================
+
+/**
+ * Start a new orchestrator run for a given scenario
+ * @param {Object} payload - Request body with scenario, isolation level, and optional custom transactions
+ * @returns {Promise<Object>} Details containing run_id
+ */
+export const runOrchestratorScenario = async (payload) => {
+  return fetchAPI('/orchestrator/run', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+/**
+ * Fetch orchestration status, including per-client progress and summary details
+ * @param {string} runId - Run identifier
+ * @returns {Promise<Object>} Run snapshot
+ */
+export const getOrchestratorStatus = async (runId) => {
+  return fetchAPI(`/orchestrator/status/${runId}`);
+};
+
+/**
+ * Fetch structured event logs for a run
+ * @param {string} runId - Run identifier
+ * @returns {Promise<Object>} Log array
+ */
+export const getOrchestratorLogs = async (runId) => {
+  return fetchAPI(`/orchestrator/logs/${runId}`);
+};
+
+/**
+ * Abort an in-flight orchestrator run
+ * @param {string} runId - Run identifier
+ * @returns {Promise<Object>} Confirmation payload
+ */
+export const abortOrchestratorRun = async (runId) => {
+  return fetchAPI(`/orchestrator/abort/${runId}`, {
+    method: 'POST',
+  });
+};

@@ -1,3 +1,3 @@
 """FastAPI router exports."""
 
-from . import admin, orders, replication  # noqa: F401
+from . import admin, orchestrator, orders, replication  # noqa: F401

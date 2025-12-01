@@ -6,6 +6,7 @@ import { TransactionFlow } from './components/TransactionFlow';
 import { CrudPage } from './components/CrudPage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Database, Activity, Network, Edit } from 'lucide-react';
+import { TransactionOrchestrator } from './components/TransactionOrchestrator';
 
 export default function App() {
   const [activeScenario, setActiveScenario] = useState(null);
@@ -95,6 +96,9 @@ export default function App() {
                   isRunning={isRunning}
                   setIsRunning={setIsRunning}
                 />
+              </div>
+              <div className="mt-8">
+                <TransactionOrchestrator />
               </div>
             </div>
           </TabsContent>

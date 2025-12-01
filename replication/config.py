@@ -30,11 +30,25 @@ class Settings:
 	promoted: bool
 	partition_rule: int
 	applier_interval: float
+	node0_dsn: Optional[str]
+	node1_dsn: Optional[str]
+	node2_dsn: Optional[str]
 
 	def peer_urls(self) -> List[str]:
 		"""Return peer base URLs only."""
 
 		return [peer.base_url for peer in self.peer_nodes]
+
+	def dsn_for(self, node_label: str) -> Optional[str]:
+		"""Return the configured DSN for a logical node name."""
+
+		key = node_label.lower()
+		mapping = {
+			"node0": self.node0_dsn,
+			"node1": self.node1_dsn,
+			"node2": self.node2_dsn,
+		}
+		return mapping.get(key)
 
 
 def _parse_bool(raw_value: Optional[str], default: bool = False) -> bool:
@@ -92,6 +106,17 @@ def get_settings() -> Settings:
 	applier_interval = float(os.getenv("APPLIER_INTERVAL", "2"))
 	promoted = _parse_bool(os.getenv("PROMOTED"), default=False)
 	partition_rule = int(os.getenv("PARTITION_RULE", "5"))
+	node0_dsn = os.getenv("NODE0_DSN") or (database_dsn if node_name.lower() == "node0" else None)
+	node1_dsn = os.getenv("NODE1_DSN") or (database_dsn if node_name.lower() == "node1" else None)
+	node2_dsn = os.getenv("NODE2_DSN") or (database_dsn if node_name.lower() == "node2" else None)
+
+	# Ensure local node always has a DSN entry for convenience
+	if node_name.lower() == "node0" and not node0_dsn:
+		node0_dsn = database_dsn
+	if node_name.lower() == "node1" and not node1_dsn:
+		node1_dsn = database_dsn
+	if node_name.lower() == "node2" and not node2_dsn:
+		node2_dsn = database_dsn
 
 	if not default_master_url:
 		for peer in peer_nodes:
@@ -109,4 +134,7 @@ def get_settings() -> Settings:
 		promoted=promoted,
 		partition_rule=partition_rule,
 		applier_interval=applier_interval,
+		node0_dsn=node0_dsn,
+		node1_dsn=node1_dsn,
+		node2_dsn=node2_dsn,
 	)

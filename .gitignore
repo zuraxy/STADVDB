@@ -1,7 +1,10 @@
-.env
+.env0
+.env1
+.env2
 **/node_modules
 frontend/__pycache__/
 frontend/tabs/__pycache__/
 etl_modules/__pycache__/
 etl_modules/tests/__pycache__/
 __pycache__/
+.venv/

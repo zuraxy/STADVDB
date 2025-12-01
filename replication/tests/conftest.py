@@ -56,6 +56,9 @@ def settings() -> Settings:
 		promoted=False,
 		partition_rule=5,
 		applier_interval=0.1,
+		node0_dsn="node0",
+		node1_dsn="node1",
+		node2_dsn="node2",
 	)
 
 
