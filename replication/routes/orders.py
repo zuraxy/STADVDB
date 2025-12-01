@@ -58,27 +58,14 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 	return OrderRead(**response)
 
 
-@router.get("/orders", response_model=PaginatedOrders)
-async def list_orders(
-	request: Request,
-	page: int = Query(1, ge=1),
-	limit: int = Query(10, ge=1, le=100),
-):
+@router.get("/orders", response_model=list[OrderRead])
+async def list_orders(request: Request):
 	settings = get_settings()
 	pool = get_pool()
 	if _is_master(settings):
-		orders, total = await crud.list_orders(pool, page, limit)
-		total_pages = max(1, (total + limit - 1) // limit)
-		return {
-			"data": orders,
-			"pagination": {
-				"page": page,
-				"limit": limit,
-				"total": total,
-				"total_pages": total_pages,
-			},
-		}
-	response = await _forward(request, "GET", f"/orders?page={page}&limit={limit}")
+		orders, _ = await crud.list_orders(pool, page=1, limit=10000)
+		return orders
+	response = await _forward(request, "GET", "/orders")
 	return response
 
 

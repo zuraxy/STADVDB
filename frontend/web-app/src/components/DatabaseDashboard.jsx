@@ -56,6 +56,7 @@ const buildNodeState = (statusResponse) => {
 };
 
 export function DatabaseDashboard() {
+  const [allData, setAllData] = useState([]);
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -64,6 +65,8 @@ export function DatabaseDashboard() {
   const [totalRecords, setTotalRecords] = useState(0);
   const [partitionRule, setPartitionRule] = useState(null);
   const [nodeCards, setNodeCards] = useState(() => buildNodeState());
+  
+  const itemsPerPage = 10;
 
   const applyReplicationStatus = useCallback((statusResponse, fallbackStatus = 'checking') => {
     if (statusResponse) {
@@ -81,24 +84,20 @@ export function DatabaseDashboard() {
     try {
       const [statusResponse, ordersResponse] = await Promise.all([
         fetchReplicationStatus(),
-        fetchAllOrders(currentPage, 10),
+        fetchAllOrders(),
       ]);
 
       applyReplicationStatus(statusResponse);
 
-      const rows = Array.isArray(ordersResponse)
-        ? ordersResponse
-        : ordersResponse?.data;
-      setData(rows || []);
-
-      const pagination = ordersResponse?.pagination;
-      if (pagination) {
-        setTotalPages(pagination.total_pages ?? pagination.totalPages ?? 1);
-        setTotalRecords(pagination.total ?? rows?.length ?? 0);
-      } else {
-        setTotalPages(1);
-        setTotalRecords(rows?.length ?? 0);
-      }
+      const rows = Array.isArray(ordersResponse) ? ordersResponse : [];
+      setAllData(rows);
+      setTotalRecords(rows.length);
+      setTotalPages(Math.ceil(rows.length / itemsPerPage));
+      
+      // Set initial page data
+      const startIndex = (currentPage - 1) * itemsPerPage;
+      const endIndex = startIndex + itemsPerPage;
+      setData(rows.slice(startIndex, endIndex));
     } catch (err) {
       console.error('Failed to fetch data:', err);
       setError(err.message || 'Failed to connect to database nodes');
@@ -108,9 +107,18 @@ export function DatabaseDashboard() {
     }
   };
 
+  // Update displayed data when page changes
+  useEffect(() => {
+    if (allData.length > 0) {
+      const startIndex = (currentPage - 1) * itemsPerPage;
+      const endIndex = startIndex + itemsPerPage;
+      setData(allData.slice(startIndex, endIndex));
+    }
+  }, [currentPage, allData]);
+
   useEffect(() => {
     fetchData();
-  }, [currentPage]);
+  }, []);
 
   useEffect(() => {
     // Check node status every 5 seconds

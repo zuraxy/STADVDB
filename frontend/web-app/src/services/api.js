@@ -29,13 +29,11 @@ const fetchAPI = async (endpoint, options = {}) => {
 // ==================== ORDER OPERATIONS ====================
 
 /**
- * Fetch all orders from current node with pagination
- * @param {number} page - Page number (default: 1)
- * @param {number} limit - Items per page (default: 10)
- * @returns {Promise<Object>} Response with paginated orders
+ * Fetch all orders from current node
+ * @returns {Promise<Array>} Array of all orders
  */
-export const fetchAllOrders = async (page = 1, limit = 10) => {
-  return fetchAPI(`/orders?page=${page}&limit=${limit}`);
+export const fetchAllOrders = async () => {
+  return fetchAPI('/orders');
 };
 
 // ==================== NODE STATUS ====================
