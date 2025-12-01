@@ -36,35 +36,79 @@ To find a file within our cloned stadvdb folder:
 `postgres@STADVDB44-Server0:~$ find ~/STADVDB -name "truncated_dump.sql"`
 
 To use our sql dump and load to database:
-`postgres@STADVDB44-Server0:~$ psql -d nodexdb -f /var/lib/postgresql/STADVDB/MCO2.ETLs/truncated_dump.sql`
-`cd /var/lib/postgresql/STADVDB; git pull` to update
+`postgres@STADVDB44-Server0:~$ psql -d nodexdb -f /root/STADVDB/MCO2.ETLs/truncated_dump.sql`
+`cd STADVDB; git pull` from root to update
+`rm -r STADVDB` to delete repo
 
 to reset schema for node1 and 2
 `psql -U postgres -d node2db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
 `psql -U postgres -d node2db -f <(pg_dump -U postgres -d node1db --schema-only)`
-`psql -U postgres -d node2db -f /var/lib/postgresql/STADVDB/MCO2.ETLs/schema_only_dump.sql`
+`psql -U postgres -d node2db -f /STADVDB/MCO2.ETLs/schema_only_dump.sql`
 
 initialize node1 and node2:
-`psql -U postgres -d node2db -c "\copy orders FROM '/var/lib/postgresql/STADVDB/MCO2.ETLs/node2.csv' CSV HEADER"`
+`psql -U postgres -d node2db -c "\copy orders FROM '/STADVDB/MCO2.ETLs/node2.csv' CSV HEADER"`
 `ALTER TABLE orders ADD CONSTRAINT qty_1to5 CHECK (quantity <= 5);` on node1
 `ALTER TABLE orders ADD CONSTRAINT qty_6to10 CHECK (quantity > 5);` on node2
 
-create replication role:
-`sudo -u postgres psql -d node0db -c "CREATE ROLE repl WITH LOGIN PASSWORD 'REPL_PASS';"`
+install to py to all vms
+`sudo apt update`
+`sudo apt install -y python3.10 python3.10-venv python3-pip`
+`cd /path/to/your/checkout/replication`
+`python3 -m venv .venv`
+`source .venv/bin/activate`
+`pip install --upgrade pip`
+`pip install -r requirements.txt`
 
-create publications in node0:
-`DROP PUBLICATION IF EXISTS pub_node1;`
-`CREATE PUBLICATION pub_node1 FOR TABLE public.orders WHERE (quantity <= 5);`
+to make a new user:
+`sudo -u postgres psql <<'SQL'`
+`CREATE ROLE app_user WITH LOGIN PASSWORD 'password'; GRANT CONNECT ON DATABASE node2db TO app_user; `
+`\c node2db`
+`GRANT USAGE ON SCHEMA public TO app_user; GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.orders TO app_user; GRANT SELECT, INSERT, UPDATE ON TABLE public.op_log TO app_user; GRANT SELECT, INSERT ON TABLE public.log_acknowledgements TO app_user; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO app_user;`
 
-`DROP PUBLICATION IF EXISTS pub_node2;`
-`CREATE PUBLICATION pub_node2 FOR TABLE public.orders WHERE (quantity > 5);`
+env node0:
+export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node0db"
+export NODE_NAME="node0"
+export PEER_NODES="http://10.2.14.133:8001,http://10.2.14.134:8002"
+export POLL_INTERVAL="5"
+export DEFAULT_MASTER="node0"
+export PROMOTED="false"
+export PARTITION_RULE="5"
 
-make node1 subscribe to node0 publication:
-`DROP SUBSCRIPTION IF EXISTS sub_to_node0_for_node1;`
-`CREATE SUBSCRIPTION sub_to_node0_for_node1 CONNECTION 'host=10.2.14.132 port=3306 dbname=node0db user=repl password=REPL_PASS' PUBLICATION pub_node1 WITH (copy_data = false);`
+env node1:
+export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node1db"
+export NODE_NAME="node1"
+export PEER_NODES="http://10.2.14.132:8000,http://10.2.14.134:8002"
+export DEFAULT_MASTER="node0"
+export PROMOTED="false"
+export PARTITION_RULE="5"
 
-`DROP SUBSCRIPTION IF EXISTS sub_to_node0_for_node2;`
-`CREATE SUBSCRIPTION sub_to_node0_for_node2 CONNECTION 'host=10.2.14.132 port=3306 dbname=node0db user=repl password=REPL_PASS' PUBLICATION pub_node2 WITH (copy_data = false);`
+env node2:
+export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node2db"
+export NODE_NAME="node2"
+export PEER_NODES="http://10.2.14.133:8001,http://10.2.14.134:8002"
+export POLL_INTERVAL="5"
+export DEFAULT_MASTER="node0"
+export PROMOTED="false"
+export PARTITION_RULE="5"
+
+start from root:
+# Node0 shell (on VM0)
+cd ~/STADVDB/replication
+export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node0db"
+export NODE_NAME="node0"
+export DEFAULT_MASTER="node0"
+export DEFAULT_MASTER_URL="http://VM0_IP:8000"
+# Peers are node1 + node2
+export PEER_NODES='[{"name":"node1","url":"http://VM1_IP:8001"},{"name":"node2","url":"http://VM2_IP:8002"}]'
+export POLL_INTERVAL="5"
+export APPLIER_INTERVAL="2"
+export PROMOTED="false"
+export PARTITION_RULE="5"
+
+curl http://localhost:8000/health
+
+source replication/.venv/bin/activate
+uvicorn replication.main:app --host 0.0.0.0 --port 8000
 
 ==========================================================================================
 UUID TABLE SCHEMA FOR ALL NODES
