@@ -25,6 +25,7 @@ def _order_payload(quantity: int, payload: Optional[dict]) -> dict:
 
 async def create_order(pool: Pool, order: OrderCreate, origin_node: str) -> OrderRead:
 	"""Insert an order and the matching op_log entry in one transaction."""
+	import json
 
 	order_id = order.order_id or uuid4()
 	op_id = uuid4()
@@ -33,10 +34,12 @@ async def create_order(pool: Pool, order: OrderCreate, origin_node: str) -> Orde
 	async with pool.acquire() as conn:
 		async with conn.transaction():
 			lamport_value = await lamport_utils.next_lamport(conn, origin_node)
+			# Convert payload dict to JSON string for PostgreSQL JSONB
+			payload_json = json.dumps(order.payload) if order.payload else None
 			await conn.execute(
 				"""
 				INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-				VALUES ($1, $2, $3, $4, $4)
+				VALUES ($1, $2, $3::jsonb, $4, $4)
 				ON CONFLICT (order_id)
 				DO UPDATE
 					SET quantity = EXCLUDED.quantity,
@@ -45,7 +48,7 @@ async def create_order(pool: Pool, order: OrderCreate, origin_node: str) -> Orde
 				""",
 				order_id,
 				order.quantity,
-				order.payload,
+				payload_json,
 				now,
 			)
 			await conn.execute(
@@ -117,13 +120,17 @@ async def update_order(pool: Pool, order_id: UUID, order: OrderUpdate, origin_no
 				import json
 				existing_payload = json.loads(existing_payload) if existing_payload else None
 			
+			import json
+			
 			new_quantity = order.quantity or row["quantity"]
 			new_payload = order.payload if order.payload is not None else existing_payload
+			# Convert payload dict to JSON string for PostgreSQL JSONB
+			payload_json = json.dumps(new_payload) if new_payload else None
 			now = _utcnow()
 			await conn.execute(
-				"UPDATE orders SET quantity=$1, payload=$2, updated_at=$3 WHERE order_id=$4",
+				"UPDATE orders SET quantity=$1, payload=$2::jsonb, updated_at=$3 WHERE order_id=$4",
 				new_quantity,
-				new_payload,
+				payload_json,
 				now,
 				order_id,
 			)
