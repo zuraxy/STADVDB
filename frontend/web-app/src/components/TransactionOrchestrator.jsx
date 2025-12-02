@@ -16,17 +16,17 @@ import {
 
 const scenarioOptions = [
   {
-    id: 'read_read',
+    id: 'READ_READ',
     label: 'Readers vs Readers',
     description: 'Two+ readers issue BEGIN/SELECT/pg_sleep/SELECT to visualize snapshot semantics.',
   },
   {
-    id: 'read_write',
+    id: 'READ_WRITE',
     label: 'Writer vs Readers',
     description: 'A writer updates Node X while readers on Node Y observe visibility differences.',
   },
   {
-    id: 'write_write',
+    id: 'WRITE_WRITE',
     label: 'Writer vs Writer',
     description: 'Two writers concurrently update the same row to provoke serialization conflicts.',
   },
@@ -57,7 +57,7 @@ const clientTone = {
 };
 
 export function TransactionOrchestrator() {
-  const [scenario, setScenario] = useState('read_read');
+  const [scenario, setScenario] = useState('READ_READ');
   const [isolation, setIsolation] = useState('READ_COMMITTED');
   const [parallelClients, setParallelClients] = useState(2);
   const [orderId, setOrderId] = useState('');
@@ -75,8 +75,8 @@ export function TransactionOrchestrator() {
   const streamRef = useRef(null);
 
   const activeScenario = useMemo(() => scenarioOptions.find((opt) => opt.id === scenario), [scenario]);
-  const requiresWriter = scenario !== 'read_read';
-  const requiresSecondWriter = scenario === 'write_write';
+  const requiresWriter = scenario !== 'READ_READ';
+  const requiresSecondWriter = scenario === 'WRITE_WRITE';
 
   const fetchRunData = useCallback(
     async (targetRunId) => {
@@ -172,14 +172,14 @@ export function TransactionOrchestrator() {
         node_x: nodeX,
         node_y: nodeY,
       };
-      if (scenario !== 'read_read') {
+      if (scenario !== 'READ_READ') {
         const parsedValue1 = newValue1 === '' ? undefined : Number(newValue1);
         if (Number.isNaN(parsedValue1)) {
           throw new Error('New Value 1 must be numeric when provided');
         }
         payload.new_value_1 = parsedValue1;
       }
-      if (scenario === 'write_write') {
+      if (scenario === 'WRITE_WRITE') {
         const parsedValue2 = newValue2 === '' ? undefined : Number(newValue2);
         if (Number.isNaN(parsedValue2)) {
           throw new Error('New Value 2 must be numeric when provided');
@@ -408,18 +408,18 @@ export function TransactionOrchestrator() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="newValue1" className="text-slate-700 font-medium">
-                {scenario === 'read_write' ? 'Writer target quantity' : 'Writer A increment'}
+                {scenario === 'READ_WRITE' ? 'Writer target quantity' : 'Writer A increment'}
               </Label>
               <Input
                 id="newValue1"
                 type="number"
                 value={newValue1}
                 onChange={(e) => setNewValue1(e.target.value)}
-                placeholder={scenario === 'read_write' ? 'e.g., 42' : 'e.g., 1'}
+                placeholder={scenario === 'READ_WRITE' ? 'e.g., 42' : 'e.g., 1'}
                 className="bg-white border-slate-300"
               />
               <p className="text-xs text-muted-foreground">
-                Applies to Node X client ({scenario === 'read_write' ? 'absolute set' : 'increment'}).
+                Applies to Node X client ({scenario === 'READ_WRITE' ? 'absolute set' : 'increment'}).
               </p>
             </div>
             {requiresSecondWriter && (
