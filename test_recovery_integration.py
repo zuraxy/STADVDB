@@ -9,8 +9,14 @@ NODE0_URL = "http://ccscloud.dlsu.edu.ph:60832"  # Node 0 (Leader)
 NODE1_URL = "http://ccscloud.dlsu.edu.ph:60833"  # Node 1 (Replica, qty <= 5)
 NODE2_URL = "http://ccscloud.dlsu.edu.ph:60834"  # Node 2 (Replica, qty > 5)
 
-# Select which node to test (change this to test different nodes)
-NODE_URL = NODE0_URL
+# Local testing
+LOCAL_URL = "http://localhost:8000"
+
+# Select which node to test - CHANGE THIS LINE TO SWITCH:
+# NODE_URL = NODE0_URL      # Test cloud Node0
+# NODE_URL = LOCAL_URL      # Test local server
+NODE_URL = LOCAL_URL  # <-- Currently set to LOCAL
+
 HEADERS = {"Content-Type": "application/json"}
 
 def print_step(msg):
