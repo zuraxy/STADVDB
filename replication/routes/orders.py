@@ -55,7 +55,7 @@ async def list_orders(request: Request):
 	settings = get_settings()
 	pool = get_pool()
 	if _is_master(settings):
-		orders, _ = await crud.list_orders(pool, page=1, limit=10000)
+		orders, _ = await crud.list_orders(pool, page=1, limit=1000000)  # Increased limit
 		return orders
 	response = await _forward(request, "GET", "/orders")
 	return response
@@ -65,7 +65,7 @@ async def list_orders(request: Request):
 async def list_local_orders(request: Request):
 	"""Get orders from THIS node's local database only (no forwarding)"""
 	pool = get_pool()
-	orders, _ = await crud.list_orders(pool, page=1, limit=10000)
+	orders, _ = await crud.list_orders(pool, page=1, limit=1000000)  # Increased limit to get all orders
 	return orders
 
 
