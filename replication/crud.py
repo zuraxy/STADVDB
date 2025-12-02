@@ -315,11 +315,7 @@ async def apply_op_tx(conn, op_record: OpRecord) -> None:
 				order_payload_json,
 				op_record.ts,
 			)
-		await conn.execute(
-			"UPDATE op_log SET applied=true, applied_ts=$2 WHERE op_id=$1",
-			op_record.op_id,
-			_utcnow(),
-		)
+		await mark_op_applied(conn, op_record.op_id)
 
 
 async def insert_ack(conn, op_id: UUID, node: str) -> None:
@@ -331,5 +327,15 @@ async def insert_ack(conn, op_id: UUID, node: str) -> None:
 		""",
 		op_id,
 		node,
+		_utcnow(),
+	)
+
+
+async def mark_op_applied(conn, op_id: UUID) -> None:
+	"""Mark an op-log entry as applied without replaying it."""
+
+	await conn.execute(
+		"UPDATE op_log SET applied=true, applied_ts=$2 WHERE op_id=$1",
+		op_id,
 		_utcnow(),
 	)

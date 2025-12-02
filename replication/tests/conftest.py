@@ -63,8 +63,8 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def op_factory() -> Callable[[int], OpRecord]:
-	def _factory(lamport: int) -> OpRecord:
+def op_factory() -> Callable[[int, int], OpRecord]:
+	def _factory(lamport: int, quantity: int = 1) -> OpRecord:
 		now = datetime.now(timezone.utc)
 		return OpRecord(
 			op_id=uuid4(),
@@ -72,7 +72,7 @@ def op_factory() -> Callable[[int], OpRecord]:
 			op_type="upsert",
 			table_name="orders",
 			row_id=uuid4(),
-			payload={"quantity": 1, "payload": {"demo": True}},
+			payload={"quantity": quantity, "payload": {"demo": True}},
 			ts=now,
 			lamport=lamport,
 			applied=False,

@@ -8,6 +8,7 @@ from typing import Optional
 
 from .. import crud
 from ..config import Settings
+from ..utils.partition import can_accept_partition
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class ApplierWorker:
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self.applied_count = 0
+        self.skipped_count = 0
         self.last_error: Optional[str] = None
 
     async def start(self) -> None:
@@ -50,6 +52,10 @@ class ApplierWorker:
                 self.last_error = None
                 return
             for op in ops:
+                if not self._should_apply(op):
+                    await self.crud.mark_op_applied(conn, op.op_id)
+                    self.skipped_count += 1
+                    continue
                 try:
                     await self.crud.apply_op_tx(conn, op)
                     await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
@@ -59,8 +65,18 @@ class ApplierWorker:
                     self.last_error = str(exc)
                     return
 
+    def _should_apply(self, op) -> bool:
+        if self.settings.node_name == self.settings.default_master:
+            return True
+        payload = op.payload or {}
+        quantity = payload.get("quantity")
+        if quantity is None:
+            return True
+        return can_accept_partition(self.settings.node_name, quantity, self.settings.partition_rule)
+
     def metrics(self) -> dict:
         return {
             "applied_count": self.applied_count,
+            "skipped_count": self.skipped_count,
             "last_error": self.last_error,
         }

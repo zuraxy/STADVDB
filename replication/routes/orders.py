@@ -11,17 +11,9 @@ from .. import crud
 from ..config import Settings, get_settings
 from ..db import get_pool
 from ..models import OrderCreate, OrderRead, OrderUpdate
+from ..utils.partition import can_accept_partition
 
 router = APIRouter(tags=["orders"])
-
-
-def _can_accept_partition(node_name: str, quantity: int, threshold: int) -> bool:
-	lower = node_name.lower()
-	if lower.endswith("1"):
-		return quantity <= threshold
-	if lower.endswith("2"):
-		return quantity > threshold
-	return True
 
 
 def _is_master(settings: Settings) -> bool:
@@ -52,7 +44,7 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
 	# TODO: Introduce a distributed transaction coordinator for cross-partition writes.
-	if _is_master(settings) or (promoted and _can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
+	if _is_master(settings) or (promoted and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
 		return await crud.create_order(pool, order, settings.node_name)
 	response = await _forward(request, "POST", "/orders", payload=order.model_dump())
 	return OrderRead(**response)
@@ -84,7 +76,7 @@ async def update_order(order_id: UUID, order: OrderUpdate, request: Request) -> 
 	settings = get_settings()
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
-	if _is_master(settings) or (promoted and order.quantity is not None and _can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
+	if _is_master(settings) or (promoted and order.quantity is not None and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
 		updated = await crud.update_order(pool, order_id, order, settings.node_name)
 		if not updated:
 			raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Order not found")
