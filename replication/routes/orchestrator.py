@@ -90,12 +90,14 @@ class RunOrchestrationRequest(BaseModel):
             ]
         elif scenario == ScenarioType.READ_WRITE:
             # One writer, one reader
+            # Default to 1 if no value specified (will be used as increment or set)
+            write_value = self.new_value_1 if self.new_value_1 is not None else 1
             self.actors = [
                 TransactionActorModel(
                     name="writer",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    new_quantity=self.new_value_1,
+                    new_quantity=write_value,
                 ),
                 TransactionActorModel(
                     name="reader",
@@ -105,18 +107,21 @@ class RunOrchestrationRequest(BaseModel):
             ]
         elif scenario == ScenarioType.WRITE_WRITE:
             # Two writers on same or different nodes
+            # Default to 1 if no values specified
+            write_value_1 = self.new_value_1 if self.new_value_1 is not None else 1
+            write_value_2 = self.new_value_2 if self.new_value_2 is not None else 1
             self.actors = [
                 TransactionActorModel(
                     name="writer_a",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    new_quantity=self.new_value_1,
+                    new_quantity=write_value_1,
                 ),
                 TransactionActorModel(
                     name="writer_b",
                     node=self.node_y or "node1",
                     isolation_level=isolation,
-                    new_quantity=self.new_value_2,
+                    new_quantity=write_value_2,
                 ),
             ]
         
