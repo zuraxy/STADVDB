@@ -251,3 +251,88 @@ export const subscribeToOrchestratorStream = (runId, { onMessage, onError } = {}
   };
   return source;
 };
+
+// ==================== RECOVERY OPERATIONS ====================
+
+/**
+ * Start a recovery job
+ * @param {Object} payload - { mode: 'leader'|'node'|'promotion', since_ts?: string, promoted_node?: string }
+ * @returns {Promise<Object>} { job_id, status }
+ */
+export const startRecovery = async (payload) => {
+  return fetchAPI('/recovery/start', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+/**
+ * Get recovery job status
+ * @param {string} jobId - The job ID
+ * @returns {Promise<Object>} Job status with metrics
+ */
+export const getRecoveryStatus = async (jobId) => {
+  return fetchAPI(`/recovery/status/${jobId}`);
+};
+
+/**
+ * Get recovery job logs
+ * @param {string} jobId - The job ID
+ * @param {number} limit - Max number of log entries
+ * @returns {Promise<Object>} { job_id, logs: [] }
+ */
+export const getRecoveryLogs = async (jobId, limit = 100) => {
+  return fetchAPI(`/recovery/logs/${jobId}?limit=${limit}`);
+};
+
+/**
+ * Abort a running recovery job
+ * @param {string} jobId - The job ID
+ * @returns {Promise<Object>} { job_id, status }
+ */
+export const abortRecovery = async (jobId) => {
+  return fetchAPI(`/recovery/abort/${jobId}`, {
+    method: 'POST',
+  });
+};
+
+/**
+ * Get the currently active recovery job
+ * @returns {Promise<Object>} { active_job: Object|null }
+ */
+export const getActiveRecoveryJob = async () => {
+  return fetchAPI('/recovery/active');
+};
+
+/**
+ * Get recovery flag status (whether writes are gated)
+ * @returns {Promise<Object>} { recovery_in_progress, writes_gated }
+ */
+export const getRecoveryFlag = async () => {
+  return fetchAPI('/recovery/flag');
+};
+
+/**
+ * Request a snapshot from a peer node
+ * @param {Object} payload - { peer: string, partition?: 'low'|'high' }
+ * @returns {Promise<Object>} Snapshot request status
+ */
+export const forceSnapshot = async (payload) => {
+  return fetchAPI('/recovery/force_snapshot', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+/**
+ * Export snapshot from current node
+ * @param {string} partition - 'low', 'high', or undefined for all
+ * @param {string} format - 'json' or 'csv'
+ * @returns {Promise<Object>} Snapshot data
+ */
+export const exportSnapshot = async (partition, format = 'json') => {
+  const params = new URLSearchParams();
+  if (partition) params.append('partition', partition);
+  params.append('format', format);
+  return fetchAPI(`/recovery/snapshot?${params.toString()}`);
+};

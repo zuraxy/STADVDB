@@ -10,7 +10,8 @@ from . import crud
 from .config import get_settings
 from .db import close_db, get_pool, init_db
 from .orchestrator import TransactionOrchestrator
-from .routes import admin, orchestrator as orchestrator_routes, orders, replication
+from .recovery import RecoveryManager
+from .routes import admin, orchestrator as orchestrator_routes, orders, replication, recovery as recovery_routes
 from .utils.http_client import HTTPClient
 from .workers.applier import ApplierWorker
 from .workers.replicator import ReplicatorWorker
@@ -25,6 +26,7 @@ app.include_router(admin.router)
 app.include_router(orders.router)
 app.include_router(replication.router)
 app.include_router(orchestrator_routes.router)
+app.include_router(recovery_routes.router)
 
 
 @app.on_event("startup")
@@ -38,6 +40,10 @@ async def on_startup() -> None:  # pragma: no cover - exercised via integration 
 	app.state.replicator = ReplicatorWorker(pool, settings, app.state.http_client)
 	app.state.applier = ApplierWorker(pool, settings)
 	app.state.orchestrator = TransactionOrchestrator(settings, lambda: bool(app.state.promoted))
+	app.state.recovery_manager = RecoveryManager(
+		pool, settings, app.state.http_client,
+		get_promoted_flag=lambda: bool(app.state.promoted)
+	)
 	await app.state.replicator.start()
 	await app.state.applier.start()
 	LOGGER.info("Startup complete for node %s", settings.node_name)
