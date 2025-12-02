@@ -174,15 +174,15 @@ async def test_read_write_applies_new_quantity(orchestrator):
 		scenario=ScenarioType.READ_WRITE,
 		actors=[
 			TransactionActorInput(
-				name="reader",
-				node="node0",
-				isolation_level=IsolationLevel.READ_COMMITTED,
-			),
-			TransactionActorInput(
 				name="writer",
 				node="node0",
 				isolation_level=IsolationLevel.SERIALIZABLE,
 				new_quantity=42,
+			),
+			TransactionActorInput(
+				name="reader",
+				node="node0",
+				isolation_level=IsolationLevel.READ_COMMITTED,
 			),
 		],
 	)

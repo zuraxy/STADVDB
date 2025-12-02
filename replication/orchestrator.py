@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from .config import Settings
+from .utils import lamport as lamport_utils
 
 LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class ScenarioType(str, Enum):
     def roles(self) -> Tuple[str, str]:
         mapping = {
             ScenarioType.READ_READ: ("read", "read"),
-            ScenarioType.READ_WRITE: ("read", "write"),
+            ScenarioType.READ_WRITE: ("write", "read"),  # Writer first (on node_x), Reader second (on node_y)
             ScenarioType.WRITE_WRITE: ("write", "write"),
         }
         return mapping[self]
@@ -504,10 +505,11 @@ class TransactionOrchestrator:
         order_id: UUID,
     ) -> Dict[str, Any]:
         row = await conn.fetchrow(
-            "SELECT quantity FROM orders WHERE order_id = $1 FOR UPDATE",
+            "SELECT quantity, payload FROM orders WHERE order_id = $1 FOR UPDATE",
             order_id,
         )
         current_qty = row["quantity"] if row else None
+        current_payload = row["payload"] if row else None
         await state.log("write_locked", actor_id=plan.actor_id, quantity=current_qty)
         if plan.delay_seconds:
             await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
@@ -517,6 +519,29 @@ class TransactionOrchestrator:
             order_id,
             plan.new_quantity,
         )
+        
+        # Write to op_log for replication
+        origin_node = self.settings.node_name
+        lamport_value = await lamport_utils.next_lamport(conn, origin_node)
+        op_payload = {"quantity": plan.new_quantity, "payload": current_payload}
+        op_payload_json = json.dumps(op_payload)
+        await conn.execute(
+            """
+            INSERT INTO op_log (
+                op_id, origin_node, op_type, table_name, row_id, payload,
+                ts, lamport, applied, applied_ts
+            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),$7,false,NULL)
+            ON CONFLICT (op_id) DO NOTHING
+            """,
+            uuid4(),
+            origin_node,
+            "upsert",
+            "orders",
+            order_id,
+            op_payload_json,
+            lamport_value,
+        )
+        
         await state.log(
             "write_complete",
             actor_id=plan.actor_id,

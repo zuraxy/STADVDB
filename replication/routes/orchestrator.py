@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Request, status
@@ -12,6 +13,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from ..db import get_pool
+from ..config import get_settings
+from ..utils import lamport as lamport_utils
 from ..orchestrator import (
     IsolationLevel,
     OrchestrationInput,
@@ -89,20 +92,20 @@ class RunOrchestrationRequest(BaseModel):
                 ),
             ]
         elif scenario == ScenarioType.READ_WRITE:
-            # One reader, one writer (order matches roles: read, write)
-            # Default to 1 if no value specified (will be used as increment or set)
+            # Writer on node_x (Master), Reader on node_y (Slave)
+            # This matches the frontend labels
             write_value = self.new_value_1 if self.new_value_1 is not None else 1
             self.actors = [
                 TransactionActorModel(
-                    name="reader",
-                    node=self.node_x or "node0",
-                    isolation_level=isolation,
-                ),
-                TransactionActorModel(
                     name="writer",
-                    node=self.node_y or "node1",
+                    node=self.node_x or "node0",  # Writer on master (node_x)
                     isolation_level=isolation,
                     new_quantity=write_value,
+                ),
+                TransactionActorModel(
+                    name="reader",
+                    node=self.node_y or "node1",  # Reader on slave (node_y)
+                    isolation_level=isolation,
                 ),
             ]
         elif scenario == ScenarioType.WRITE_WRITE:
@@ -248,12 +251,17 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
             if payload.new_quantity is None:
                 raise ValueError("new_quantity required for write operations")
             
+            # Get settings for origin node
+            settings = get_settings()
+            origin_node = settings.node_name
+            
             # Lock row for update
             row = await conn.fetchrow(
-                "SELECT quantity FROM orders WHERE order_id = $1 FOR UPDATE",
+                "SELECT quantity, payload FROM orders WHERE order_id = $1 FOR UPDATE",
                 payload.order_id,
             )
             current_qty = row["quantity"] if row else None
+            current_payload = row["payload"] if row else None
             
             # Optional delay
             if payload.delay_seconds > 0:
@@ -264,6 +272,27 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
                 "UPDATE orders SET quantity = $2, updated_at = NOW() WHERE order_id = $1",
                 payload.order_id,
                 payload.new_quantity,
+            )
+            
+            # Write to op_log for replication
+            lamport_value = await lamport_utils.next_lamport(conn, origin_node)
+            op_payload = {"quantity": payload.new_quantity, "payload": current_payload}
+            op_payload_json = json.dumps(op_payload)
+            await conn.execute(
+                """
+                INSERT INTO op_log (
+                    op_id, origin_node, op_type, table_name, row_id, payload,
+                    ts, lamport, applied, applied_ts
+                ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),$7,false,NULL)
+                ON CONFLICT (op_id) DO NOTHING
+                """,
+                uuid4(),
+                origin_node,
+                "upsert",
+                "orders",
+                payload.order_id,
+                op_payload_json,
+                lamport_value,
             )
             
             await conn.execute("COMMIT")
