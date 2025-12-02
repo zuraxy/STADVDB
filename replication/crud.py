@@ -240,7 +240,12 @@ async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:
 
 def _row_to_op_record(row) -> OpRecord:
 	data = dict(row)
-	data["payload"] = data.get("payload") or {}
+	payload = data.get("payload")
+	# Parse JSON string to dict if needed (asyncpg returns JSONB as string)
+	if isinstance(payload, str):
+		data["payload"] = json.loads(payload) if payload else {}
+	else:
+		data["payload"] = payload or {}
 	return OpRecord(**data)
 
 
