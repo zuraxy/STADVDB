@@ -4,8 +4,13 @@ import requests
 import json
 import sys
 
-# Configuration
-NODE_URL = "http://localhost:8000"
+# Configuration - DLSU Cloud Servers
+NODE0_URL = "http://ccscloud.dlsu.edu.ph:60832"  # Node 0 (Leader)
+NODE1_URL = "http://ccscloud.dlsu.edu.ph:60833"  # Node 1 (Replica, qty <= 5)
+NODE2_URL = "http://ccscloud.dlsu.edu.ph:60834"  # Node 2 (Replica, qty > 5)
+
+# Select which node to test (change this to test different nodes)
+NODE_URL = NODE0_URL
 HEADERS = {"Content-Type": "application/json"}
 
 def print_step(msg):
@@ -69,10 +74,26 @@ def poll_status(job_id):
 
 def main():
     print("=== STARTING RECOVERY INTEGRATION TEST ===")
+    print(f"Target Node: {NODE_URL}")
+    
+    # 0. Quick connectivity check
+    print_step("Testing basic connectivity...")
+    try:
+        resp = requests.get(f"{NODE_URL}/", timeout=10)
+        print(f"✅ Server reachable. Response: {resp.json()}")
+    except Exception as e:
+        print(f"❌ Cannot reach server at {NODE_URL}")
+        print(f"   Error: {e}")
+        print("\n⚠️  Make sure:")
+        print("   1. You pushed the code: git push origin recovery-test")
+        print("   2. SSH into server and run: git pull origin recovery-test")
+        print("   3. Restart the service: sudo systemctl restart application")
+        sys.exit(1)
     
     # 1. Check if node is running
     if not check_health():
-        print("Please start your FastAPI server first: uvicorn main:app --reload")
+        print("The /recovery/health endpoint is not available.")
+        print("Make sure the server has the latest code with Recovery Subsystem.")
         sys.exit(1)
 
     # 2. Start Recovery
