@@ -141,6 +141,14 @@ export function DatabaseDashboard() {
     return () => clearInterval(statusInterval);
   }, [applyReplicationStatus]);
 
+  useEffect(() => {
+    // Refresh all data (including node-specific data) every 10 seconds
+    const dataInterval = setInterval(() => {
+      fetchData();
+    }, 10000);
+    return () => clearInterval(dataInterval);
+  }, []);
+
   // Helper function to get actual node data
   const getNodeData = (nodeId) => {
     if (nodeId === 'node1') return node1Data;
@@ -226,15 +234,18 @@ export function DatabaseDashboard() {
       {/* Header with Refresh Button */}
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-800">Database Overview</h2>
-        <Button
-          onClick={fetchData}
-          disabled={loading}
-          variant="outline"
-          className="flex items-center gap-2"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">Auto-refresh: 10s</span>
+          <Button
+            onClick={fetchData}
+            disabled={loading}
+            variant="outline"
+            className="flex items-center gap-2"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Error Display */}
