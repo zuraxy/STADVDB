@@ -371,7 +371,15 @@ export function CrudPage() {
                 <div className="text-sm text-gray-600">
                   Showing {startIndex + 1} to {Math.min(endIndex, filteredOrders.length)} of {filteredOrders.length} orders
                 </div>
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2">
+                  <Button
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                    size="sm"
+                    variant="outline"
+                  >
+                    First
+                  </Button>
                   <Button
                     onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
                     disabled={currentPage === 1}
@@ -379,30 +387,98 @@ export function CrudPage() {
                     variant="outline"
                   >
                     <ChevronLeft className="w-4 h-4" />
-                    Previous
                   </Button>
+                  
                   <div className="flex items-center gap-1">
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-                      <Button
-                        key={page}
-                        onClick={() => setCurrentPage(page)}
-                        size="sm"
-                        variant={currentPage === page ? "default" : "outline"}
-                        className={currentPage === page ? "bg-cyan-600 hover:bg-cyan-700" : ""}
-                      >
-                        {page}
-                      </Button>
-                    ))}
+                    {/* Smart pagination: show current page ± 2 pages */}
+                    {currentPage > 3 && (
+                      <>
+                        <Button
+                          onClick={() => setCurrentPage(1)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          1
+                        </Button>
+                        {currentPage > 4 && <span className="px-2 text-gray-400">...</span>}
+                      </>
+                    )}
+                    
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      let page;
+                      if (totalPages <= 5) {
+                        page = i + 1;
+                      } else if (currentPage <= 3) {
+                        page = i + 1;
+                      } else if (currentPage >= totalPages - 2) {
+                        page = totalPages - 4 + i;
+                      } else {
+                        page = currentPage - 2 + i;
+                      }
+                      
+                      if (page < 1 || page > totalPages) return null;
+                      
+                      return (
+                        <Button
+                          key={page}
+                          onClick={() => setCurrentPage(page)}
+                          size="sm"
+                          variant={currentPage === page ? "default" : "outline"}
+                          className={currentPage === page ? "bg-cyan-600 hover:bg-cyan-700" : ""}
+                        >
+                          {page}
+                        </Button>
+                      );
+                    })}
+                    
+                    {currentPage < totalPages - 2 && (
+                      <>
+                        {currentPage < totalPages - 3 && <span className="px-2 text-gray-400">...</span>}
+                        <Button
+                          onClick={() => setCurrentPage(totalPages)}
+                          size="sm"
+                          variant="outline"
+                        >
+                          {totalPages}
+                        </Button>
+                      </>
+                    )}
                   </div>
+                  
                   <Button
                     onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
                     disabled={currentPage === totalPages}
                     size="sm"
                     variant="outline"
                   >
-                    Next
                     <ChevronRight className="w-4 h-4" />
                   </Button>
+                  <Button
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Last
+                  </Button>
+                  
+                  {/* Page jump input */}
+                  <div className="flex items-center gap-2 ml-2 pl-2 border-l">
+                    <span className="text-sm text-gray-600">Go to:</span>
+                    <Input
+                      type="number"
+                      min={1}
+                      max={totalPages}
+                      value={currentPage}
+                      onChange={(e) => {
+                        const page = parseInt(e.target.value);
+                        if (page >= 1 && page <= totalPages) {
+                          setCurrentPage(page);
+                        }
+                      }}
+                      className="w-20 text-center"
+                    />
+                  </div>
                 </div>
               </div>
             )}

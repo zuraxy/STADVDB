@@ -208,14 +208,29 @@ export function TransactionOrchestrator() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Partition Info Banner */}
+        <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm">
+          <p className="font-semibold text-blue-900 mb-2">Partition Configuration</p>
+          <div className="grid grid-cols-2 gap-3 text-blue-800">
+            <div className="flex items-center gap-2">
+              <span className="font-medium">Node 1 (Fragment 1):</span>
+              <span>Quantity 1-5</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="font-medium">Node 2 (Fragment 2):</span>
+              <span>Quantity 6-10</span>
+            </div>
+          </div>
+        </div>
+
         <div className="grid gap-4 md:grid-cols-3">
           <div className="space-y-2">
-            <Label htmlFor="scenario">Scenario</Label>
+            <Label htmlFor="scenario" className="text-slate-700 font-medium">Scenario</Label>
             <Select value={scenario} onValueChange={setScenario}>
-              <SelectTrigger id="scenario">
+              <SelectTrigger id="scenario" className="bg-white border-slate-300">
                 <SelectValue placeholder="Pick a scenario" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="bg-white">
                 {scenarioOptions.map((option) => (
                   <SelectItem key={option.id} value={option.id}>
                     <div className="flex flex-col text-left">
@@ -228,12 +243,12 @@ export function TransactionOrchestrator() {
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="isolation">Isolation Level</Label>
+            <Label htmlFor="isolation" className="text-slate-700 font-medium">Isolation Level</Label>
             <Select value={isolation} onValueChange={setIsolation}>
-              <SelectTrigger id="isolation">
+              <SelectTrigger id="isolation" className="bg-white border-slate-300">
                 <SelectValue placeholder="Pick isolation" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="bg-white">
                 {isolationLevels.map((level) => (
                   <SelectItem key={level.id} value={level.id}>
                     {level.label}
@@ -249,7 +264,7 @@ export function TransactionOrchestrator() {
             )}
           </div>
           <div className="space-y-2">
-            <Label htmlFor="parallelClients">Parallel Clients</Label>
+            <Label htmlFor="parallelClients" className="text-slate-700 font-medium">Parallel Clients</Label>
             <Input
               id="parallelClients"
               type="number"
@@ -257,6 +272,7 @@ export function TransactionOrchestrator() {
               max={16}
               value={parallelClients}
               onChange={(e) => setParallelClients(Math.max(1, Math.min(16, Number(e.target.value) || 1)))}
+              className="bg-white border-slate-300"
             />
             <p className="text-xs text-muted-foreground">1-16 parallel client scripts per scenario.</p>
           </div>
@@ -274,12 +290,13 @@ export function TransactionOrchestrator() {
 
         {scenario === 'custom' && (
           <div className="space-y-2">
-            <Label htmlFor="customJson">Custom Transactions (JSON array)</Label>
+            <Label htmlFor="customJson" className="text-slate-700 font-medium">Custom Transactions (JSON array)</Label>
             <Textarea
               id="customJson"
               rows={8}
               value={customJson}
               onChange={(e) => setCustomJson(e.target.value)}
+              className="bg-white border-slate-300 font-mono text-sm"
             />
             <p className="text-xs text-muted-foreground">
               Provide a list of clients: each entry needs a <code>node</code> and <code>statements</code> with SQL, params, optional delays.

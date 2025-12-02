@@ -1,16 +1,12 @@
 import { useState } from 'react';
 import { DatabaseDashboard } from './components/DatabaseDashboard';
 import { SimplifiedArchitecture } from './components/SimplifiedArchitecture';
-import { ConcurrencyScenarios } from './components/ConcurrencyScenarios';
-import { TransactionFlow } from './components/TransactionFlow';
 import { CrudPage } from './components/CrudPage';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
 import { Database, Activity, Network, Edit } from 'lucide-react';
 import { TransactionOrchestrator } from './components/TransactionOrchestrator';
 
 export default function App() {
-  const [activeScenario, setActiveScenario] = useState(null);
-  const [isRunning, setIsRunning] = useState(false);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-cyan-50 to-slate-50">
@@ -75,32 +71,9 @@ export default function App() {
             <CrudPage />
           </TabsContent>
 
-          {/* Tab 3: Concurrency Scenarios */}
+          {/* Tab 3: Concurrency Testing */}
           <TabsContent value="concurrency" className="space-y-6">
-            <div className="bg-white rounded-lg border-2 border-cyan-200 p-6">
-              <SimplifiedArchitecture 
-                activeScenario={activeScenario}
-                isRunning={isRunning}
-              />
-              
-              {activeScenario !== null && isRunning && (
-                <div className="mt-8">
-                  <TransactionFlow scenario={activeScenario} />
-                </div>
-              )}
-              
-              <div className="mt-8">
-                <ConcurrencyScenarios 
-                  activeScenario={activeScenario}
-                  setActiveScenario={setActiveScenario}
-                  isRunning={isRunning}
-                  setIsRunning={setIsRunning}
-                />
-              </div>
-              <div className="mt-8">
-                <TransactionOrchestrator />
-              </div>
-            </div>
+            <TransactionOrchestrator />
           </TabsContent>
 
           {/* Tab 4: Architecture Overview */}
@@ -114,30 +87,30 @@ export default function App() {
               {/* Additional Architecture Info */}
               <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div className="p-6 bg-green-50 border-2 border-green-200 rounded-lg">
-                  <h3 className="font-bold text-green-800 mb-3">Node 1: Central Node</h3>
+                  <h3 className="font-bold text-green-800 mb-3">Node 0: Central Node (Master)</h3>
                   <ul className="space-y-2 text-sm text-green-700">
                     <li>• Stores complete orders dataset</li>
                     <li>• Acts as master replica</li>
-                    <li>• All orders included</li>
+                    <li>• All quantities (1-10+)</li>
                     <li>• Primary transaction coordinator</li>
                   </ul>
                 </div>
                 <div className="p-6 bg-yellow-50 border-2 border-yellow-200 rounded-lg">
-                  <h3 className="font-bold text-yellow-800 mb-3">Node 2: Fragment 1</h3>
+                  <h3 className="font-bold text-yellow-800 mb-3">Node 1: Fragment 1</h3>
                   <ul className="space-y-2 text-sm text-yellow-700">
-                    <li>• Horizontal fragmentation</li>
-                    <li>• Even order_id partition</li>
-                    <li>• Optimized for distributed queries</li>
-                    <li>• Regional distribution ready</li>
+                    <li>• Horizontal partition (quantity)</li>
+                    <li>• Orders with quantity 1-5</li>
+                    <li>• Optimized for low-quantity queries</li>
+                    <li>• Auto-synced via replication</li>
                   </ul>
                 </div>
                 <div className="p-6 bg-blue-50 border-2 border-blue-200 rounded-lg">
-                  <h3 className="font-bold text-blue-800 mb-3">Node 3: Fragment 2</h3>
+                  <h3 className="font-bold text-blue-800 mb-3">Node 2: Fragment 2</h3>
                   <ul className="space-y-2 text-sm text-blue-700">
-                    <li>• Complementary fragment</li>
-                    <li>• Odd order_id partition</li>
-                    <li>• No data overlap with Node 2</li>
-                    <li>• Node 2 + Node 3 = Node 1</li>
+                    <li>• Horizontal partition (quantity)</li>
+                    <li>• Orders with quantity 6-10</li>
+                    <li>• No data overlap with Node 1</li>
+                    <li>• Node 1 + Node 2 = Node 0</li>
                   </ul>
                 </div>
               </div>
