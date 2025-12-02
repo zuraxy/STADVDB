@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from ..config import get_settings
 from ..db import get_pool
-from ..models import PromoteToggle
+from ..models import PromoteToggle, DemoteToggle
 
 router = APIRouter(tags=["admin"])
 
@@ -72,6 +72,52 @@ async def replication_status(request: Request) -> dict:
 @router.post("/promote")
 async def toggle_promotion(body: PromoteToggle, request: Request) -> dict:
 	request.app.state.promoted = body.promote
+	settings = get_settings()
+	pool = get_pool()
+	
+	# Record promotion in promotion_log if promoting
+	if body.promote:
+		try:
+			async with pool.acquire() as conn:
+				await conn.execute("""
+					CREATE TABLE IF NOT EXISTS promotion_log (
+						id SERIAL PRIMARY KEY,
+						node TEXT NOT NULL,
+						promoted_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+						demoted_at TIMESTAMP WITH TIME ZONE
+					)
+				""")
+				await conn.execute("""
+					INSERT INTO promotion_log (node, promoted_at)
+					VALUES ($1, NOW())
+				""", settings.node_name)
+		except Exception:
+			pass  # Non-critical
+	
+	return {"promoted": request.app.state.promoted}
+
+
+@router.post("/demote")
+async def demote_node(body: DemoteToggle, request: Request) -> dict:
+	"""Demote this node (clear promoted flag)."""
+	if body.demote:
+		request.app.state.promoted = False
+		settings = get_settings()
+		pool = get_pool()
+		
+		# Update promotion_log
+		try:
+			async with pool.acquire() as conn:
+				await conn.execute("""
+					UPDATE promotion_log 
+					SET demoted_at = NOW() 
+					WHERE node = $1 AND demoted_at IS NULL
+				""", settings.node_name)
+		except Exception:
+			pass  # Table may not exist
+		
+		return {"node": settings.node_name, "promoted": False, "status": "demoted"}
+	
 	return {"promoted": request.app.state.promoted}
 
 

@@ -45,6 +45,10 @@ class PromoteToggle(BaseModel):
 	promote: bool
 
 
+class DemoteToggle(BaseModel):
+	demote: bool
+
+
 class OpPayload(BaseModel):
 	order_id: UUID
 	quantity: int
@@ -63,4 +67,52 @@ class OpRecord(BaseModel):
 	applied: bool
 	applied_ts: Optional[datetime]
 	locked_by: Optional[str] = None
+
+
+class RecoveryStartRequest(BaseModel):
+	"""Request body for starting a recovery job."""
+	mode: str = Field(..., description="Recovery mode: 'leader', 'node', or 'promotion'")
+	since_ts: Optional[str] = Field(None, description="ISO timestamp for promotion resync")
+	promoted_node: Optional[str] = Field(None, description="Name of promoted node")
+
+
+class RecoveryJobStatus(BaseModel):
+	"""Status of a recovery job."""
+	job_id: str
+	mode: str
+	state: str
+	metrics: Dict[str, Any]
+	since_ts: Optional[str] = None
+	promoted_node: Optional[str] = None
+	error: Optional[str] = None
+
+
+class RecoveryLogEntry(BaseModel):
+	"""A single log entry from a recovery job."""
+	timestamp: str
+	level: str
+	message: str
+	details: Optional[Dict[str, Any]] = None
+
+
+class SnapshotExport(BaseModel):
+	"""Snapshot export response."""
+	data: Optional[List[Dict[str, Any]]] = None
+	csv: Optional[str] = None
+	count: int
+
+
+class NodeMetadata(BaseModel):
+	"""Node metadata entry."""
+	key: str
+	value: str
+	updated_at: Optional[datetime] = None
+
+
+class PromotionLogEntry(BaseModel):
+	"""Promotion log entry."""
+	id: int
+	node: str
+	promoted_at: datetime
+	demoted_at: Optional[datetime] = None
 

@@ -384,3 +384,85 @@ async def upsert_replication_cursor(conn, node: str, lamport: int) -> None:
 		node,
 		lamport,
 	)
+
+
+async def export_orders_snapshot(conn, partition: Optional[str] = None, partition_rule: int = 5) -> List[Dict]:
+	"""Export orders table as a list of dicts for snapshot."""
+	if partition == "low":
+		rows = await conn.fetch(
+			"SELECT order_id, quantity, payload, created_at, updated_at FROM orders WHERE quantity <= $1",
+			partition_rule
+		)
+	elif partition == "high":
+		rows = await conn.fetch(
+			"SELECT order_id, quantity, payload, created_at, updated_at FROM orders WHERE quantity > $1",
+			partition_rule
+		)
+	else:
+		rows = await conn.fetch(
+			"SELECT order_id, quantity, payload, created_at, updated_at FROM orders"
+		)
+	
+	result = []
+	for row in rows:
+		payload = row["payload"]
+		if isinstance(payload, str):
+			payload = json.loads(payload) if payload else None
+		result.append({
+			"order_id": str(row["order_id"]),
+			"quantity": row["quantity"],
+			"payload": payload,
+			"created_at": row["created_at"].isoformat() if row["created_at"] else None,
+			"updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+		})
+	return result
+
+
+async def import_orders_snapshot(conn, data: List[Dict]) -> int:
+	"""Import orders from snapshot data. Returns count of imported rows."""
+	imported = 0
+	for row in data:
+		payload_json = json.dumps(row.get("payload") or {})
+		try:
+			await conn.execute(
+				"""
+				INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
+				VALUES ($1, $2, $3::jsonb, $4, $5)
+				ON CONFLICT (order_id) DO UPDATE SET
+					quantity = EXCLUDED.quantity,
+					payload = EXCLUDED.payload,
+					updated_at = EXCLUDED.updated_at
+				""",
+				UUID(row["order_id"]) if isinstance(row["order_id"], str) else row["order_id"],
+				row["quantity"],
+				payload_json,
+				_utcnow(),
+				_utcnow(),
+			)
+			imported += 1
+		except Exception as e:
+			_LOGGER.warning("Failed to import order %s: %s", row.get("order_id"), e)
+	return imported
+
+
+async def get_max_lamport(conn) -> int:
+	"""Get the maximum lamport value from op_log."""
+	result = await conn.fetchval("SELECT COALESCE(MAX(lamport), -1) FROM op_log")
+	return int(result)
+
+
+async def count_orders(conn) -> int:
+	"""Count total orders in the table."""
+	result = await conn.fetchval("SELECT COUNT(*) FROM orders")
+	return int(result or 0)
+
+
+async def check_duplicate_orders(conn) -> List[Dict]:
+	"""Check for duplicate order_ids."""
+	rows = await conn.fetch("""
+		SELECT order_id, COUNT(*) as cnt
+		FROM orders
+		GROUP BY order_id
+		HAVING COUNT(*) > 1
+	""")
+	return [{"order_id": str(row["order_id"]), "count": row["cnt"]} for row in rows]
