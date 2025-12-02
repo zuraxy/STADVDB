@@ -32,7 +32,7 @@ The content is organized as follows:
 <notes>
 - Some files may have been excluded based on .gitignore rules and Repomix's configuration
 - Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
-- Files matching these patterns are excluded: */.sql, **/*.csv, **/node_modules/**, **/package-lock.json, **/.env, **/*.log, **/.venv/**, **/.pytest_cache/**, **/etl_modules/**, .env0, .env1, .env2, **/MCO2.ETLs/**
+- Files matching these patterns are excluded: */.sql, **/*.csv, **/node_modules/**, **/package-lock.json, **/.env, **/*.log, **/.venv/**, **/.pytest_cache/**, **/etl_modules/**, .env0, .env1, .env2, **/MCO2.ETLs/**, **.md
 - Files matching patterns in .gitignore are excluded
 - Files matching default ignore patterns are excluded
 - Files are sorted by Git change count (files with more changes are at the bottom)
@@ -43,17 +43,13 @@ The content is organized as follows:
 <directory_structure>
 .env.example
 .gitignore
-DEPLOYMENT.md
 frontend/web-app/.env.example
 frontend/web-app/.gitignore
-frontend/web-app/API_DOCS.md
-frontend/web-app/DEVELOPER_GUIDE.md
 frontend/web-app/eslint.config.js
 frontend/web-app/index.html
 frontend/web-app/package.json
 frontend/web-app/postcss.config.js
 frontend/web-app/public/vite.svg
-frontend/web-app/README.md
 frontend/web-app/src/App.css
 frontend/web-app/src/App.jsx
 frontend/web-app/src/assets/react.svg
@@ -123,11 +119,7 @@ frontend/web-app/src/main.jsx
 frontend/web-app/src/services/api.js
 frontend/web-app/tailwind.config.js
 frontend/web-app/vite.config.js
-IMPLEMENTATION_PLAN.md
-isolationlevels.md
-oldreadme.md
 package.json
-README.md
 replication/__init__.py
 replication/config.py
 replication/crud.py
@@ -136,7 +128,6 @@ replication/init.py
 replication/main.py
 replication/models.py
 replication/orchestrator.py
-replication/replication readme.md
 replication/requirements.txt
 replication/routes/__init__.py
 replication/routes/admin.py
@@ -146,6 +137,7 @@ replication/routes/orders.py
 replication/routes/replication.py
 replication/tests/conftest.py
 replication/tests/test_applier.py
+replication/tests/test_crud.py
 replication/tests/test_orchestrator.py
 replication/tests/test_replicator.py
 replication/utils/__init__.py
@@ -159,13 +151,49 @@ replication/workers/http_client.py
 replication/workers/init.py
 replication/workers/lamport.py
 replication/workers/replicator.py
-VM_UPDATE_GUIDE.md
 wishlist/src/App.tsx
 wishlist/src/components/ui/tabs.tsx
 </directory_structure>
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="replication/tests/test_crud.py">
+"""Crud helper unit tests."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+
+from replication import crud
+
+
+class RecorderConn:
+    def __init__(self, result: str = "INSERT 0 1") -> None:
+        self.calls: list[tuple[str, tuple]] = []
+        self._result = result
+
+    async def execute(self, query: str, *args):
+        self.calls.append((query, args))
+        return self._result
+
+
+@pytest.mark.asyncio
+async def test_insert_op_if_missing_forces_unapplied(op_factory) -> None:
+    op = op_factory(33)
+    op.applied = True
+    op.applied_ts = datetime.now(timezone.utc)
+    conn = RecorderConn()
+
+    inserted = await crud.insert_op_if_missing(conn, op)
+
+    assert inserted is True
+    _, args = conn.calls[0]
+    assert args[8] is False
+    assert args[9] is None
+</file>
 
 <file path="frontend/web-app/.env.example">
 # Backend API URL
@@ -197,704 +225,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-</file>
-
-<file path="frontend/web-app/API_DOCS.md">
-# API Documentation
-
-## Base URL
-```
-http://localhost:3000/api
-```
-
-Set via environment variable: `VITE_API_URL`
-
-## Endpoints
-
-### Orders
-- `GET /node1/orders` - Fetch all orders from Node 1 (Central)
-- `GET /node2/orders` - Fetch orders from Node 2 (Even IDs)
-- `GET /node3/orders` - Fetch orders from Node 3 (Odd IDs)
-- `POST /orders` - Create new order
-- `PUT /orders/:orderId` - Update existing order
-- `DELETE /orders/:orderId` - Delete order
-
-### Node Status
-- `GET /node1/status` - Get Node 1 status
-- `GET /node2/status` - Get Node 2 status
-- `GET /node3/status` - Get Node 3 status
-
-### Concurrency Testing
-- `POST /concurrency/execute` - Execute concurrency scenario
-- `POST /concurrency/isolation` - Test transaction isolation
-- `POST /concurrency/locking` - Test locking mechanisms
-
-### Health
-- `GET /health` - API health check
-
-## Response Format
-
-All endpoints return JSON in this format:
-```json
-{
-  "success": true,
-  "data": [...],
-  "message": "Optional message"
-}
-```
-
-## Usage
-
-Import functions from `src/services/api.js`:
-```javascript
-import { fetchAllOrders, createOrder, deleteOrder } from '../services/api';
-
-// Fetch all orders from all nodes
-const orders = await fetchAllOrders();
-
-// Create new order
-const newOrder = await createOrder({ quantity: 5, payload: {...} });
-
-// Delete order
-await deleteOrder(orderId);
-```
-</file>
-
-<file path="frontend/web-app/DEVELOPER_GUIDE.md">
-# Frontend Developer Guide
-
-## 📋 Table of Contents
-- [Overview](#overview)
-- [Tech Stack](#tech-stack)
-- [Project Structure](#project-structure)
-- [Getting Started](#getting-started)
-- [Architecture](#architecture)
-- [API Integration](#api-integration)
-- [Component Guide](#component-guide)
-- [Styling](#styling)
-- [State Management](#state-management)
-- [Common Tasks](#common-tasks)
-- [Best Practices](#best-practices)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## 🎯 Overview
-
-This is the frontend web application for a **Distributed Database System** with 3 nodes. The application provides:
-- Real-time visualization of database nodes
-- CRUD operations on distributed orders data
-- Concurrency control testing and simulation
-- System architecture visualization
-
-### Database Architecture
-- **Node 1 (Central)**: Contains complete orders dataset (master replica)
-- **Node 2 (Fragment 1)**: Contains orders with even `order_id` values
-- **Node 3 (Fragment 2)**: Contains orders with odd `order_id` values
-
----
-
-## 🛠 Tech Stack
-
-### Core Framework
-- **React 18.3.1** - UI library with hooks and functional components
-- **Vite 7.2.4** - Fast build tool and dev server
-
-### Styling
-- **Tailwind CSS 3.4.0** - Utility-first CSS framework
-- **Framer Motion 11.15.0** - Animation library
-- **Radix UI** - Accessible component primitives
-
-### UI Components
-- Pre-built component library in `src/components/ui/`
-- Based on shadcn/ui architecture
-- Fully customizable and accessible
-
-### Icons
-- **Lucide React** - Icon library
-
----
-
-## 📁 Project Structure
-
-```
-frontend/web-app/
-├── public/                    # Static assets
-├── src/
-│   ├── assets/               # Images, fonts, etc.
-│   ├── components/           # React components
-│   │   ├── ui/              # Reusable UI primitives (buttons, cards, etc.)
-│   │   ├── DatabaseDashboard.jsx      # Main dashboard view
-│   │   ├── ConcurrencyScenarios.jsx   # Concurrency testing UI
-│   │   ├── SimplifiedArchitecture.jsx # Node visualization
-│   │   └── ExampleAPIUsage.jsx        # API usage examples
-│   ├── services/            # API service layer
-│   │   └── api.js          # Centralized API functions
-│   ├── App.jsx             # Root component
-│   ├── main.jsx            # App entry point
-│   └── index.css           # Global styles
-├── .env.example            # Environment variables template
-├── API_DOCS.md            # API endpoint documentation
-├── DEVELOPER_GUIDE.md     # This file
-├── package.json           # Dependencies
-├── tailwind.config.js     # Tailwind configuration
-└── vite.config.js         # Vite configuration
-```
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-- **Node.js** 18+ and npm
-- Backend API running on `http://localhost:3000`
-- PostgreSQL databases (3 nodes) configured
-
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone <repository-url>
-   cd frontend/web-app
-   ```
-
-2. **Install dependencies**
-   ```bash
-   npm install
-   ```
-
-3. **Configure environment variables**
-   ```bash
-   # Copy the example file
-   cp .env.example .env
-   
-   # Edit .env and set your API URL
-   VITE_API_URL=http://localhost:3000/api
-   ```
-
-4. **Start development server**
-   ```bash
-   npm run dev
-   ```
-   
-   The app will be available at `http://localhost:5173` (or next available port)
-
-5. **Build for production**
-   ```bash
-   npm run build
-   npm run preview  # Preview production build
-   ```
-
----
-
-## 🏗 Architecture
-
-### Component Hierarchy
-
-```
-App.jsx (Root)
-├── Header (Database title & navigation)
-└── Tabs
-    ├── Dashboard Tab
-    │   └── DatabaseDashboard.jsx
-    │       ├── Node Status Cards
-    │       ├── Orders Tables (Node 1, 2, 3)
-    │       └── Refresh Controls
-    ├── Concurrency Tab
-    │   └── ConcurrencyScenarios.jsx
-    │       ├── Scenario Cards
-    │       └── Test Controls
-    └── Architecture Tab
-        └── SimplifiedArchitecture.jsx
-            ├── Node Visualizations
-            └── Architecture Diagrams
-```
-
-### Data Flow
-
-```
-User Action
-    ↓
-Component Event Handler
-    ↓
-API Service Function (src/services/api.js)
-    ↓
-HTTP Request to Backend
-    ↓
-Backend Response
-    ↓
-Component State Update
-    ↓
-UI Re-render
-```
-
----
-
-## 🔌 API Integration
-
-### Centralized API Service
-
-All backend communication goes through `src/services/api.js`. **Never use `fetch()` directly in components.**
-
-#### Example Usage
-
-```javascript
-import { fetchAllOrders, createOrder } from '../services/api';
-
-// In your component
-const loadData = async () => {
-  try {
-    const orders = await fetchAllOrders();
-    setOrders(orders); // { node1: [], node2: [], node3: [] }
-  } catch (error) {
-    console.error('Failed to load orders:', error);
-  }
-};
-
-const addOrder = async (quantity, payload) => {
-  try {
-    const result = await createOrder({ quantity, payload });
-    console.log('Created:', result);
-  } catch (error) {
-    console.error('Failed to create:', error);
-  }
-};
-```
-
-### Available API Functions
-
-| Function | Purpose | Returns |
-|----------|---------|---------|
-| `fetchAllOrders()` | Get orders from all nodes | `{node1: [], node2: [], node3: []}` |
-| `fetchOrdersFromNode(nodeId)` | Get orders from specific node | `{success, data}` |
-| `createOrder(orderData)` | Create new order | `{success, data}` |
-| `updateOrder(orderId, data)` | Update existing order | `{success, data}` |
-| `deleteOrder(orderId)` | Delete order | `{success}` |
-| `getAllNodeStatus()` | Check all node statuses | `{node1, node2, node3}` |
-| `executeConcurrencyScenario(scenario, params)` | Run concurrency test | `{success, results}` |
-
-See `API_DOCS.md` for complete endpoint documentation.
-
----
-
-## 🧩 Component Guide
-
-### Core Components
-
-#### 1. **DatabaseDashboard.jsx**
-Main dashboard showing live data from all 3 nodes.
-
-**State:**
-- `data`: Orders from all nodes
-- `loading`: Loading state
-- `error`: Error messages
-- `nodeStatus`: Online/offline status
-
-**Key Functions:**
-- `fetchData()`: Loads orders from all nodes
-- Auto-refreshes on mount
-
-**Usage:**
-```jsx
-<DatabaseDashboard />
-```
-
-#### 2. **ConcurrencyScenarios.jsx**
-Interactive concurrency testing interface.
-
-**Props:**
-- `activeScenario`: Currently selected scenario
-- `setActiveScenario`: Update active scenario
-- `isRunning`: Whether test is running
-- `setIsRunning`: Update running state
-
-**Scenarios:**
-1. Concurrent Reads
-2. Concurrent Writes
-3. Read-Write Conflicts
-
-**Usage:**
-```jsx
-<ConcurrencyScenarios 
-  activeScenario={activeScenario}
-  setActiveScenario={setActiveScenario}
-  isRunning={isRunning}
-  setIsRunning={setIsRunning}
-/>
-```
-
-#### 3. **SimplifiedArchitecture.jsx**
-Visual representation of the 3-node architecture.
-
-**Features:**
-- Animated node cards
-- Real-time activity indicators
-- Data flow visualization
-
-**Usage:**
-```jsx
-<SimplifiedArchitecture 
-  activeScenario={activeScenario}
-  isRunning={isRunning}
-/>
-```
-
-### UI Components (`src/components/ui/`)
-
-Reusable, accessible components based on Radix UI:
-
-- **Layout**: `Card`, `Separator`, `Accordion`
-- **Forms**: `Button`, `Input`, `Textarea`, `Select`, `Checkbox`, `Switch`
-- **Feedback**: `Alert`, `Badge`, `Progress`, `Skeleton`
-- **Overlays**: `Dialog`, `Sheet`, `Popover`, `Tooltip`
-- **Data**: `Table`, `Tabs`
-
-**Import Example:**
-```jsx
-import { Button } from './ui/button';
-import { Card, CardHeader, CardContent } from './ui/card';
-import { Table, TableBody, TableRow, TableCell } from './ui/table';
-```
-
----
-
-## 🎨 Styling
-
-### Tailwind CSS
-
-The project uses Tailwind's utility-first approach.
-
-**Common Patterns:**
-```jsx
-// Layout
-<div className="flex items-center justify-between gap-4">
-
-// Spacing
-<div className="p-6 mx-auto mt-8">
-
-// Colors
-<div className="bg-cyan-50 text-cyan-900 border-cyan-200">
-
-// Responsive
-<div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-
-// Hover states
-<button className="hover:bg-cyan-600 transition-colors">
-```
-
-### Custom Animations
-
-Defined in `tailwind.config.js`:
-- `gradient-shift`: Animated gradient backgrounds
-- `shimmer`: Shimmer effect
-- `pulse-glow`: Pulsing glow effect
-
-**Usage:**
-```jsx
-<div className="animate-gradient-shift bg-gradient-to-r from-cyan-400 to-blue-500">
-```
-
-### Framer Motion
-
-For complex animations:
-```jsx
-import { motion } from 'framer-motion';
-
-<motion.div
-  initial={{ opacity: 0, y: 20 }}
-  animate={{ opacity: 1, y: 0 }}
-  transition={{ duration: 0.3 }}
->
-  Content
-</motion.div>
-```
-
----
-
-## 🗂 State Management
-
-### Local State (useState)
-
-For component-specific data:
-```jsx
-const [orders, setOrders] = useState({ node1: [], node2: [], node3: [] });
-const [loading, setLoading] = useState(false);
-const [error, setError] = useState(null);
-```
-
-### Side Effects (useEffect)
-
-For data fetching on mount:
-```jsx
-useEffect(() => {
-  fetchData();
-}, []); // Empty dependency array = run once on mount
-```
-
-### Lifting State Up
-
-Shared state lives in `App.jsx` and is passed down:
-```jsx
-// In App.jsx
-const [activeScenario, setActiveScenario] = useState(null);
-
-// Pass to children
-<ConcurrencyScenarios 
-  activeScenario={activeScenario}
-  setActiveScenario={setActiveScenario}
-/>
-```
-
----
-
-## 📝 Common Tasks
-
-### Adding a New Component
-
-1. Create file in `src/components/`
-   ```jsx
-   export function MyComponent() {
-     return <div>Hello</div>;
-   }
-   ```
-
-2. Import in parent component
-   ```jsx
-   import { MyComponent } from './components/MyComponent';
-   ```
-
-### Adding a New API Endpoint
-
-1. Add function to `src/services/api.js`
-   ```javascript
-   export const myNewEndpoint = async (params) => {
-     return fetchAPI('/my-endpoint', {
-       method: 'POST',
-       body: JSON.stringify(params),
-     });
-   };
-   ```
-
-2. Use in component
-   ```jsx
-   import { myNewEndpoint } from '../services/api';
-   
-   const result = await myNewEndpoint({ data: 'test' });
-   ```
-
-### Creating a New Page/Tab
-
-1. Create component file
-2. Import in `App.jsx`
-3. Add to `<Tabs>` component
-   ```jsx
-   <TabsList>
-     <TabsTrigger value="mynewpage">My New Page</TabsTrigger>
-   </TabsList>
-   
-   <TabsContent value="mynewpage">
-     <MyNewComponent />
-   </TabsContent>
-   ```
-
-### Adding Environment Variables
-
-1. Add to `.env.example` (for documentation)
-   ```
-   VITE_MY_VAR=default_value
-   ```
-
-2. Add to your local `.env`
-   ```
-   VITE_MY_VAR=actual_value
-   ```
-
-3. Use in code
-   ```javascript
-   const myVar = import.meta.env.VITE_MY_VAR;
-   ```
-
-**Note:** Vite environment variables must start with `VITE_`
-
----
-
-## ✅ Best Practices
-
-### 1. **Always Use the API Service**
-❌ Don't:
-```javascript
-const response = await fetch('http://localhost:3000/api/orders');
-```
-
-✅ Do:
-```javascript
-import { fetchAllOrders } from '../services/api';
-const orders = await fetchAllOrders();
-```
-
-### 2. **Handle Loading & Error States**
-```jsx
-const [loading, setLoading] = useState(false);
-const [error, setError] = useState(null);
-
-const loadData = async () => {
-  setLoading(true);
-  setError(null);
-  try {
-    const data = await fetchAllOrders();
-    setOrders(data);
-  } catch (err) {
-    setError(err.message);
-  } finally {
-    setLoading(false);
-  }
-};
-```
-
-### 3. **Keep Components Small**
-- One component = one responsibility
-- Extract reusable logic into custom hooks
-- Split large components into smaller ones
-
-### 4. **Use Consistent Naming**
-- Components: `PascalCase` (e.g., `DatabaseDashboard`)
-- Functions: `camelCase` (e.g., `fetchOrders`)
-- Constants: `UPPER_CASE` (e.g., `API_BASE_URL`)
-- Files: Match component name
-
-### 5. **Comment Complex Logic**
-```jsx
-// Fetch orders from all nodes in parallel for better performance
-const orders = await Promise.all([...]);
-```
-
-### 6. **Destructure Props**
-```jsx
-// Instead of props.value, props.onChange
-export function MyComponent({ value, onChange, disabled = false }) {
-  // ...
-}
-```
-
----
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-#### 1. **"Cannot connect to backend"**
-- Check if backend is running on `http://localhost:3000`
-- Verify `VITE_API_URL` in `.env`
-- Check CORS settings in backend
-
-#### 2. **"Module not found" errors**
-- Run `npm install`
-- Delete `node_modules` and `package-lock.json`, then reinstall
-- Check import paths are correct
-
-#### 3. **Tailwind classes not working**
-- Restart dev server (`Ctrl+C` then `npm run dev`)
-- Check `tailwind.config.js` has correct content paths
-- Verify class names are spelled correctly (no typos)
-
-#### 4. **Components not updating**
-- Check state is being updated correctly
-- Verify `useEffect` dependencies are correct
-- Use React DevTools to inspect component state
-
-#### 5. **Port 5173 already in use**
-- Vite will automatically use next available port (5174, 5175, etc.)
-- Or manually kill the process using the port
-- Check terminal output for actual port being used
-
-### Debugging Tips
-
-1. **Use React DevTools**
-   - Install browser extension
-   - Inspect component props and state
-   - Track re-renders
-
-2. **Console Logging**
-   ```jsx
-   console.log('Orders:', orders);
-   console.log('Node status:', nodeStatus);
-   ```
-
-3. **Network Tab**
-   - Check API requests in browser DevTools
-   - Verify request/response format
-   - Check for CORS errors
-
-4. **Error Boundaries**
-   - Wrap components in error boundaries for better error handling
-   - Log errors to console or external service
-
----
-
-## 📚 Additional Resources
-
-### Documentation
-- [React Docs](https://react.dev)
-- [Vite Guide](https://vitejs.dev/guide/)
-- [Tailwind CSS](https://tailwindcss.com/docs)
-- [Framer Motion](https://www.framer.com/motion/)
-- [Radix UI](https://www.radix-ui.com/)
-
-### Project Files
-- `API_DOCS.md` - Backend API endpoints
-- `README.md` - Project overview
-- `.env.example` - Environment variables reference
-
-### Code Examples
-- `src/components/ExampleAPIUsage.jsx` - API service usage patterns
-- `src/components/DatabaseDashboard.jsx` - Full-featured component example
-
----
-
-## 🤝 Contributing
-
-### Before Starting Development
-
-1. Pull latest changes from main branch
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make your changes
-4. Test thoroughly
-5. Commit with descriptive messages
-6. Push and create pull request
-
-### Code Style
-
-- Use **functional components** with hooks (no class components)
-- Use **const** for components and functions
-- Add **prop validation** when needed
-- Keep **line length** under 100 characters when possible
-- Use **meaningful variable names**
-
-### Testing Checklist
-
-- [ ] Component renders without errors
-- [ ] All API calls work correctly
-- [ ] Loading states display properly
-- [ ] Error states are handled
-- [ ] Responsive on mobile/tablet/desktop
-- [ ] No console errors or warnings
-- [ ] Follows existing code patterns
-
----
-
-## 📞 Need Help?
-
-If you're stuck:
-1. Check this guide and `API_DOCS.md`
-2. Review `ExampleAPIUsage.jsx` for patterns
-3. Check existing components for similar functionality
-4. Review browser console for errors
-5. Check Network tab for API issues
-
----
-
-**Last Updated:** November 30, 2025
-**Version:** 1.0.0
 </file>
 
 <file path="frontend/web-app/eslint.config.js">
@@ -1032,25 +362,6 @@ export default {
 
 <file path="frontend/web-app/public/vite.svg">
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="31.88" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 257"><defs><linearGradient id="IconifyId1813088fe1fbc01fb466" x1="-.828%" x2="57.636%" y1="7.652%" y2="78.411%"><stop offset="0%" stop-color="#41D1FF"></stop><stop offset="100%" stop-color="#BD34FE"></stop></linearGradient><linearGradient id="IconifyId1813088fe1fbc01fb467" x1="43.376%" x2="50.316%" y1="2.242%" y2="89.03%"><stop offset="0%" stop-color="#FFEA83"></stop><stop offset="8.333%" stop-color="#FFDD35"></stop><stop offset="100%" stop-color="#FFA800"></stop></linearGradient></defs><path fill="url(#IconifyId1813088fe1fbc01fb466)" d="M255.153 37.938L134.897 252.976c-2.483 4.44-8.862 4.466-11.382.048L.875 37.958c-2.746-4.814 1.371-10.646 6.827-9.67l120.385 21.517a6.537 6.537 0 0 0 2.322-.004l117.867-21.483c5.438-.991 9.574 4.796 6.877 9.62Z"></path><path fill="url(#IconifyId1813088fe1fbc01fb467)" d="M185.432.063L96.44 17.501a3.268 3.268 0 0 0-2.634 3.014l-5.474 92.456a3.268 3.268 0 0 0 3.997 3.378l24.777-5.718c2.318-.535 4.413 1.507 3.936 3.838l-7.361 36.047c-.495 2.426 1.782 4.5 4.151 3.78l15.304-4.649c2.372-.72 4.652 1.36 4.15 3.788l-11.698 56.621c-.732 3.542 3.979 5.473 5.943 2.437l1.313-2.028l72.516-144.72c1.215-2.423-.88-5.186-3.54-4.672l-25.505 4.922c-2.396.462-4.435-1.77-3.759-4.114l16.646-57.705c.677-2.35-1.37-4.583-3.769-4.113Z"></path></svg>
-</file>
-
-<file path="frontend/web-app/README.md">
-# React + Vite
-
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
-
-Currently, two official plugins are available:
-
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
 </file>
 
 <file path="frontend/web-app/src/App.css">
@@ -8273,1809 +7584,6 @@ export default defineConfig({
 })
 </file>
 
-<file path="IMPLEMENTATION_PLAN.md">
-# STADVDB MCO2 Implementation Plan
-
-## Current Setup Analysis ✅
-
-### PostgreSQL Environment
-- **PostgreSQL Version**: 18.1
-- **VMs**: 3 separate servers (STADVDB44-Server0, Server1, Server2)
-- **Databases**: node0db (Node1 - Central), node1db (Node2), node2db (Node3)
-- **Port**: 5432 (default)
-
-### Database Schema (Already Implemented ✅)
-
-#### Orders Table
-```sql
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
-CREATE TABLE IF NOT EXISTS orders (
-  order_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  quantity int NOT NULL,
-  payload jsonb,
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
-);
-
--- Node 1 (Central): No constraint - stores ALL orders
--- Node 2 (Fragment 1): quantity 1-5
-ALTER TABLE orders ADD CONSTRAINT qty_1to5 CHECK (quantity >= 1 AND quantity <= 5);
--- Node 3 (Fragment 2): quantity 6-10
-ALTER TABLE orders ADD CONSTRAINT qty_6to10 CHECK (quantity >= 6 AND quantity <= 10);
-```
-
-#### Operation Log Table
-```sql
-CREATE TABLE op_log (
-  op_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  origin_node text NOT NULL,
-  op_type text NOT NULL,
-  table_name text NOT NULL,
-  row_id uuid NOT NULL,
-  payload jsonb,
-  ts timestamptz DEFAULT now(),
-  lamport bigint DEFAULT 0,
-  applied boolean DEFAULT false,
-  applied_ts timestamptz
-);
-
-CREATE INDEX idx_oplog_origin_ts ON op_log(origin_node, ts);
-CREATE INDEX idx_oplog_lamport ON op_log(lamport);
-```
-
-#### Acknowledgements Table
-```sql
-CREATE TABLE IF NOT EXISTS log_acknowledgements (
-  op_id uuid REFERENCES op_log(op_id) ON DELETE CASCADE,
-  node text NOT NULL,
-  ack_ts timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (op_id, node)
-);
-```
-
----
-
-## Part 1: Data Fragmentation Strategy
-
-### Fragmentation Criterion: **Quantity-Based Horizontal Partitioning**
-
-```
-Node 1 (Central): ALL orders (quantity 1-10) - Master copy
-Node 2 (Fragment): Orders with quantity 1-5 only
-Node 3 (Fragment): Orders with quantity 6-10 only
-```
-
-### Why This Strategy?
-1. **Simple, clear partitioning rule** - Easy to determine which fragment owns data
-2. **No overlap between fragments** - Node2 + Node3 = Node1 (completeness)
-3. **Aligns with business logic** - Different order sizes may have different processing needs
-4. **Balanced distribution** - Assuming orders are evenly distributed across quantity ranges
-
----
-
-## Part 2: Backend Implementation Steps
-
-### Step 1: Update Environment Configuration
-
-Update your `backend/.env`:
-```env
-# PostgreSQL Connection
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_PORT=5432
-
-# Node IP Addresses (Update with your actual VM IPs)
-NODE1_HOST=192.168.1.100  # STADVDB44-Server0 (Central)
-NODE1_DB=node0db
-
-NODE2_HOST=192.168.1.101  # STADVDB44-Server1 (Fragment 1-5)
-NODE2_DB=node1db
-
-NODE3_HOST=192.168.1.102  # STADVDB44-Server2 (Fragment 6-10)
-NODE3_DB=node2db
-
-# Server Port
-PORT=3000
-```
-
-### Step 2: Update Database Configuration
-
-```javascript
-// filepath: backend/config/db.js
-const { Pool } = require('pg');
-require('dotenv').config();
-
-const pools = {
-  Node1: new Pool({
-    user: process.env.DB_USER,
-    host: process.env.NODE1_HOST,
-    database: process.env.NODE1_DB,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
-  }),
-  Node2: new Pool({
-    user: process.env.DB_USER,
-    host: process.env.NODE2_HOST,
-    database: process.env.NODE2_DB,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
-  }),
-  Node3: new Pool({
-    user: process.env.DB_USER,
-    host: process.env.NODE3_HOST,
-    database: process.env.NODE3_DB,
-    password: process.env.DB_PASSWORD,
-    port: process.env.DB_PORT,
-    max: 20,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
-  }),
-};
-
-// Test connections
-const testConnections = async () => {
-  for (const [nodeName, pool] of Object.entries(pools)) {
-    try {
-      const client = await pool.connect();
-      const result = await client.query('SELECT NOW()');
-      console.log(`✓ ${nodeName} connected:`, result.rows[0].now);
-      client.release();
-    } catch (error) {
-      console.error(`✗ ${nodeName} connection failed:`, error.message);
-    }
-  }
-};
-
-module.exports = pools;
-module.exports.testConnections = testConnections;
-```
-
-### Step 3: Create Schema Controller
-
-```javascript
-// filepath: backend/config/schema.js
-const createOrdersTable = `
-  CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-  
-  CREATE TABLE IF NOT EXISTS orders (
-    order_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    quantity int NOT NULL,
-    payload jsonb,
-    created_at timestamptz DEFAULT now(),
-    updated_at timestamptz DEFAULT now()
-  );
-`;
-
-const createOpLogTable = `
-  CREATE TABLE IF NOT EXISTS op_log (
-    op_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    origin_node text NOT NULL,
-    op_type text NOT NULL,
-    table_name text NOT NULL,
-    row_id uuid NOT NULL,
-    payload jsonb,
-    ts timestamptz DEFAULT now(),
-    lamport bigint DEFAULT 0,
-    applied boolean DEFAULT false,
-    applied_ts timestamptz
-  );
-  
-  CREATE INDEX IF NOT EXISTS idx_oplog_origin_ts ON op_log(origin_node, ts);
-  CREATE INDEX IF NOT EXISTS idx_oplog_lamport ON op_log(lamport);
-`;
-
-const createAckTable = `
-  CREATE TABLE IF NOT EXISTS log_acknowledgements (
-    op_id uuid REFERENCES op_log(op_id) ON DELETE CASCADE,
-    node text NOT NULL,
-    ack_ts timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (op_id, node)
-  );
-`;
-
-const addNode2Constraint = `
-  DO $$ 
-  BEGIN
-    IF NOT EXISTS (
-      SELECT 1 FROM pg_constraint WHERE conname = 'qty_1to5'
-    ) THEN
-      ALTER TABLE orders ADD CONSTRAINT qty_1to5 CHECK (quantity >= 1 AND quantity <= 5);
-    END IF;
-  END $$;
-`;
-
-const addNode3Constraint = `
-  DO $$ 
-  BEGIN
-    IF NOT EXISTS (
-      SELECT 1 FROM pg_constraint WHERE conname = 'qty_6to10'
-    ) THEN
-      ALTER TABLE orders ADD CONSTRAINT qty_6to10 CHECK (quantity >= 6 AND quantity <= 10);
-    END IF;
-  END $$;
-`;
-
-module.exports = {
-  createOrdersTable,
-  createOpLogTable,
-  createAckTable,
-  addNode2Constraint,
-  addNode3Constraint
-};
-```
-
-### Step 4: Create Initialization Controller
-
-```javascript
-// filepath: backend/controllers/initController.js
-const pools = require('../config/db');
-const schema = require('../config/schema');
-
-const initializeAllNodes = async () => {
-  const results = {};
-  
-  try {
-    // Node 1: Central node (all orders, no constraint)
-    console.log('Initializing Node1 (Central)...');
-    await pools.Node1.query(schema.createOrdersTable);
-    await pools.Node1.query(schema.createOpLogTable);
-    await pools.Node1.query(schema.createAckTable);
-    results.Node1 = { 
-      status: 'initialized', 
-      role: 'Central Node',
-      fragment: 'ALL orders (no constraint)'
-    };
-    
-    // Node 2: Fragment 1 (quantity 1-5)
-    console.log('Initializing Node2 (Fragment 1-5)...');
-    await pools.Node2.query(schema.createOrdersTable);
-    await pools.Node2.query(schema.createOpLogTable);
-    await pools.Node2.query(schema.createAckTable);
-    await pools.Node2.query(schema.addNode2Constraint);
-    results.Node2 = { 
-      status: 'initialized',
-      role: 'Fragment Node',
-      fragment: 'quantity 1-5'
-    };
-    
-    // Node 3: Fragment 2 (quantity 6-10)
-    console.log('Initializing Node3 (Fragment 6-10)...');
-    await pools.Node3.query(schema.createOrdersTable);
-    await pools.Node3.query(schema.createOpLogTable);
-    await pools.Node3.query(schema.createAckTable);
-    await pools.Node3.query(schema.addNode3Constraint);
-    results.Node3 = { 
-      status: 'initialized',
-      role: 'Fragment Node',
-      fragment: 'quantity 6-10'
-    };
-    
-    console.log('✓ All nodes initialized successfully');
-    return { success: true, results };
-  } catch (error) {
-    console.error('✗ Initialization failed:', error.message);
-    throw new Error(`Initialization failed: ${error.message}`);
-  }
-};
-
-const checkNodeStatus = async () => {
-  const status = {};
-  
-  for (const [nodeName, pool] of Object.entries(pools)) {
-    try {
-      const client = await pool.connect();
-      
-      // Check if tables exist
-      const tablesResult = await client.query(`
-        SELECT table_name 
-        FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name IN ('orders', 'op_log', 'log_acknowledgements')
-      `);
-      
-      // Get row counts
-      const ordersCount = await client.query('SELECT COUNT(*) FROM orders');
-      const opLogCount = await client.query('SELECT COUNT(*) FROM op_log');
-      
-      client.release();
-      
-      status[nodeName] = {
-        connected: true,
-        tables: tablesResult.rows.map(r => r.table_name),
-        orderCount: parseInt(ordersCount.rows[0].count),
-        opLogCount: parseInt(opLogCount.rows[0].count)
-      };
-    } catch (error) {
-      status[nodeName] = {
-        connected: false,
-        error: error.message
-      };
-    }
-  }
-  
-  return status;
-};
-
-module.exports = { initializeAllNodes, checkNodeStatus };
-```
-
-### Step 5: Create Lamport Clock Utility
-
-```javascript
-// filepath: backend/utils/lamport.js
-class LamportClock {
-  constructor() {
-    this.counter = 0;
-  }
-  
-  tick() {
-    this.counter++;
-    return this.counter;
-  }
-  
-  update(receivedTimestamp) {
-    this.counter = Math.max(this.counter, receivedTimestamp) + 1;
-    return this.counter;
-  }
-  
-  getTime() {
-    return this.counter;
-  }
-}
-
-// Global Lamport clocks for each node
-const clocks = {
-  Node1: new LamportClock(),
-  Node2: new LamportClock(),
-  Node3: new LamportClock()
-};
-
-module.exports = { clocks, LamportClock };
-```
-
-### Step 6: Create Replication Controller
-
-```javascript
-// filepath: backend/controllers/replicationController.js
-const pools = require('../config/db');
-const { clocks } = require('../utils/lamport');
-
-/**
- * Determine which nodes should receive the replication based on quantity
- */
-const getTargetNodes = (originNode, quantity) => {
-  const targets = [];
-  
-  // Always replicate to Node1 (central) if not origin
-  if (originNode !== 'Node1') {
-    targets.push('Node1');
-  }
-  
-  // Replicate to fragment nodes based on quantity
-  if (originNode !== 'Node2' && quantity >= 1 && quantity <= 5) {
-    targets.push('Node2');
-  }
-  if (originNode !== 'Node3' && quantity >= 6 && quantity <= 10) {
-    targets.push('Node3');
-  }
-  
-  return targets;
-};
-
-/**
- * Replicate operation to target nodes
- */
-const replicateOperation = async (originNode, opType, orderData) => {
-  const lamportTime = clocks[originNode].tick();
-  const opId = require('crypto').randomUUID();
-  
-  console.log(`[REPLICATION] ${opType} from ${originNode}, Lamport: ${lamportTime}`);
-  
-  // Log operation on origin node
-  await pools[originNode].query(
-    `INSERT INTO op_log (op_id, origin_node, op_type, table_name, row_id, payload, lamport)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [opId, originNode, opType, 'orders', orderData.order_id, JSON.stringify(orderData), lamportTime]
-  );
-  
-  const results = { 
-    opId, 
-    lamportTime, 
-    originNode,
-    replications: {} 
-  };
-  
-  // Determine target nodes
-  const targetNodes = getTargetNodes(originNode, orderData.quantity);
-  console.log(`[REPLICATION] Target nodes:`, targetNodes);
-  
-  for (const targetNode of targetNodes) {
-    try {
-      // Update Lamport clock on target
-      clocks[targetNode].update(lamportTime);
-      
-      const client = await pools[targetNode].connect();
-      
-      try {
-        await client.query('BEGIN');
-        
-        // Execute replication based on operation type
-        if (opType === 'INSERT') {
-          await client.query(
-            `INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (order_id) DO UPDATE 
-             SET quantity = EXCLUDED.quantity, 
-                 payload = EXCLUDED.payload, 
-                 updated_at = EXCLUDED.updated_at`,
-            [orderData.order_id, orderData.quantity, orderData.payload, orderData.created_at, orderData.updated_at]
-          );
-        } else if (opType === 'UPDATE') {
-          await client.query(
-            `UPDATE orders 
-             SET quantity = $1, payload = $2, updated_at = $3 
-             WHERE order_id = $4`,
-            [orderData.quantity, orderData.payload, orderData.updated_at, orderData.order_id]
-          );
-        } else if (opType === 'DELETE') {
-          await client.query(
-            `DELETE FROM orders WHERE order_id = $1`,
-            [orderData.order_id]
-          );
-        }
-        
-        // Log operation on target node
-        await client.query(
-          `INSERT INTO op_log (op_id, origin_node, op_type, table_name, row_id, payload, lamport, applied, applied_ts)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, true, now())`,
-          [opId, originNode, opType, 'orders', orderData.order_id, JSON.stringify(orderData), lamportTime]
-        );
-        
-        await client.query('COMMIT');
-        
-        // Acknowledge on origin node
-        await pools[originNode].query(
-          `INSERT INTO log_acknowledgements (op_id, node) VALUES ($1, $2)`,
-          [opId, targetNode]
-        );
-        
-        results.replications[targetNode] = { 
-          status: 'success',
-          lamport: clocks[targetNode].getTime()
-        };
-        console.log(`[REPLICATION] ✓ ${targetNode} replicated successfully`);
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-    } catch (error) {
-      results.replications[targetNode] = { 
-        status: 'failed', 
-        error: error.message 
-      };
-      console.error(`[REPLICATION] ✗ ${targetNode} replication failed:`, error.message);
-    }
-  }
-  
-  return results;
-};
-
-module.exports = { replicateOperation, getTargetNodes };
-```
-
-### Step 7: Create Order CRUD Controller
-
-```javascript
-// filepath: backend/controllers/orderController.js
-const pools = require('../config/db');
-const { replicateOperation } = require('./replicationController');
-
-/**
- * CREATE: Insert order with replication
- */
-const createOrder = async (req, res) => {
-  const { nodeId, quantity, payload } = req.body;
-  
-  if (!nodeId || !quantity) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'nodeId and quantity are required' 
-    });
-  }
-  
-  const client = await pools[nodeId].connect();
-  
-  try {
-    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-    
-    // Insert on origin node
-    const result = await client.query(
-      `INSERT INTO orders (quantity, payload) 
-       VALUES ($1, $2) 
-       RETURNING *`,
-      [quantity, payload || {}]
-    );
-    
-    const order = result.rows[0];
-    
-    await client.query('COMMIT');
-    
-    // Replicate to other nodes asynchronously
-    const replicationResult = await replicateOperation(nodeId, 'INSERT', order);
-    
-    res.json({
-      success: true,
-      message: 'Order created and replicated',
-      data: order,
-      replication: replicationResult
-    });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('[CREATE ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.release();
-  }
-};
-
-/**
- * READ: Get all orders from a specific node
- */
-const getOrders = async (req, res) => {
-  const { nodeId } = req.params;
-  
-  try {
-    const result = await pools[nodeId].query(
-      `SELECT * FROM orders ORDER BY created_at DESC`
-    );
-    
-    res.json({
-      success: true,
-      node: nodeId,
-      count: result.rows.length,
-      data: result.rows
-    });
-  } catch (error) {
-    console.error('[READ ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-/**
- * READ: Get single order by ID
- */
-const getOrderById = async (req, res) => {
-  const { nodeId, orderId } = req.params;
-  
-  try {
-    const result = await pools[nodeId].query(
-      `SELECT * FROM orders WHERE order_id = $1`,
-      [orderId]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Order not found' 
-      });
-    }
-    
-    res.json({
-      success: true,
-      node: nodeId,
-      data: result.rows[0]
-    });
-  } catch (error) {
-    console.error('[READ ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-/**
- * UPDATE: Update order with replication
- */
-const updateOrder = async (req, res) => {
-  const { nodeId, orderId } = req.params;
-  const { quantity, payload } = req.body;
-  
-  const client = await pools[nodeId].connect();
-  
-  try {
-    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-    
-    // Lock and update on origin node
-    const result = await client.query(
-      `UPDATE orders 
-       SET quantity = $1, payload = $2, updated_at = now() 
-       WHERE order_id = $3 
-       RETURNING *`,
-      [quantity, payload, orderId]
-    );
-    
-    if (result.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Order not found' 
-      });
-    }
-    
-    const order = result.rows[0];
-    
-    await client.query('COMMIT');
-    
-    // Replicate to other nodes
-    const replicationResult = await replicateOperation(nodeId, 'UPDATE', order);
-    
-    res.json({
-      success: true,
-      message: 'Order updated and replicated',
-      data: order,
-      replication: replicationResult
-    });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('[UPDATE ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.release();
-  }
-};
-
-/**
- * DELETE: Delete order with replication
- */
-const deleteOrder = async (req, res) => {
-  const { nodeId, orderId } = req.params;
-  
-  const client = await pools[nodeId].connect();
-  
-  try {
-    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-    
-    // Get order before deleting
-    const getResult = await client.query(
-      `SELECT * FROM orders WHERE order_id = $1 FOR UPDATE`,
-      [orderId]
-    );
-    
-    if (getResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ 
-        success: false, 
-        error: 'Order not found' 
-      });
-    }
-    
-    const order = getResult.rows[0];
-    
-    // Delete on origin node
-    await client.query(
-      `DELETE FROM orders WHERE order_id = $1`,
-      [orderId]
-    );
-    
-    await client.query('COMMIT');
-    
-    // Replicate deletion to other nodes
-    const replicationResult = await replicateOperation(nodeId, 'DELETE', order);
-    
-    res.json({
-      success: true,
-      message: 'Order deleted and replicated',
-      data: order,
-      replication: replicationResult
-    });
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error('[DELETE ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  } finally {
-    client.release();
-  }
-};
-
-module.exports = { 
-  createOrder, 
-  getOrders, 
-  getOrderById,
-  updateOrder, 
-  deleteOrder 
-};
-```
-
----
-
-## Part 3: Concurrency Control Implementation
-
-### Case #1: Concurrent Reads
-
-```javascript
-// filepath: backend/controllers/concurrencyController.js
-const pools = require('../config/db');
-
-/**
- * CASE #1: Concurrent reads on same data
- */
-const testConcurrentReads = async (req, res) => {
-  const { orderId } = req.params;
-  const startTime = Date.now();
-  const log = [];
-  
-  try {
-    // Simulate concurrent reads from all 3 nodes
-    const readPromises = ['Node1', 'Node2', 'Node3'].map(async (nodeId) => {
-      const client = await pools[nodeId].connect();
-      
-      try {
-        const txStart = Date.now();
-        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-        log.push({ 
-          time: txStart - startTime, 
-          event: `${nodeId} READ BEGIN`, 
-          node: nodeId 
-        });
-        
-        const result = await client.query(
-          `SELECT * FROM orders WHERE order_id = $1`,
-          [orderId]
-        );
-        
-        // Simulate processing time
-        await new Promise(resolve => setTimeout(resolve, Math.random() * 100));
-        
-        await client.query('COMMIT');
-        const txEnd = Date.now();
-        log.push({ 
-          time: txEnd - startTime, 
-          event: `${nodeId} READ COMMIT`, 
-          node: nodeId 
-        });
-        
-        return {
-          node: nodeId,
-          status: 'success',
-          data: result.rows[0] || null,
-          duration: txEnd - txStart,
-          lockType: 'SHARE (Read Lock)',
-          isolationLevel: 'SERIALIZABLE'
-        };
-      } finally {
-        client.release();
-      }
-    });
-    
-    const results = await Promise.all(readPromises);
-    const totalDuration = Date.now() - startTime;
-    
-    // Verify consistency
-    const allData = results.map(r => JSON.stringify(r.data));
-    const isConsistent = allData.every(data => data === allData[0]);
-    
-    res.json({
-      case: 'Case #1: Concurrent Reads',
-      description: 'Multiple transactions reading same data item',
-      totalDuration: `${totalDuration}ms`,
-      transactionLog: log.sort((a, b) => a.time - b.time),
-      results,
-      consistency: {
-        status: isConsistent ? 'CONSISTENT' : 'INCONSISTENT',
-        message: isConsistent 
-          ? 'All nodes returned identical data' 
-          : 'Data mismatch detected across nodes'
-      }
-    });
-  } catch (error) {
-    console.error('[CASE #1 ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-```
-
-### Case #2: Write + Concurrent Reads
-
-```javascript
-/**
- * CASE #2: One write + concurrent reads
- */
-const testWriteWithReads = async (req, res) => {
-  const { orderId, newQuantity } = req.body;
-  const startTime = Date.now();
-  const log = [];
-  
-  try {
-    // Start write transaction on Node1
-    const writePromise = (async () => {
-      const client = await pools.Node1.connect();
-      try {
-        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-        log.push({ 
-          time: Date.now() - startTime, 
-          event: 'Node1 WRITE BEGIN', 
-          node: 'Node1' 
-        });
-        
-        const result = await client.query(
-          `UPDATE orders SET quantity = $1, updated_at = now() 
-           WHERE order_id = $2 
-           RETURNING *`,
-          [newQuantity, orderId]
-        );
-        
-        // Simulate processing
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        await client.query('COMMIT');
-        log.push({ 
-          time: Date.now() - startTime, 
-          event: 'Node1 WRITE COMMIT', 
-          node: 'Node1' 
-        });
-        
-        return { 
-          node: 'Node1', 
-          operation: 'WRITE', 
-          status: 'success',
-          data: result.rows[0]
-        };
-      } finally {
-        client.release();
-      }
-    })();
-    
-    // Concurrent reads from Node2 and Node3
-    const readPromises = ['Node2', 'Node3'].map(async (nodeId) => {
-      const client = await pools[nodeId].connect();
-      try {
-        // Wait a bit to ensure write starts first
-        await new Promise(resolve => setTimeout(resolve, 50));
-        
-        await client.query('BEGIN ISOLATION LEVEL READ COMMITTED');
-        log.push({ 
-          time: Date.now() - startTime, 
-          event: `${nodeId} READ BEGIN`, 
-          node: nodeId 
-        });
-        
-        const result = await client.query(
-          `SELECT * FROM orders WHERE order_id = $1`,
-          [orderId]
-        );
-        
-        await client.query('COMMIT');
-        log.push({ 
-          time: Date.now() - startTime, 
-          event: `${nodeId} READ COMMIT`, 
-          node: nodeId 
-        });
-        
-        return {
-          node: nodeId,
-          operation: 'READ',
-          status: 'success',
-          data: result.rows[0]
-        };
-      } finally {
-        client.release();
-      }
-    });
-    
-    const [writeResult, ...readResults] = await Promise.all([writePromise, ...readPromises]);
-    const totalDuration = Date.now() - startTime;
-    
-    res.json({
-      case: 'Case #2: Write + Concurrent Reads',
-      description: 'One transaction writing while others read same data',
-      totalDuration: `${totalDuration}ms`,
-      transactionLog: log.sort((a, b) => a.time - b.time),
-      results: [writeResult, ...readResults],
-      consistency: {
-        status: 'SERIALIZABLE',
-        message: 'Read transactions may see old or new value depending on timing'
-      }
-    });
-  } catch (error) {
-    console.error('[CASE #2 ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-```
-
-### Case #3: Concurrent Writes
-
-```javascript
-/**
- * CASE #3: Concurrent writes on same data
- */
-const testConcurrentWrites = async (req, res) => {
-  const { orderId } = req.params;
-  const startTime = Date.now();
-  const log = [];
-  
-  try {
-    // Concurrent write transactions from different nodes
-    const writePromises = [
-      { node: 'Node1', increment: 1 },
-      { node: 'Node2', increment: 2 }
-    ].map(async ({ node, increment }) => {
-      const client = await pools[node].connect();
-      
-      try {
-        await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-        log.push({ 
-          time: Date.now() - startTime, 
-          event: `${node} WRITE BEGIN`, 
-          node 
-        });
-        
-        // Read current value with lock
-        const readResult = await client.query(
-          `SELECT quantity FROM orders WHERE order_id = $1 FOR UPDATE`,
-          [orderId]
-        );
-        
-        if (readResult.rows.length === 0) {
-          throw new Error('Order not found');
-        }
-        
-        const currentQty = readResult.rows[0].quantity;
-        const newQty = currentQty + increment;
-        
-        // Simulate processing
-        await new Promise(resolve => setTimeout(resolve, Math.random() * 200));
-        
-        // Update
-        await client.query(
-          `UPDATE orders SET quantity = $1, updated_at = now() 
-           WHERE order_id = $2`,
-          [newQty, orderId]
-        );
-        
-        await client.query('COMMIT');
-        log.push({ 
-          time: Date.now() - startTime, 
-          event: `${node} WRITE COMMIT`, 
-          node 
-        });
-        
-        return {
-          node,
-          operation: 'WRITE',
-          status: 'success',
-          oldValue: currentQty,
-          newValue: newQty,
-          increment
-        };
-      } catch (error) {
-        await client.query('ROLLBACK');
-        log.push({ 
-          time: Date.now() - startTime, 
-          event: `${node} WRITE ROLLBACK`, 
-          node, 
-          error: error.message 
-        });
-        
-        return {
-          node,
-          operation: 'WRITE',
-          status: 'failed',
-          error: error.message
-        };
-      } finally {
-        client.release();
-      }
-    });
-    
-    const results = await Promise.all(writePromises);
-    const totalDuration = Date.now() - startTime;
-    
-    // Check final state
-    const finalState = await pools.Node1.query(
-      `SELECT * FROM orders WHERE order_id = $1`,
-      [orderId]
-    );
-    
-    res.json({
-      case: 'Case #3: Concurrent Writes',
-      description: 'Multiple transactions writing to same data item',
-      totalDuration: `${totalDuration}ms`,
-      transactionLog: log.sort((a, b) => a.time - b.time),
-      results,
-      finalState: finalState.rows[0],
-      consistency: {
-        status: 'SERIALIZABLE',
-        message: 'Transactions executed serially due to FOR UPDATE lock. One succeeded, others may fail with serialization error.'
-      }
-    });
-  } catch (error) {
-    console.error('[CASE #3 ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-module.exports = {
-  testConcurrentReads,
-  testWriteWithReads,
-  testConcurrentWrites
-};
-```
-
----
-
-## Part 4: Crash Recovery Implementation
-
-### Recovery Strategy: **Operation Log Replay**
-
-```javascript
-// filepath: backend/controllers/recoveryController.js
-const pools = require('../config/db');
-
-/**
- * Get pending operations that need to be replayed
- */
-const getPendingOperations = async (nodeId) => {
-  const result = await pools[nodeId].query(
-    `SELECT * FROM op_log 
-     WHERE applied = false 
-     ORDER BY lamport ASC, ts ASC`
-  );
-  return result.rows;
-};
-
-/**
- * Replay a single operation on target node
- */
-const replayOperation = async (targetNode, operation) => {
-  const client = await pools[targetNode].connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    const payload = operation.payload;
-    
-    if (operation.op_type === 'INSERT') {
-      await client.query(
-        `INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (order_id) DO UPDATE
-         SET quantity = EXCLUDED.quantity, 
-             payload = EXCLUDED.payload, 
-             updated_at = EXCLUDED.updated_at`,
-        [payload.order_id, payload.quantity, payload.payload, payload.created_at, payload.updated_at]
-      );
-    } else if (operation.op_type === 'UPDATE') {
-      await client.query(
-        `UPDATE orders 
-         SET quantity = $1, payload = $2, updated_at = $3 
-         WHERE order_id = $4`,
-        [payload.quantity, payload.payload, payload.updated_at, payload.order_id]
-      );
-    } else if (operation.op_type === 'DELETE') {
-      await client.query(
-        `DELETE FROM orders WHERE order_id = $1`,
-        [payload.order_id]
-      );
-    }
-    
-    // Mark as applied
-    await client.query(
-      `INSERT INTO op_log (op_id, origin_node, op_type, table_name, row_id, payload, lamport, applied, applied_ts)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, true, now())
-       ON CONFLICT (op_id) DO UPDATE SET applied = true, applied_ts = now()`,
-      [operation.op_id, operation.origin_node, operation.op_type, operation.table_name, 
-       operation.row_id, JSON.stringify(payload), operation.lamport]
-    );
-    
-    await client.query('COMMIT');
-    console.log(`[RECOVERY] ✓ Replayed op ${operation.op_id} on ${targetNode}`);
-    return { success: true, op_id: operation.op_id };
-  } catch (error) {
-    await client.query('ROLLBACK');
-    console.error(`[RECOVERY] ✗ Failed to replay op ${operation.op_id} on ${targetNode}:`, error.message);
-    return { success: false, op_id: operation.op_id, error: error.message };
-  } finally {
-    client.release();
-  }
-};
-
-/**
- * CASE #1: Replication from Node2/3 to Central fails
- */
-const testReplicationFailureToCentral = async (req, res) => {
-  const { sourceNode, quantity, payload, simulateFailure } = req.body;
-  
-  if (!['Node2', 'Node3'].includes(sourceNode)) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'sourceNode must be Node2 or Node3' 
-    });
-  }
-  
-  try {
-    // Create order on source node
-    const result = await pools[sourceNode].query(
-      `INSERT INTO orders (quantity, payload) 
-       VALUES ($1, $2) 
-       RETURNING *`,
-      [quantity, payload || {}]
-    );
-    
-    const order = result.rows[0];
-    
-    let replicationError = null;
-    
-    if (simulateFailure) {
-      // Simulate failure - log but don't replicate
-      replicationError = 'SIMULATED: Central node (Node1) is down';
-      
-      await pools[sourceNode].query(
-        `INSERT INTO op_log (origin_node, op_type, table_name, row_id, payload, applied)
-         VALUES ($1, $2, $3, $4, $5, false)`,
-        [sourceNode, 'INSERT', 'orders', order.order_id, JSON.stringify(order)]
-      );
-      
-      console.log(`[RECOVERY TEST] Simulated failure: order ${order.order_id} not replicated to Node1`);
-    } else {
-      // Normal replication
-      try {
-        await pools.Node1.query(
-          `INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [order.order_id, order.quantity, order.payload, order.created_at, order.updated_at]
-        );
-      } catch (error) {
-        replicationError = error.message;
-      }
-    }
-    
-    res.json({
-      case: 'Case #1: Replication Failure to Central Node',
-      description: 'Transaction created on fragment node but failed to replicate to central',
-      sourceNode,
-      order,
-      replication: {
-        target: 'Node1',
-        status: replicationError ? 'FAILED' : 'SUCCESS',
-        error: replicationError
-      },
-      recovery: replicationError ? {
-        status: 'LOGGED',
-        message: 'Operation logged in op_log for later recovery'
-      } : null
-    });
-  } catch (error) {
-    console.error('[CASE #1 ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-/**
- * CASE #2: Central node recovers and catches up
- */
-const testCentralNodeRecovery = async (req, res) => {
-  try {
-    console.log('[RECOVERY] Starting central node recovery...');
-    
-    // Get pending operations from fragment nodes
-    const node2Pending = await getPendingOperations('Node2');
-    const node3Pending = await getPendingOperations('Node3');
-    
-    const allPending = [...node2Pending, ...node3Pending].sort((a, b) => {
-      if (a.lamport !== b.lamport) return a.lamport - b.lamport;
-      return new Date(a.ts) - new Date(b.ts);
-    });
-    
-    console.log(`[RECOVERY] Found ${allPending.length} pending operations`);
-    
-    const results = [];
-    
-    // Replay operations on Node1
-    for (const op of allPending) {
-      const result = await replayOperation('Node1', op);
-      results.push(result);
-      
-      // Mark as applied on origin node
-      if (result.success) {
-        await pools[op.origin_node].query(
-          `UPDATE op_log SET applied = true, applied_ts = now() WHERE op_id = $1`,
-          [op.op_id]
-        );
-      }
-    }
-    
-    res.json({
-      case: 'Case #2: Central Node Recovery',
-      description: 'Central node came back online and replayed missed transactions',
-      pendingOperations: allPending.length,
-      operations: allPending.map(op => ({
-        op_id: op.op_id,
-        origin_node: op.origin_node,
-        op_type: op.op_type,
-        lamport: op.lamport
-      })),
-      replayResults: results,
-      summary: {
-        successful: results.filter(r => r.success).length,
-        failed: results.filter(r => !r.success).length
-      }
-    });
-  } catch (error) {
-    console.error('[CASE #2 ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-/**
- * CASE #3: Replication from Central to fragment fails
- */
-const testReplicationFailureToFragment = async (req, res) => {
-  const { quantity, payload, simulateFailure } = req.body;
-  
-  try {
-    // Create order on Node1 (central)
-    const result = await pools.Node1.query(
-      `INSERT INTO orders (quantity, payload) 
-       VALUES ($1, $2) 
-       RETURNING *`,
-      [quantity, payload || {}]
-    );
-    
-    const order = result.rows[0];
-    
-    // Determine target fragment node based on quantity
-    const targetNode = quantity >= 1 && quantity <= 5 ? 'Node2' : 'Node3';
-    
-    let replicationError = null;
-    
-    if (simulateFailure) {
-      // Simulate failure
-      replicationError = `SIMULATED: ${targetNode} is down`;
-      
-      await pools.Node1.query(
-        `INSERT INTO op_log (origin_node, op_type, table_name, row_id, payload, applied)
-         VALUES ($1, $2, $3, $4, $5, false)`,
-        ['Node1', 'INSERT', 'orders', order.order_id, JSON.stringify(order)]
-      );
-      
-      console.log(`[RECOVERY TEST] Simulated failure: order ${order.order_id} not replicated to ${targetNode}`);
-    } else {
-      // Normal replication
-      try {
-        await pools[targetNode].query(
-          `INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [order.order_id, order.quantity, order.payload, order.created_at, order.updated_at]
-        );
-      } catch (error) {
-        replicationError = error.message;
-      }
-    }
-    
-    res.json({
-      case: 'Case #3: Replication Failure to Fragment Node',
-      description: 'Transaction created on central but failed to replicate to fragment',
-      order,
-      replication: {
-        target: targetNode,
-        status: replicationError ? 'FAILED' : 'SUCCESS',
-        error: replicationError
-      },
-      recovery: replicationError ? {
-        status: 'LOGGED',
-        message: 'Operation logged in op_log for later recovery'
-      } : null
-    });
-  } catch (error) {
-    console.error('[CASE #3 ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-/**
- * CASE #4: Fragment node recovers and catches up
- */
-const testFragmentNodeRecovery = async (req, res) => {
-  const { nodeId } = req.params;
-  
-  if (!['Node2', 'Node3'].includes(nodeId)) {
-    return res.status(400).json({ 
-      success: false, 
-      error: 'nodeId must be Node2 or Node3' 
-    });
-  }
-  
-  try {
-    console.log(`[RECOVERY] Starting ${nodeId} recovery...`);
-    
-    // Get pending operations from Node1
-    const allPending = await getPendingOperations('Node1');
-    
-    // Filter operations relevant to this fragment
-    const relevantOps = allPending.filter(op => {
-      const payload = op.payload;
-      if (nodeId === 'Node2') {
-        return payload.quantity >= 1 && payload.quantity <= 5;
-      } else {
-        return payload.quantity >= 6 && payload.quantity <= 10;
-      }
-    });
-    
-    console.log(`[RECOVERY] Found ${relevantOps.length} relevant operations for ${nodeId}`);
-    
-    const results = [];
-    
-    // Replay operations on fragment node
-    for (const op of relevantOps) {
-      const result = await replayOperation(nodeId, op);
-      results.push(result);
-      
-      // Mark as applied on Node1
-      if (result.success) {
-        await pools.Node1.query(
-          `UPDATE op_log SET applied = true, applied_ts = now() WHERE op_id = $1`,
-          [op.op_id]
-        );
-      }
-    }
-    
-    res.json({
-      case: `Case #4: ${nodeId} Recovery`,
-      description: `${nodeId} came back online and replayed missed transactions`,
-      pendingOperations: relevantOps.length,
-      operations: relevantOps.map(op => ({
-        op_id: op.op_id,
-        op_type: op.op_type,
-        quantity: op.payload.quantity,
-        lamport: op.lamport
-      })),
-      replayResults: results,
-      summary: {
-        successful: results.filter(r => r.success).length,
-        failed: results.filter(r => !r.success).length
-      }
-    });
-  } catch (error) {
-    console.error('[CASE #4 ERROR]', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-};
-
-module.exports = {
-  testReplicationFailureToCentral,
-  testCentralNodeRecovery,
-  testReplicationFailureToFragment,
-  testFragmentNodeRecovery,
-  getPendingOperations,
-  replayOperation
-};
-```
-
----
-
-## Part 5: API Routes Setup
-
-```javascript
-// filepath: backend/routes/api.js
-const express = require('express');
-const router = express.Router();
-
-const { initializeAllNodes, checkNodeStatus } = require('../controllers/initController');
-const { createOrder, getOrders, getOrderById, updateOrder, deleteOrder } = require('../controllers/orderController');
-const { 
-  testConcurrentReads, 
-  testWriteWithReads, 
-  testConcurrentWrites 
-} = require('../controllers/concurrencyController');
-const {
-  testReplicationFailureToCentral,
-  testCentralNodeRecovery,
-  testReplicationFailureToFragment,
-  testFragmentNodeRecovery
-} = require('../controllers/recoveryController');
-
-// ===== HEALTH & INITIALIZATION =====
-router.get('/health', async (req, res) => {
-  try {
-    const status = await checkNodeStatus();
-    res.json({ success: true, nodes: status });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-router.post('/init', async (req, res) => {
-  try {
-    const result = await initializeAllNodes();
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// ===== CRUD OPERATIONS =====
-router.post('/orders', createOrder);
-router.get('/orders/:nodeId', getOrders);
-router.get('/orders/:nodeId/:orderId', getOrderById);
-router.put('/orders/:nodeId/:orderId', updateOrder);
-router.delete('/orders/:nodeId/:orderId', deleteOrder);
-
-// ===== CONCURRENCY TESTS =====
-router.get('/concurrency/case1/:orderId', testConcurrentReads);
-router.post('/concurrency/case2', testWriteWithReads);
-router.post('/concurrency/case3/:orderId', testConcurrentWrites);
-
-// ===== RECOVERY TESTS =====
-router.post('/recovery/case1', testReplicationFailureToCentral);
-router.post('/recovery/case2', testCentralNodeRecovery);
-router.post('/recovery/case3', testReplicationFailureToFragment);
-router.post('/recovery/case4/:nodeId', testFragmentNodeRecovery);
-
-module.exports = router;
-```
-
-### Update Main App
-
-```javascript
-// filepath: backend/app.js
-const express = require('express');
-const cors = require('cors');
-const apiRoutes = require('./routes/api');
-
-const app = express();
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-// Logging middleware
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
-
-// Routes
-app.use('/api', apiRoutes);
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error('[ERROR]', err);
-  res.status(500).json({ success: false, error: err.message });
-});
-
-module.exports = app;
-```
-
-### Update Server Entry Point
-
-```javascript
-// filepath: backend/index.js
-const app = require('./app');
-const { testConnections } = require('./config/db');
-
-const PORT = process.env.PORT || 3000;
-
-// Test database connections on startup
-testConnections()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`✓ Server running on http://localhost:${PORT}`);
-      console.log(`✓ API endpoints available at http://localhost:${PORT}/api`);
-    });
-  })
-  .catch(error => {
-    console.error('✗ Failed to start server:', error.message);
-    process.exit(1);
-  });
-```
-
----
-
-## Part 6: Testing & Verification
-
-### Installation
-
-```bash
-cd backend
-npm install pg dotenv express cors
-```
-
-### API Testing Commands
-
-```bash
-# 1. Check node health
-curl http://localhost:3000/api/health
-
-# 2. Initialize all nodes
-curl -X POST http://localhost:3000/api/init
-
-# 3. Create order on Node1
-curl -X POST http://localhost:3000/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"nodeId":"Node1","quantity":3,"payload":{"product":"Widget"}}'
-
-# 4. Create order on Node2 (will replicate to Node1)
-curl -X POST http://localhost:3000/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"nodeId":"Node2","quantity":4,"payload":{"product":"Gadget"}}'
-
-# 5. Get all orders from Node1
-curl http://localhost:3000/api/orders/Node1
-
-# 6. Update order
-curl -X PUT http://localhost:3000/api/orders/Node1/<order-id> \
-  -H "Content-Type: application/json" \
-  -d '{"quantity":5,"payload":{"product":"Updated Widget"}}'
-
-# 7. Test concurrent reads (Case #1)
-curl http://localhost:3000/api/concurrency/case1/<order-id>
-
-# 8. Test write + reads (Case #2)
-curl -X POST http://localhost:3000/api/concurrency/case2 \
-  -H "Content-Type: application/json" \
-  -d '{"orderId":"<order-id>","newQuantity":7}'
-
-# 9. Test concurrent writes (Case #3)
-curl -X POST http://localhost:3000/api/concurrency/case3/<order-id>
-
-# 10. Test replication failure to central (Case #1)
-curl -X POST http://localhost:3000/api/recovery/case1 \
-  -H "Content-Type: application/json" \
-  -d '{"sourceNode":"Node2","quantity":4,"payload":{},"simulateFailure":true}'
-
-# 11. Test central node recovery (Case #2)
-curl -X POST http://localhost:3000/api/recovery/case2
-
-# 12. Test replication failure to fragment (Case #3)
-curl -X POST http://localhost:3000/api/recovery/case3 \
-  -H "Content-Type: application/json" \
-  -d '{"quantity":4,"payload":{},"simulateFailure":true}'
-
-# 13. Test fragment node recovery (Case #4)
-curl -X POST http://localhost:3000/api/recovery/case4/Node2
-```
-
----
-
-## Part 7: Implementation Checklist
-
-### Phase 1: Setup ✅
-- [ ] Update `.env` with correct VM IP addresses
-- [ ] Install npm dependencies (`pg`, `express`, `cors`, `dotenv`)
-- [ ] Create all controller files
-- [ ] Create utility files (Lamport clock)
-- [ ] Update routes and app.js
-- [ ] Test database connections
-
-### Phase 2: Basic CRUD ✅
-- [ ] Initialize all 3 nodes with `/api/init`
-- [ ] Verify fragmentation constraints work
-- [ ] Create order on Node1, verify replication to Node2/Node3
-- [ ] Create order on Node2 (qty 1-5), verify replication to Node1
-- [ ] Create order on Node3 (qty 6-10), verify replication to Node1
-- [ ] Update order, verify replication
-- [ ] Delete order, verify replication
-
-### Phase 3: Concurrency Tests ✅
-- [ ] Case #1: Run concurrent reads, verify all nodes return same data
-- [ ] Case #2: Run write + reads, verify isolation works
-- [ ] Case #3: Run concurrent writes, verify one succeeds with FOR UPDATE
-
-### Phase 4: Recovery Tests ✅
-- [ ] Case #1: Simulate Node1 down during replication from Node2
-- [ ] Case #2: Bring Node1 back, verify op_log replay works
-- [ ] Case #3: Simulate Node2 down during replication from Node1
-- [ ] Case #4: Bring Node2 back, verify op_log replay works
-
-### Phase 5: Frontend Integration ✅
-- [ ] Update frontend API service with new endpoints
-- [ ] Create UI for concurrency tests
-- [ ] Create UI for recovery scenarios
-- [ ] Display transaction logs and results
-- [ ] Add visualizations for node status
-
----
-
-## Key Design Decisions
-
-### 1. **Why Lamport Clocks?**
-- Ensures causal ordering of operations across distributed nodes
-- No need for synchronized physical clocks
-- Simple increment on local events, max+1 on received events
-
-### 2. **Why Operation Logs?**
-- Enables recovery from failures
-- Provides audit trail of all operations
-- Allows replay of missed transactions in correct order
-- Supports idempotent operations (ON CONFLICT DO UPDATE)
-
-### 3. **Why 2-Phase Commit Pattern?**
-- Ensures atomicity: either all nodes commit or all rollback
-- Origin node commits first, then replicates
-- Failures are logged for later recovery
-
-### 4. **Why Quantity-Based Fragmentation?**
-- Simple, deterministic partitioning rule
-- Easy to determine which fragment owns data
-- Aligns with potential business logic (small vs large orders)
-- Clean separation: Node2 (1-5) + Node3 (6-10) = Node1 (1-10)
-
-### 5. **Why SERIALIZABLE Isolation?**
-- Strongest consistency guarantee
-- Prevents phantom reads, non-repeatable reads, dirty reads
-- Critical for distributed systems where data consistency matters
-
----
-
-## Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     Frontend (React)                     │
-│  - DatabaseDashboard (CRUD UI)                          │
-│  - ConcurrencyScenarios (Test UI)                       │
-│  - RecoveryTests (Failure simulation)                   │
-└────────────────────┬────────────────────────────────────┘
-                     │ HTTP/REST API
-┌────────────────────▼────────────────────────────────────┐
-│              Backend (Express.js)                        │
-│  - Order Controller (CRUD + Replication)                │
-│  - Concurrency Controller (Test Cases)                  │
-│  - Recovery Controller (Failure handling)               │
-│  - Lamport Clock (Logical time)                         │
-└─┬──────────────┬──────────────┬────────────────────────┘
-  │              │              │
-  │ PostgreSQL   │ PostgreSQL   │ PostgreSQL
-  ▼              ▼              ▼
-┌────────┐    ┌────────┐    ┌────────┐
-│ Node 1 │◄──►│ Node 2 │    │ Node 3 │
-│Central │    │Fragment│    │Fragment│
-│ ALL    │    │  1-5   │    │  6-10  │
-│orders  │    │ orders │    │ orders │
-└────────┘    └────────┘    └────────┘
-   │              │              │
-   └──────────────┴──────────────┘
-         Replication Flow
-```
-
----
-
-## Next Steps
-
-1. **Create Directory Structure**
-   ```bash
-   mkdir -p backend/controllers backend/utils
-   ```
-
-2. **Create All Files**
-   - Copy each code block into corresponding file
-   - Update `.env` with actual VM IPs
-
-3. **Install Dependencies**
-   ```bash
-   cd backend
-   npm install
-   ```
-
-4. **Start Server**
-   ```bash
-   node index.js
-   ```
-
-5. **Test Each Component**
-   - Use curl commands to test each endpoint
-   - Verify replication works
-   - Test concurrency scenarios
-   - Simulate failures and recovery
-
-6. **Integrate with Frontend**
-   - Update API service
-   - Create test UIs
-   - Add result visualizations
-
----
-
-**Last Updated:** November 30, 2025  
-**Version:** 1.0.0  
-**PostgreSQL Version:** 18.1
-</file>
-
-<file path="isolationlevels.md">
-## Transaction Orchestrator (Concurrency Harness)
-
-The FastAPI service now exposes a transaction orchestrator that can launch canned concurrency scenarios (and custom scripts) against the nodes. Use it to demonstrate isolation anomalies directly from the React UI (Concurrency tab → "Transaction Orchestrator") or by calling the REST endpoints below.
-
-### REST endpoints
-
-- `POST /orchestrator/run` — body requires `scenario` (`Case1_readers_only`, `Case2_writer_readers`, `Case3_concurrent_writers`, or `custom`), `isolation_level` (`READ_UNCOMMITTED`, `READ_COMMITTED`, `REPEATABLE_READ`, `SERIALIZABLE`), `parallel_clients` (1-16), and optional `custom_transactions` (list of client scripts when `scenario=custom`). Returns `{ "run_id": "..." }`.
-- `GET /orchestrator/status/{run_id}` — returns run metadata, per-client state, and a result summary (including node snapshots and detected serialization conflicts).
-- `GET /orchestrator/logs/{run_id}` — streaming-friendly log feed for UI polling.
-- `POST /orchestrator/abort/{run_id}` — cancels an in-flight run.
-
-> ℹ️ PostgreSQL folds `READ_UNCOMMITTED` into `READ COMMITTED`; the orchestrator surfaces this note in both the API and UI so readers understand why dirty reads cannot be demonstrated directly.
-
-#### Sample payload
-
-```json
-{
-  "scenario": "Case3_concurrent_writers",
-  "isolation_level": "SERIALIZABLE",
-  "parallel_clients": 3
-}
-```
-
-#### Custom scripts
-
-Provide your own clients when `scenario` is `custom`:
-
-```json
-{
-  "scenario": "custom",
-  "isolation_level": "REPEATABLE_READ",
-  "parallel_clients": 1,
-  "custom_transactions": [
-    {
-      "node": "node0",
-      "statements": [
-        {"sql": "SELECT quantity FROM orders WHERE order_id = $1", "params": ["<uuid>"]},
-        {"sql": "UPDATE orders SET quantity = quantity + 2 WHERE order_id = $1", "params": ["<uuid>"]}
-      ]
-    }
-  ]
-}
-```
-
-### Frontend usage
-
-- Navigate to **Concurrency Testing → Transaction Orchestrator**.
-- Pick a scenario, isolation level, and client count, then click **Run Scenario**.
-- Status, per-client outcomes, node snapshots, and recent logs refresh automatically; you can also click **Abort Run** to simulate cancellations.
-
-### Tests
-
-Unit tests cover all builtin scenarios plus serialization-abort handling. Run them via:
-
-```
-python -m pytest replication/tests/test_orchestrator.py
-```
-</file>
-
-<file path="oldreadme.md">
-<code>
-CREATE DATABASE database;
-\c database
-
-CREATE TABLE public.orders (
-    order_id bigint PRIMARY KEY DEFAULT nextval('public.orders'),
-    quantity bigint NOT NULL
-);
-</code>
-
-per-node ID enforcement:
-<code>
---Node1
-CREATE SEQUENCE orders_seq_even START 1 INCREMENT 2;
-ALTER TABLE public.orders ALTER COLUMN order_id SET DEFAULT nextval('orders_seq_even');
-ALTER TABLE public.orders ADD CONSTRAINT table_orderid_even CHECK (order_id % 1 = 0);
-ALTER TABLE public.orders ADD CONSTRAINT orders_qty_1to5 CHECK (quantity <= 5);
-</code>
-<code>
---Node2
-CREATE SEQUENCE orders_seq_even START 2 INCREMENT 2;
-ALTER TABLE public.orders ALTER COLUMN order_id SET DEFAULT nextval('orders_seq_even');
-ALTER TABLE public.orders ADD CONSTRAINT table_orderid_even CHECK (order_id % 2 = 0);
-ALTER TABLE public.orders ADD CONSTRAINT orders_qty_6to10 CHECK (quantity > 5);
-</code>
-</file>
-
 <file path="package.json">
 {
   "name": "stadvdb-mco2",
@@ -10521,59 +8029,6 @@ async def test_serialization_abort_is_tracked(orchestrator):
 	assert state.summary["serialization_conflicts"], "conflict list propagated"
 </file>
 
-<file path="replication/tests/test_replicator.py">
-"""Unit tests for the replicator worker."""
-
-from __future__ import annotations
-
-from dataclasses import replace
-
-import pytest
-
-from replication.config import PeerNode
-from replication.workers.replicator import ReplicatorWorker
-
-
-class StubHTTPClient:
-	def __init__(self, payload):
-		self.payload = payload
-		self.calls = []
-
-	async def get_json(self, url, params=None):
-		self.calls.append((url, params))
-		return self.payload
-
-
-class StubCrud:
-	def __init__(self):
-		self.ops = []
-
-	async def insert_op_if_missing(self, conn, op):
-		self.ops.append(op)
-		return True
-
-
-@pytest.mark.asyncio
-async def test_replicator_pulls_from_peer(dummy_pool, settings, op_factory) -> None:
-	peer = PeerNode(name="node0", base_url="http://node0:8000")
-	op = op_factory(10)
-	http_client = StubHTTPClient([op.model_dump()])
-	stub_crud = StubCrud()
-	worker = ReplicatorWorker(
-		dummy_pool,
-		replace(settings, peer_nodes=[peer]),
-		http_client=http_client,
-		crud_module=stub_crud,
-	)
-
-	await worker.poll_once()
-
-	assert stub_crud.ops[0].lamport == 10
-	assert worker.last_seen[peer.base_url] == 10
-	assert worker.total_inserted == 1
-	assert http_client.calls[0][1] == {"since_lamport": -1}
-</file>
-
 <file path="replication/utils/__init__.py">
 """Utility helpers for the replication service."""
 </file>
@@ -10707,580 +8162,6 @@ from .replicator import ReplicatorWorker  # noqa: F401
 """Placeholder for future op log garbage collection worker."""
 +
 +# TODO: Implement GC worker that purges acknowledged operations across the quorum.
-</file>
-
-<file path="VM_UPDATE_GUIDE.md">
-# VM Update Guide
-
-Quick reference for updating backend and frontend on VMs after pushing code to GitHub.
-
----
-
-## Table of Contents
-
-- [Update Python Backend (All VMs)](#update-python-backend-all-vms)
-- [Update Frontend (VM1 Only)](#update-frontend-vm1-only)
-- [Update Both Backend and Frontend](#update-both-backend-and-frontend)
-- [Update All VMs at Once (From Laptop)](#update-all-vms-at-once-from-laptop)
-- [Troubleshooting](#troubleshooting)
-
----
-
-## Update Python Backend (All VMs)
-
-### Quick Command (One-Liner)
-
-```bash
-cd ~/STADVDB && git pull && cd replication && source .venv/bin/activate && pip install -r requirements.txt && sudo systemctl restart replication && sleep 2 && sudo systemctl status replication
-```
-
-### Step-by-Step
-
-```bash
-# SSH into VM
-ssh root@ccscloud.dlsu.edu.ph -p 60532  # VM1
-# ssh root@ccscloud.dlsu.edu.ph -p 60533  # VM2
-# ssh root@ccscloud.dlsu.edu.ph -p 60534  # VM3
-
-# Navigate to project
-cd ~/STADVDB
-
-# Pull latest code
-git pull origin MCO2.main  # or your branch name
-
-# Update Python dependencies
-cd replication
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Restart service
-sudo systemctl restart replication
-
-# Verify it's running
-sudo systemctl status replication
-
-# Check logs
-sudo journalctl -u replication -n 50 --no-pager
-
-# Test endpoint
-curl http://localhost:8000/health  # VM1 (port 8000)
-# curl http://localhost:8001/health  # VM2 (port 8001)
-# curl http://localhost:8002/health  # VM3 (port 8002)
-```
-
-### Using Update Script (Recommended)
-
-Create once:
-
-```bash
-nano ~/update-backend.sh
-```
-
-Paste:
-
-```bash
-#!/bin/bash
-set -e
-
-echo "🔄 Updating Python Backend..."
-
-cd ~/STADVDB
-echo "📥 Pulling latest changes..."
-git pull
-
-cd replication
-echo "📦 Installing dependencies..."
-source .venv/bin/activate
-pip install -r requirements.txt --quiet
-
-echo "🔄 Restarting service..."
-sudo systemctl restart replication
-sleep 3
-
-echo "✅ Update complete!"
-echo ""
-echo "📊 Service status:"
-sudo systemctl status replication --no-pager -l
-
-echo ""
-echo "🧪 Testing endpoint:"
-PORT=$(grep -oP 'port \K[0-9]+' /etc/systemd/system/replication.service || echo "8000")
-curl -s http://localhost:$PORT/health | python3 -m json.tool || curl http://localhost:$PORT/health
-
-echo ""
-echo "📝 Recent logs:"
-sudo journalctl -u replication -n 20 --no-pager
-```
-
-Make executable:
-
-```bash
-chmod +x ~/update-backend.sh
-```
-
-Usage:
-
-```bash
-~/update-backend.sh
-```
-
----
-
-## Update Frontend (VM1 Only)
-
-Frontend only needs to be updated on **VM1** since it serves the static files via Nginx.
-
-### Quick Command
-
-```bash
-cd ~/STADVDB && git pull && cd frontend/web-app && npm install && npm run build && sudo cp -r dist/* /var/www/stadvdb/ && sudo systemctl reload nginx
-```
-
-### Step-by-Step
-
-```bash
-# SSH into VM1
-ssh root@ccscloud.dlsu.edu.ph -p 60532
-
-# Navigate to project
-cd ~/STADVDB
-
-# Pull latest code
-git pull origin MCO2.main
-
-# Navigate to frontend
-cd frontend/web-app
-
-# Install dependencies (if package.json changed)
-npm install
-
-# Build production bundle
-npm run build
-
-# Copy to web server directory
-sudo cp -r dist/* /var/www/stadvdb/
-
-# Reload Nginx (zero downtime)
-sudo systemctl reload nginx
-
-# Verify Nginx is running
-sudo systemctl status nginx
-
-# Check Nginx logs
-sudo tail -n 20 /var/log/nginx/error.log
-```
-
-### Using Update Script
-
-Create once:
-
-```bash
-nano ~/update-frontend.sh
-```
-
-Paste:
-
-```bash
-#!/bin/bash
-set -e
-
-echo "🎨 Updating Frontend..."
-
-cd ~/STADVDB
-echo "📥 Pulling latest changes..."
-git pull
-
-cd frontend/web-app
-echo "📦 Installing dependencies..."
-npm install
-
-echo "🏗️ Building production bundle..."
-npm run build
-
-echo "📂 Copying to web server..."
-sudo cp -r dist/* /var/www/stadvdb/
-
-echo "🔄 Reloading Nginx..."
-sudo systemctl reload nginx
-
-echo "✅ Frontend updated!"
-echo ""
-echo "📊 Nginx status:"
-sudo systemctl status nginx --no-pager -l
-
-echo ""
-echo "📝 Recent Nginx logs:"
-sudo tail -n 20 /var/log/nginx/access.log
-```
-
-Make executable:
-
-```bash
-chmod +x ~/update-frontend.sh
-```
-
-Usage:
-
-```bash
-~/update-frontend.sh
-```
-
----
-
-## Update Both Backend and Frontend
-
-### On VM1 (Has Both)
-
-```bash
-cd ~/STADVDB && \
-git pull && \
-cd replication && source .venv/bin/activate && pip install -r requirements.txt && \
-sudo systemctl restart replication && \
-cd ../frontend/web-app && npm install && npm run build && \
-sudo cp -r dist/* /var/www/stadvdb/ && \
-sudo systemctl reload nginx && \
-echo "✅ Both backend and frontend updated!"
-```
-
-### Using Combined Script
-
-Create once:
-
-```bash
-nano ~/update-all.sh
-```
-
-Paste:
-
-```bash
-#!/bin/bash
-set -e
-
-echo "🚀 Updating Backend and Frontend..."
-
-cd ~/STADVDB
-echo "📥 Pulling latest changes..."
-git pull
-
-# Update Backend
-echo ""
-echo "🔧 Updating Backend..."
-cd replication
-source .venv/bin/activate
-pip install -r requirements.txt --quiet
-sudo systemctl restart replication
-
-# Update Frontend
-echo ""
-echo "🎨 Updating Frontend..."
-cd ../frontend/web-app
-npm install
-npm run build
-sudo cp -r dist/* /var/www/stadvdb/
-sudo systemctl reload nginx
-
-echo ""
-echo "✅ All updates complete!"
-echo ""
-
-# Show status
-echo "📊 Backend status:"
-sudo systemctl status replication --no-pager -l
-
-echo ""
-echo "📊 Nginx status:"
-sudo systemctl status nginx --no-pager -l
-
-echo ""
-echo "🧪 Testing endpoints:"
-curl -s http://localhost:8000/health | python3 -m json.tool || curl http://localhost:8000/health
-
-echo ""
-echo "📝 Recent backend logs:"
-sudo journalctl -u replication -n 10 --no-pager
-
-echo ""
-echo "📝 Recent Nginx logs:"
-sudo tail -n 10 /var/log/nginx/access.log
-```
-
-Make executable:
-
-```bash
-chmod +x ~/update-all.sh
-```
-
-Usage:
-
-```bash
-~/update-all.sh
-```
-
----
-
-## Update All VMs at Once (From Laptop)
-
-### PowerShell Script (Windows)
-
-Save as `update-all-vms.ps1` on your laptop:
-
-```powershell
-Write-Host "🚀 Updating all VMs..." -ForegroundColor Cyan
-
-$vms = @(
-    @{Port=60532; Name="VM1 (Node0)"; ApiPort=8000; HasFrontend=$true},
-    @{Port=60533; Name="VM2 (Node1)"; ApiPort=8001; HasFrontend=$false},
-    @{Port=60534; Name="VM3 (Node2)"; ApiPort=8002; HasFrontend=$false}
-)
-
-foreach ($vm in $vms) {
-    Write-Host "`n========================================" -ForegroundColor Yellow
-    Write-Host "📡 Updating $($vm.Name)..." -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Yellow
-    
-    # Update backend on all VMs
-    Write-Host "🔧 Updating Python backend..." -ForegroundColor Gray
-    ssh root@ccscloud.dlsu.edu.ph -p $($vm.Port) @"
-cd ~/STADVDB && \
-git pull && \
-cd replication && \
-source .venv/bin/activate && \
-pip install -r requirements.txt --quiet && \
-sudo systemctl restart replication && \
-sleep 2
-"@
-    
-    # Update frontend only on VM1
-    if ($vm.HasFrontend) {
-        Write-Host "🎨 Updating frontend..." -ForegroundColor Gray
-        ssh root@ccscloud.dlsu.edu.ph -p $($vm.Port) @"
-cd ~/STADVDB/frontend/web-app && \
-npm install && \
-npm run build && \
-sudo cp -r dist/* /var/www/stadvdb/ && \
-sudo systemctl reload nginx
-"@
-    }
-    
-    # Check status
-    Write-Host "✅ Verifying $($vm.Name)..." -ForegroundColor Green
-    ssh root@ccscloud.dlsu.edu.ph -p $($vm.Port) @"
-echo '📊 Backend status:' && \
-sudo systemctl status replication --no-pager -l | head -3 && \
-echo '' && \
-echo '🧪 Testing API:' && \
-curl -s http://localhost:$($vm.ApiPort)/health
-"@
-    
-    if ($LASTEXITCODE -eq 0) {
-        Write-Host "✅ $($vm.Name) updated successfully" -ForegroundColor Green
-    } else {
-        Write-Host "❌ $($vm.Name) update failed" -ForegroundColor Red
-    }
-}
-
-Write-Host "`n========================================" -ForegroundColor Cyan
-Write-Host "🎉 All VMs updated!" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-```
-
-**Usage:**
-
-```powershell
-cd "d:\CCS Files\STADVDB\STADVDB"
-.\update-all-vms.ps1
-```
-
----
-
-## Troubleshooting
-
-### Issue 1: Merge Conflicts
-
-```bash
-cd ~/STADVDB
-git status  # See which files have conflicts
-
-# Option A: Keep remote changes (discard local changes)
-git reset --hard origin/MCO2.main
-
-# Option B: Resolve manually
-nano file-with-conflict.py
-# Fix conflicts, then:
-git add .
-git commit -m "Resolved merge conflicts"
-```
-
-### Issue 2: Backend Service Won't Start
-
-```bash
-# Check detailed logs
-sudo journalctl -u replication -n 100 --no-pager
-
-# Common fixes:
-
-# 1. Check Python syntax
-cd ~/STADVDB/replication
-source .venv/bin/activate
-python3 -c "import replication.main"
-
-# 2. Reinstall dependencies
-pip install -r requirements.txt --upgrade
-
-# 3. Check database connection
-PGPASSWORD=postgres psql -h localhost -p 3306 -U postgres -d node0db -c "SELECT 1;"
-
-# 4. Check port not in use
-sudo netstat -tlnp | grep 8000
-
-# 5. Restart service
-sudo systemctl restart replication
-```
-
-### Issue 3: Frontend Not Updating
-
-```bash
-# Clear cache and rebuild
-cd ~/STADVDB/frontend/web-app
-rm -rf node_modules package-lock.json dist
-npm install
-npm run build
-sudo cp -r dist/* /var/www/stadvdb/
-
-# Clear Nginx cache
-sudo systemctl reload nginx
-
-# Check Nginx errors
-sudo tail -f /var/log/nginx/error.log
-```
-
-### Issue 4: Database Schema Changed
-
-If you modified database tables/schema:
-
-```bash
-# Connect to PostgreSQL
-sudo -u postgres psql -p 3306 -d node0db  # Adjust for each VM
-
-# Run your schema updates
-\i /path/to/schema.sql
-
-# Or manually recreate tables
-DROP TABLE IF EXISTS orders CASCADE;
-CREATE TABLE orders (...);
-
-\q
-
-# Restart backend
-sudo systemctl restart replication
-```
-
-### Issue 5: Permission Denied
-
-```bash
-# Fix ownership of web files
-sudo chown -R www-data:www-data /var/www/stadvdb/
-
-# Fix permissions
-sudo chmod -R 755 /var/www/stadvdb/
-
-# Reload Nginx
-sudo systemctl reload nginx
-```
-
----
-
-## Verification Checklist
-
-After updating, verify everything works:
-
-### Backend (All VMs)
-
-```bash
-# ✅ Service is running
-sudo systemctl status replication
-
-# ✅ No errors in logs
-sudo journalctl -u replication -n 50 --no-pager | grep -i error
-
-# ✅ API responds
-curl http://localhost:8000/health  # VM1
-curl http://localhost:8001/health  # VM2
-curl http://localhost:8002/health  # VM3
-
-# ✅ Nodes can communicate
-curl http://10.2.14.132:8000/health  # From any VM
-curl http://10.2.14.133:8001/health
-curl http://10.2.14.134:8002/health
-```
-
-### Frontend (VM1 Only)
-
-```bash
-# ✅ Nginx is running
-sudo systemctl status nginx
-
-# ✅ Files are served
-curl http://localhost/
-curl http://localhost/assets/index-*.js | head -c 100
-
-# ✅ API proxy works
-curl http://localhost/api/health
-
-# ✅ No 404s in logs
-sudo tail -n 100 /var/log/nginx/access.log | grep " 404 "
-```
-
-### From Browser
-
-1. Open `http://ccscloud.dlsu.edu.ph:60232/`
-2. Frontend loads without errors
-3. Dashboard shows all nodes as "online"
-4. Can create/view orders
-5. No console errors in browser DevTools
-
----
-
-## Quick Reference
-
-| Task | VM(s) | Command |
-|------|-------|---------|
-| Update backend | All | `~/update-backend.sh` |
-| Update frontend | VM1 | `~/update-frontend.sh` |
-| Update both | VM1 | `~/update-all.sh` |
-| View backend logs | All | `sudo journalctl -u replication -f` |
-| View frontend logs | VM1 | `sudo tail -f /var/log/nginx/access.log` |
-| Restart backend | All | `sudo systemctl restart replication` |
-| Restart frontend | VM1 | `sudo systemctl reload nginx` |
-| Test backend API | All | `curl http://localhost:800X/health` |
-| Test via Nginx | VM1 | `curl http://localhost/api/health` |
-
-**Ports:**
-- VM1 (Node0): Backend `8000`, Frontend `80`
-- VM2 (Node1): Backend `8001`
-- VM3 (Node2): Backend `8002`
-
----
-
-## Best Practices
-
-1. **Always test locally first** before deploying to VMs
-2. **Commit and push** before running updates on VMs
-3. **Update VMs one at a time** to catch issues early
-4. **Check logs** after each update
-5. **Verify endpoints** respond correctly
-6. **Keep scripts updated** if you change ports or paths
-7. **Backup databases** before major schema changes
-
----
-
-## Need Help?
-
-- Backend logs: `sudo journalctl -u replication -f`
-- Frontend logs: `sudo tail -f /var/log/nginx/access.log`
-- Nginx errors: `sudo tail -f /var/log/nginx/error.log`
-- Service status: `sudo systemctl status replication nginx`
-- Test connections: Check [DEPLOYMENT.md](DEPLOYMENT.md) for more details
 </file>
 
 <file path="wishlist/src/App.tsx">
@@ -11482,1056 +8363,6 @@ function TabsContent({
 }
 
 export { Tabs, TabsList, TabsTrigger, TabsContent };
-</file>
-
-<file path="DEPLOYMENT.md">
-# STADVDB Deployment Guide
-
-Complete guide for deploying the STADVDB distributed database system to virtual machines.
-
----
-
-## Table of Contents
-- [Prerequisites](#prerequisites)
-- [Initial Deployment](#initial-deployment)
-- [Redeployment (Updates)](#redeployment-updates)
-- [Troubleshooting](#troubleshooting)
-- [Quick Reference](#quick-reference)
-
----
-
-## Prerequisites
-
-### VMs Required
-- **VM1 (Server0/Node1)** - Central node + Frontend + Backend
-- **VM2 (Server1/Node2)** - Fragment 1 (quantity 1-5)
-- **VM3 (Server2/Node3)** - Fragment 2 (quantity 6-10)
-
-### Software Already Installed
-✅ PostgreSQL 18
-✅ Python 3
-✅ Git
-
-### What You Need
-- VM IP addresses (e.g., 10.2.14.132, 10.2.14.133, 10.2.14.134)
-- SSH access to all VMs
-- GitHub repository access
-
----
-
-## Initial Deployment
-
-### Step 0: Check PostgreSQL Port (IMPORTANT!)
-
-**On ALL 3 VMs, verify what port PostgreSQL is actually using:**
-
-```bash
-# Check PostgreSQL port
-sudo ss -tlnp | grep postgres
-
-# Or check config file
-sudo grep "^port" /etc/postgresql/18/main/postgresql.conf
-```
-
-**Common scenarios:**
-- Port `5432` - Standard PostgreSQL port (most common)
-- Port `3306` - MySQL's default port (unusual but possible if configured)
-- External ports like `60832`, `60833`, `60834` - Port forwarding mappings
-
-**Take note of the actual port - you'll need it for the .env file!**
-
----
-
-### Step 1: Clone Repository on VM1
-
-```bash
-# SSH into VM1 (Server0)
-ssh root@ccscloud.dlsu.edu.ph -p 60532
-
-# Clone the repository
-cd ~
-git clone https://github.com/zuraxy/STADVDB.git
-cd STADVDB
-```
-
----
-
-### Step 2: Configure PostgreSQL for Remote Access
-
-**On ALL 3 VMs (Server0, Server1, Server2):**
-
-#### Edit pg_hba.conf
-```bash
-sudo nano /etc/postgresql/18/main/pg_hba.conf
-```
-
-Change authentication methods and add VM network access:
-```conf
-# "local" is for Unix domain socket connections only
-local   all             all                                     trust
-# IPv4 local connections:
-host    all             all             127.0.0.1/32            trust
-# IPv6 local connections:
-host    all             all             ::1/128                 trust
-# Allow connections from VM network
-host    all             all             10.2.14.0/16            trust
-```
-
-**Note:** Change `scram-sha-256` or `md5` to `trust` to avoid password authentication issues.
-
-#### Edit postgresql.conf
-```bash
-sudo nano /etc/postgresql/18/main/postgresql.conf
-```
-
-Find and change:
-```conf
-listen_addresses = '*'
-```
-
-#### Restart PostgreSQL
-```bash
-sudo systemctl restart postgresql@18-main
-
-# Allow firewall access (use YOUR actual PostgreSQL port!)
-# Check your port first: sudo ss -tlnp | grep postgres
-sudo ufw allow from 10.2.14.0/16 to any port 5432
-# Or if PostgreSQL is on port 3306:
-# sudo ufw allow from 10.2.14.0/16 to any port 3306
-```
-
-#### Test Connectivity (from VM1)
-```bash
-# First, verify your actual PostgreSQL port
-sudo ss -tlnp | grep postgres
-
-# Test local connection (use your actual port!)
-psql -h localhost -p 5432 -U postgres -d node0db -c "SELECT 1;"
-# Or if port is 3306:
-# psql -h localhost -p 3306 -U postgres -d node0db -c "SELECT 1;"
-
-# Test connection to VM2 (adjust port if needed)
-psql -h ccscloud.dlsu.edu.ph -p 60833 -U postgres -d node1db -c "SELECT 1;"
-
-# Test connection to VM3 (adjust port if needed)
-psql -h ccscloud.dlsu.edu.ph -p 60834 -U postgres -d node2db -c "SELECT 1;"
-```
-
-**If tests fail:**
-- Check PostgreSQL is running: `sudo systemctl status postgresql@18-main`
-- Verify pg_hba.conf was saved: `sudo systemctl restart postgresql@18-main`
-- Check firewall: `sudo ufw status`
-
----
-
-### Step 3: Install Node.js on VM1
-
-```bash
-# On VM1 only
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Verify installation
-node -v   # Should show v20.x.x
-npm -v    # Should show 10.x.x
-```
-
----
-
-### Step 4: Deploy Backend on VM1
-
-```bash
-cd ~/STADVDB/backend
-
-# Install dependencies
-npm install
-
-# Create .env file
-nano .env
-```
-
-**⚠️ CRITICAL: Update with YOUR actual PostgreSQL port and IPs!**
-
-**If PostgreSQL is on standard port 5432:**
-```env
-NODE1_HOST=localhost
-NODE1_PORT=5432
-NODE1_USER=postgres
-NODE1_PASSWORD=""
-NODE1_DB=node0db
-
-NODE2_HOST=ccscloud.dlsu.edu.ph
-NODE2_PORT=60833
-NODE2_USER=postgres
-NODE2_PASSWORD=""
-NODE2_DB=node1db
-
-NODE3_HOST=ccscloud.dlsu.edu.ph
-NODE3_PORT=60834
-NODE3_USER=postgres
-NODE3_PASSWORD=""
-NODE3_DB=node2db
-```
-
-**If PostgreSQL is on port 3306 (check with `sudo ss -tlnp | grep postgres`):**
-```env
-NODE1_HOST=localhost
-NODE1_PORT=3306
-NODE1_USER=postgres
-NODE1_PASSWORD=""
-NODE1_DB=node0db
-
-NODE2_HOST=ccscloud.dlsu.edu.ph
-NODE2_PORT=60833
-NODE2_USER=postgres
-NODE2_PASSWORD=""
-NODE2_DB=node1db
-
-NODE3_HOST=ccscloud.dlsu.edu.ph
-NODE3_PORT=60834
-NODE3_USER=postgres
-NODE3_PASSWORD=""
-NODE3_DB=node2db
-```
-
-**Important Notes:**
-- ⚠️ `NODE1_PASSWORD=""` with quotes is REQUIRED! Not `NODE1_PASSWORD=` (causes "password must be a string" error)
-- ⚠️ `NODE1_HOST` MUST be `localhost` (not ccscloud.dlsu.edu.ph) since backend runs on VM1
-- ⚠️ Use the actual PostgreSQL port from Step 0
-- ⚠️ Update NODE2_HOST/NODE3_HOST with actual IPs or use external port forwarding
-
-Save: `Ctrl+X`, `Y`, `Enter`
-
-```bash
-# Install PM2 process manager
-sudo npm install -g pm2
-
-# Start backend
-pm2 start index.js --name stadvdb-backend
-
-# Save PM2 configuration
-pm2 save
-
-# Enable PM2 on system boot
-pm2 startup
-# Copy and run the command it outputs
-
-# Verify backend is running
-pm2 status
-pm2 logs stadvdb-backend
-
-# Test API endpoint
-curl http://localhost:3000/api/test-connections
-```
-
-**Expected successful response:**
-```json
-{
-  "success": true,
-  "connections": {
-    "Node1": {"status": "connected", "timestamp": "..."},
-    "Node2": {"status": "connected", "timestamp": "..."},
-    "Node3": {"status": "connected", "timestamp": "..."}
-  }
-}
-```
-
-**If you see errors:**
-- `"status": "failed"` for Node1 → Check .env port matches actual PostgreSQL port
-- `"password must be a string"` → Change `NODE1_PASSWORD=` to `NODE1_PASSWORD=""`
-- `"connection refused"` → PostgreSQL not running or wrong port in .env
-
----
-
-### Step 5: Deploy Frontend on VM1
-
-```bash
-cd ~/STADVDB/frontend/web-app
-
-# Install dependencies
-npm install
-
-# Create production environment file
-nano .env
-```
-
-**⚠️ CRITICAL: Use relative URL, NOT localhost:3000!**
-
-**Paste:**
-```env
-VITE_API_URL=/api
-```
-
-**Why `/api` and not `http://localhost:3000/api`?**
-- ❌ `http://localhost:3000/api` - Only works on the server, NOT from your browser
-- ✅ `/api` - Works from any browser because Nginx proxies it to the backend
-
-When you use `/api`, browsers make requests to `http://YOUR_VM_IP/api/...` which Nginx proxies to `http://localhost:3000/api/...`
-
-Save: `Ctrl+X`, `Y`, `Enter`
-
-```bash
-# Build for production
-npm run build
-
-# ⚠️ VERIFY: Make sure build doesn't contain localhost:3000
-grep -r "localhost:3000" dist/
-# Should return NOTHING. If you see results, your .env is wrong!
-
-# This creates a 'dist' folder with optimized static files
-```
-
----
-
-### Step 6: Install and Configure Nginx on VM1
-
-```bash
-# Install Nginx
-sudo apt install -y nginx
-
-# Create web directory
-sudo mkdir -p /var/www/stadvdb
-
-# Copy built files
-sudo cp -r ~/STADVDB/frontend/web-app/dist/* /var/www/stadvdb/
-
-# Set permissions
-sudo chown -R www-data:www-data /var/www/stadvdb
-
-# Create Nginx site configuration
-sudo nano /etc/nginx/sites-available/stadvdb
-```
-
-**Paste this Nginx configuration:**
-```nginx
-server {
-    listen 80;
-    server_name _;
-    
-    root /var/www/stadvdb;
-    index index.html;
-
-    # Gzip compression
-    gzip on;
-    gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
-
-    # Serve frontend files
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-
-    # Proxy API requests to backend
-    location /api {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_cache_bypass $http_upgrade;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    }
-
-    # Cache static assets
-    location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-}
-```
-
-Save: `Ctrl+X`, `Y`, `Enter`
-
-```bash
-# Enable the site
-sudo ln -s /etc/nginx/sites-available/stadvdb /etc/nginx/sites-enabled/
-
-# Remove default site
-sudo rm -f /etc/nginx/sites-enabled/default
-
-# Test Nginx configuration
-sudo nginx -t
-# Should output: "syntax is ok" and "test is successful"
-
-# Restart Nginx
-sudo systemctl restart nginx
-
-# Enable Nginx on boot
-sudo systemctl enable nginx
-
-# Verify Nginx is running
-sudo systemctl status nginx
-```
-
----
-
-### Step 7: Access Your Application
-
-```bash
-# Get your VM1 IP address
-hostname -I
-```
-
-Open a web browser and navigate to:
-```
-http://YOUR_VM1_IP
-```
-
-Example:
-```
-http://10.2.14.132
-```
-
-You should see the STADVDB dashboard with all 3 nodes showing as "online"! 🎉
-
----
-
-## Redeployment (Updates)
-
-When you make code changes and need to redeploy:
-
-### On Your Laptop (Developer Machine)
-
-```bash
-# Navigate to project directory
-cd "d:\CCS Files\STADVDB\STADVDB"
-
-# Stage your changes
-git add .
-
-# Commit with descriptive message
-git commit -m "Description of your changes"
-
-# Push to GitHub
-git push
-```
-
----
-
-### On VM1 (Server)
-
-#### Update Backend
-
-```bash
-# SSH into VM1
-ssh root@ccscloud.dlsu.edu.ph -p 60532
-
-# Navigate to project
-cd ~/STADVDB
-
-# Pull latest changes
-git pull
-
-# Update backend dependencies (if package.json changed)
-cd backend
-npm install
-
-# Restart backend
-pm2 restart stadvdb-backend
-
-# Check logs for errors
-pm2 logs stadvdb-backend --lines 50
-
-# Verify backend is running
-curl http://localhost:3000/api/test-connections
-```
-
-#### Update Frontend
-
-```bash
-# Navigate to frontend
-cd ~/STADVDB/frontend/web-app
-
-# Update dependencies (if package.json changed)
-npm install
-
-# Rebuild
-npm run build
-
-# Copy new build to web directory
-sudo cp -r dist/* /var/www/stadvdb/
-
-# Reload Nginx (zero downtime)
-sudo systemctl reload nginx
-
-# Or restart Nginx if config changed
-sudo nginx -t
-sudo systemctl restart nginx
-```
-
----
-
-### Quick Update Script (All-in-One)
-
-Create a deployment script for faster updates:
-
-```bash
-# Create update script
-nano ~/update-stadvdb.sh
-```
-
-**Paste:**
-```bash
-#!/bin/bash
-echo "🔄 Updating STADVDB..."
-
-cd ~/STADVDB
-echo "📥 Pulling latest changes..."
-git pull
-
-echo "🔧 Updating backend..."
-cd backend
-npm install
-pm2 restart stadvdb-backend
-
-echo "🎨 Rebuilding frontend..."
-cd ../frontend/web-app
-npm install
-npm run build
-sudo cp -r dist/* /var/www/stadvdb/
-
-echo "🔄 Reloading Nginx..."
-sudo systemctl reload nginx
-
-echo "✅ Update complete!"
-echo "📊 Backend status:"
-pm2 status
-
-echo "🌐 Frontend status:"
-sudo systemctl status nginx --no-pager -l
-```
-
-Save and make executable:
-```bash
-chmod +x ~/update-stadvdb.sh
-```
-
-**To update in the future:**
-```bash
-~/update-stadvdb.sh
-```
-
----
-
-## Troubleshooting
-
-### "Password Must Be String" Error
-
-**Error:** `SASL: SCRAM-SERVER-FIRST-MESSAGE: client password must be a string`
-
-**Problem:** Password field in .env is undefined instead of empty string
-
-**Fix:**
-```bash
-cd ~/STADVDB/backend
-nano .env
-```
-
-Change from:
-```env
-NODE1_PASSWORD=      # ❌ Wrong - blank/undefined
-```
-
-To (with quotes):
-```env
-NODE1_PASSWORD=""    # ✅ Correct - empty string
-```
-
-Apply to all nodes:
-```env
-NODE1_PASSWORD=""
-NODE2_PASSWORD=""
-NODE3_PASSWORD=""
-```
-
-Restart:
-```bash
-pm2 restart stadvdb-backend
-curl http://localhost:3000/api/test-connections
-```
-
----
-
-### Backend Won't Start
-
-```bash
-# Check PM2 logs
-pm2 logs stadvdb-backend
-
-# Common issues:
-# 1. Port 3000 already in use
-sudo lsof -i :3000
-# Kill process: sudo kill -9 <PID>
-
-# 2. Database connection failed - MOST COMMON!
-# Check .env file
-cat ~/STADVDB/backend/.env
-
-# Verify PostgreSQL port
-sudo ss -tlnp | grep postgres
-
-# Make sure .env port matches actual PostgreSQL port!
-# If PostgreSQL is on 3306, .env should have NODE1_PORT=3306
-# If PostgreSQL is on 5432, .env should have NODE1_PORT=5432
-
-# Test database connections (use correct port!)
-psql -h localhost -p 5432 -U postgres -d node0db
-# Or if port is 3306:
-# psql -h localhost -p 3306 -U postgres -d node0db
-
-# Test remote nodes
-psql -h ccscloud.dlsu.edu.ph -p 60833 -U postgres -d node1db
-psql -h ccscloud.dlsu.edu.ph -p 60834 -U postgres -d node2db
-
-# 3. Missing .env file
-cd ~/STADVDB/backend
-ls -la .env
-# If missing, create it (see Step 4 above)
-```
-
----
-
-### Frontend Shows "Failed to Fetch" Error
-
-**Error in browser console:** `Failed to fetch` or `ERR_BLOCKED_BY_CLIENT`
-
-**Problem:** Frontend built with `http://localhost:3000/api` instead of `/api`
-
-**Fix:**
-```bash
-cd ~/STADVDB/frontend/web-app
-
-# Check current .env
-cat .env
-# If it shows VITE_API_URL=http://localhost:3000/api, that's the problem!
-
-# Fix it
-echo "VITE_API_URL=/api" > .env
-
-# Clean build cache
-rm -rf dist node_modules/.vite
-
-# Rebuild
-npm run build
-
-# Verify no localhost:3000 in build
-grep -r "localhost:3000" dist/ || echo "✅ Good!"
-
-# Redeploy
-sudo rm -rf /var/www/stadvdb/*
-sudo cp -r dist/* /var/www/stadvdb/
-
-# Restart Nginx
-sudo systemctl restart nginx
-```
-
-**In browser:**
-- Hard refresh: `Ctrl+Shift+R` (Windows/Linux) or `Cmd+Shift+R` (Mac)
-- Open DevTools (F12) → Network tab
-- Requests should now go to `/api/...` not `http://localhost:3000/api/...`
-
----
-
-### Frontend Shows Blank Page
-
-```bash
-# Check Nginx error logs
-sudo tail -f /var/log/nginx/error.log
-
-# Verify files exist
-ls -la /var/www/stadvdb/
-# Should see: index.html, assets/, etc.
-
-# Check Nginx is serving files
-curl http://localhost
-
-# Rebuild and redeploy
-cd ~/STADVDB/frontend/web-app
-npm run build
-sudo cp -r dist/* /var/www/stadvdb/
-sudo systemctl restart nginx
-```
-
----
-
-### 502 Bad Gateway Error
-
-```bash
-# Backend is not running
-pm2 status
-pm2 restart stadvdb-backend
-
-# Check backend logs
-pm2 logs stadvdb-backend
-
-# Verify backend is listening on port 3000
-sudo netstat -tlnp | grep 3000
-```
-
----
-
-### Database Connection Errors
-
-```bash
-# Check PostgreSQL is running on all nodes
-sudo systemctl status postgresql@18-main
-
-# Check pg_hba.conf allows remote connections
-sudo nano /etc/postgresql/18/main/pg_hba.conf
-# Should have: host all all 10.2.14.0/16 trust
-
-# Check postgresql.conf listens on all interfaces
-sudo nano /etc/postgresql/18/main/postgresql.conf
-# Should have: listen_addresses = '*'
-
-# Restart PostgreSQL
-sudo systemctl restart postgresql@18-main
-
-# Test connections from VM1
-psql -h 10.2.14.133 -U postgres -d node1db -c "SELECT 1;"
-psql -h 10.2.14.134 -U postgres -d node2db -c "SELECT 1;"
-```
-
----
-
-### Node Shows "Offline" in Dashboard
-
-```bash
-# Check backend can connect to databases
-cd ~/STADVDB/backend
-cat .env
-# Verify NODE2_HOST and NODE3_HOST IPs are correct
-
-# Test connections manually
-curl http://localhost:3000/api/test-connections
-
-# Check PM2 logs for connection errors
-pm2 logs stadvdb-backend | grep -i error
-```
-
----
-
-## Quick Reference
-
-### Service Management
-
-```bash
-# Backend (PM2)
-pm2 status                      # View status
-pm2 logs stadvdb-backend        # View logs
-pm2 restart stadvdb-backend     # Restart
-pm2 stop stadvdb-backend        # Stop
-pm2 start stadvdb-backend       # Start
-pm2 delete stadvdb-backend      # Remove from PM2
-
-# Frontend (Nginx)
-sudo systemctl status nginx     # View status
-sudo systemctl restart nginx    # Restart
-sudo systemctl stop nginx       # Stop
-sudo systemctl start nginx      # Start
-sudo systemctl reload nginx     # Reload config (no downtime)
-sudo nginx -t                   # Test configuration
-
-# Database (PostgreSQL)
-sudo systemctl status postgresql@18-main
-sudo systemctl restart postgresql@18-main
-sudo systemctl stop postgresql@18-main
-sudo systemctl start postgresql@18-main
-```
-
----
-
-### File Locations
-
-```bash
-# Project
-~/STADVDB/                              # Main project directory
-
-# Backend
-~/STADVDB/backend/                      # Backend source code
-~/STADVDB/backend/.env                  # Backend environment variables
-~/STADVDB/backend/node_modules/         # Backend dependencies
-
-# Frontend
-~/STADVDB/frontend/web-app/             # Frontend source code
-~/STADVDB/frontend/web-app/dist/        # Built frontend files
-/var/www/stadvdb/                       # Deployed frontend files
-
-# Nginx
-/etc/nginx/sites-available/stadvdb      # Nginx configuration
-/etc/nginx/sites-enabled/stadvdb        # Enabled site symlink
-/var/log/nginx/access.log               # Nginx access logs
-/var/log/nginx/error.log                # Nginx error logs
-
-# PostgreSQL
-/etc/postgresql/18/main/postgresql.conf # PostgreSQL config
-/etc/postgresql/18/main/pg_hba.conf     # PostgreSQL access config
-/var/log/postgresql/                    # PostgreSQL logs
-```
-
----
-
-### Useful Commands
-
-```bash
-# Check all services
-pm2 status && sudo systemctl status nginx && sudo systemctl status postgresql@18-main
-
-# View all logs
-pm2 logs stadvdb-backend
-sudo tail -f /var/log/nginx/error.log
-sudo tail -f /var/log/postgresql/postgresql-18-main.log
-
-# Restart everything
-pm2 restart stadvdb-backend
-sudo systemctl restart nginx
-sudo systemctl restart postgresql@18-main
-
-# Check ports in use
-sudo netstat -tlnp | grep -E '(3000|5432|80)'
-
-# Check disk space
-df -h
-
-# Check memory usage
-free -h
-
-# Check process memory
-pm2 monit
-```
-
----
-
-### Network Architecture
-
-```
-Internet / Browser
-       ↓
-   VM1 (10.2.14.132)
-   ├─► Nginx :80 ──────────► React Frontend (Static Files)
-   │                         /var/www/stadvdb/
-   │
-   └─► Nginx Proxy /api ──► Node.js Backend :3000 (PM2)
-                             ~/STADVDB/backend/
-                             │
-                             ├─► PostgreSQL :5432 (Local - Node1)
-                             │   Database: node0db
-                             │   All orders (Central node)
-                             │
-                             ├─► VM2 (10.2.14.133) :5432 (Remote - Node2)
-                             │   Database: node1db
-                             │   Quantity 1-5 fragment
-                             │
-                             └─► VM3 (10.2.14.134) :5432 (Remote - Node3)
-                                 Database: node2db
-                                 Quantity 6-10 fragment
-```
-
----
-
-### Port Reference
-
-| Service | Port | Description |
-|---------|------|-------------|
-| Nginx | 80 | Frontend web server |
-| Node.js | 3000 | Backend API server |
-| PostgreSQL | 5432 | Database (all 3 nodes) |
-
----
-
-### Environment Variables
-
-#### Backend (.env)
-```env
-NODE1_HOST=localhost              # VM1 (local connection)
-NODE1_PORT=5432                   # Or 3306 - check with: sudo ss -tlnp | grep postgres
-NODE1_USER=postgres
-NODE1_PASSWORD=""                 # ⚠️ Empty string with quotes!
-NODE1_DB=node0db
-
-NODE2_HOST=ccscloud.dlsu.edu.ph   # External host or VM2 IP
-NODE2_PORT=60833                  # External port or 5432
-NODE2_USER=postgres
-NODE2_PASSWORD=""                 # ⚠️ Empty string with quotes!
-NODE2_DB=node1db
-
-NODE3_HOST=ccscloud.dlsu.edu.ph   # External host or VM3 IP
-NODE3_PORT=60834                  # External port or 5432
-NODE3_USER=postgres
-NODE3_PASSWORD=""                 # ⚠️ Empty string with quotes!
-NODE3_DB=node2db
-```
-
-**⚠️ Critical:** 
-- Password field MUST have quotes: `NODE1_PASSWORD=""` not `NODE1_PASSWORD=`
-- Verify PostgreSQL port: `sudo ss -tlnp | grep postgres`
-
-#### Frontend (.env)
-```env
-VITE_API_URL=/api
-```
-
-**⚠️ Critical:** Use `/api` (relative URL), NOT `http://localhost:3000/api`!
-
-**Note:** Frontend .env is embedded at build time. After changing it, you must rebuild:
-```bash
-npm run build
-sudo cp -r dist/* /var/www/stadvdb/
-```
-
----
-
-## Security Considerations (Production)
-
-For production deployments:
-
-1. **Set PostgreSQL passwords**
-```bash
-sudo -u postgres psql
-ALTER USER postgres WITH PASSWORD 'strong_password';
-```
-
-Update .env:
-```env
-NODE1_PASSWORD=strong_password
-NODE2_PASSWORD=strong_password
-NODE3_PASSWORD=strong_password
-```
-
-2. **Configure firewall properly**
-```bash
-sudo ufw enable
-sudo ufw allow 80/tcp      # Nginx
-sudo ufw allow 22/tcp      # SSH
-sudo ufw allow from 10.2.14.0/16 to any port 5432  # PostgreSQL from VMs only
-```
-
-3. **Enable HTTPS with Let's Encrypt**
-```bash
-sudo apt install certbot python3-certbot-nginx
-sudo certbot --nginx -d your-domain.com
-```
-
-4. **Regular backups**
-```bash
-# Add to crontab
-0 2 * * * pg_dump -U postgres node0db > /backup/node0db_$(date +\%Y\%m\%d).sql
-```
-
----
-
-## Monitoring
-
-### Check Application Health
-
-```bash
-# Backend health
-curl http://localhost:3000/api/test-connections
-
-# Expected response:
-# {
-#   "success": true,
-#   "connections": {
-#     "Node1": {"status": "connected", ...},
-#     "Node2": {"status": "connected", ...},
-#     "Node3": {"status": "connected", ...}
-#   }
-# }
-
-# Frontend health
-curl http://localhost
-# Should return HTML
-
-# All services status
-pm2 status && sudo systemctl is-active nginx && sudo systemctl is-active postgresql@18-main
-```
-
-### Performance Monitoring
-
-```bash
-# PM2 monitoring dashboard
-pm2 monit
-
-# System resources
-htop
-
-# Database connections
-sudo -u postgres psql -c "SELECT * FROM pg_stat_activity;"
-
-# Nginx access logs (live)
-sudo tail -f /var/log/nginx/access.log
-```
-
----
-
-## Backup & Recovery
-
-### Backup
-
-```bash
-# Backup script
-#!/bin/bash
-DATE=$(date +%Y%m%d_%H%M%S)
-BACKUP_DIR=/backup/$DATE
-
-mkdir -p $BACKUP_DIR
-
-# Backup databases
-pg_dump -U postgres node0db > $BACKUP_DIR/node0db.sql
-
-# Backup code
-cp -r ~/STADVDB $BACKUP_DIR/code
-
-# Backup Nginx config
-cp /etc/nginx/sites-available/stadvdb $BACKUP_DIR/nginx.conf
-
-# Backup PM2 config
-pm2 save
-cp ~/.pm2/dump.pm2 $BACKUP_DIR/pm2.dump
-
-echo "Backup completed: $BACKUP_DIR"
-```
-
-### Recovery
-
-```bash
-# Restore database
-psql -U postgres -d node0db < /backup/20251130/node0db.sql
-
-# Restore code
-rm -rf ~/STADVDB
-cp -r /backup/20251130/code ~/STADVDB
-
-# Restore configs and restart
-cp /backup/20251130/nginx.conf /etc/nginx/sites-available/stadvdb
-sudo nginx -t
-sudo systemctl restart nginx
-pm2 resurrect
-```
-
----
-
-## Support
-
-For issues or questions:
-1. Check logs: `pm2 logs` and `sudo tail -f /var/log/nginx/error.log`
-2. Review this guide's [Troubleshooting](#troubleshooting) section
-3. Verify all services are running: `pm2 status`, `sudo systemctl status nginx`
-4. Test database connections from VM1 to VM2 and VM3
-
----
-
-**Last Updated:** November 30, 2025
-**Version:** 1.1.0
-
-**Changelog:**
-- Added PostgreSQL port verification (Step 0)
-- Fixed frontend API URL to use relative path `/api`
-- Added password authentication troubleshooting
-- Added "Failed to Fetch" error resolution
-- Updated .env examples with correct password format
-- Added build verification steps
-- Improved error messages and troubleshooting
 </file>
 
 <file path="frontend/web-app/src/components/SimplifiedArchitecture.jsx">
@@ -12888,6 +8719,112 @@ export {
 };
 </file>
 
+<file path="replication/routes/__init__.py">
+"""FastAPI router exports."""
+
+from . import admin, orchestrator, orders, replication  # noqa: F401
+</file>
+
+<file path="replication/tests/test_replicator.py">
+"""Unit tests for the replicator worker."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from replication.config import PeerNode
+from replication.workers.replicator import ReplicatorWorker
+
+
+class StubHTTPClient:
+	def __init__(self, payload):
+		self.payload = payload
+		self.calls = []
+
+	async def get_json(self, url, params=None):
+		self.calls.append((url, params))
+		return self.payload
+
+
+class StubCrud:
+	def __init__(self, cursor_map=None):
+		self.ops = []
+		self.cursor_map = cursor_map or {}
+		self.cursor_updates = []
+
+	async def insert_op_if_missing(self, conn, op):
+		self.ops.append(op)
+		return True
+
+	async def load_replication_cursors(self, conn):
+		return self.cursor_map
+
+	async def upsert_replication_cursor(self, conn, node, lamport):
+		self.cursor_updates.append((node, lamport))
+
+
+@pytest.mark.asyncio
+async def test_replicator_pulls_from_peer(dummy_pool, settings, op_factory) -> None:
+	peer = PeerNode(name="node0", base_url="http://node0:8000")
+	op = op_factory(10)
+	http_client = StubHTTPClient([op.model_dump()])
+	stub_crud = StubCrud()
+	worker = ReplicatorWorker(
+		dummy_pool,
+		replace(settings, peer_nodes=[peer]),
+		http_client=http_client,
+		crud_module=stub_crud,
+	)
+
+	await worker._load_cursors()
+	await worker.poll_once()
+
+	assert stub_crud.ops[0].lamport == 10
+	assert worker.last_seen[peer.base_url] == 10
+	assert worker.total_inserted == 1
+	assert http_client.calls[0][1] == {"since_lamport": -1}
+	assert stub_crud.cursor_updates == [(peer.name, 10)]
+
+
+@pytest.mark.asyncio
+async def test_replicator_restores_last_seen_from_cursor(dummy_pool, settings, op_factory) -> None:
+	peer = PeerNode(name="node0", base_url="http://node0:8000")
+	stub_crud = StubCrud(cursor_map={peer.name: 25})
+	worker = ReplicatorWorker(
+		dummy_pool,
+		replace(settings, peer_nodes=[peer]),
+		crud_module=stub_crud,
+	)
+
+	await worker._load_cursors()
+
+	assert worker.last_seen[peer.base_url] == 25
+</file>
+
+<file path="replication/utils/partition.py">
+"""Partition helper utilities shared across routes and workers."""
+
+from __future__ import annotations
+
+
+def can_accept_partition(node_name: str, quantity: int, threshold: int) -> bool:
+    """Return True when the node is responsible for the provided quantity."""
+
+    lower = node_name.lower()
+    if lower.endswith("1"):
+        return quantity <= threshold
+    if lower.endswith("2"):
+        return quantity > threshold
+    return True
+
+def target_node_for_quantity(quantity: int, threshold: int) -> str:
+    """Map a quantity value to its logical node name."""
+
+    return "node1" if quantity <= threshold else "node2"
+</file>
+
 <file path="replication/config.py">
 """Application configuration handling."""
 
@@ -12921,6 +8858,9 @@ class Settings:
 	promoted: bool
 	partition_rule: int
 	applier_interval: float
+	applier_batch_limit: int
+	applier_max_attempts: int
+	applier_debug: bool
 	node0_dsn: Optional[str]
 	node1_dsn: Optional[str]
 	node2_dsn: Optional[str]
@@ -12995,6 +8935,9 @@ def get_settings() -> Settings:
 	default_master_url = os.getenv("DEFAULT_MASTER_URL")
 	poll_interval = float(os.getenv("POLL_INTERVAL", "5"))
 	applier_interval = float(os.getenv("APPLIER_INTERVAL", "2"))
+	applier_batch_limit = int(os.getenv("APPLIER_BATCH_LIMIT", "1"))
+	applier_max_attempts = int(os.getenv("APPLIER_MAX_ATTEMPTS", "3"))
+	applier_debug = _parse_bool(os.getenv("APPLIER_DEBUG"), default=False)
 	promoted = _parse_bool(os.getenv("PROMOTED"), default=False)
 	partition_rule = int(os.getenv("PARTITION_RULE", "5"))
 	node0_dsn = os.getenv("NODE0_DSN") or (database_dsn if node_name.lower() == "node0" else None)
@@ -13025,6 +8968,9 @@ def get_settings() -> Settings:
 		promoted=promoted,
 		partition_rule=partition_rule,
 		applier_interval=applier_interval,
+		applier_batch_limit=applier_batch_limit,
+		applier_max_attempts=applier_max_attempts,
+		applier_debug=applier_debug,
 		node0_dsn=node0_dsn,
 		node1_dsn=node1_dsn,
 		node2_dsn=node2_dsn,
@@ -13040,6 +8986,7 @@ import logging
 
 from fastapi import FastAPI
 
+from . import crud
 from .config import get_settings
 from .db import close_db, get_pool, init_db
 from .orchestrator import TransactionOrchestrator
@@ -13064,6 +9011,8 @@ app.include_router(orchestrator_routes.router)
 async def on_startup() -> None:  # pragma: no cover - exercised via integration tests
 	await init_db(settings.database_dsn)
 	pool = get_pool()
+	async with pool.acquire() as conn:
+		await crud.ensure_replication_metadata(conn)
 	app.state.promoted = settings.promoted
 	app.state.http_client = HTTPClient()
 	app.state.replicator = ReplicatorWorker(pool, settings, app.state.http_client)
@@ -13158,12 +9107,7 @@ class OpRecord(BaseModel):
 	lamport: int
 	applied: bool
 	applied_ts: Optional[datetime]
-</file>
-
-<file path="replication/routes/__init__.py">
-"""FastAPI router exports."""
-
-from . import admin, orchestrator, orders, replication  # noqa: F401
+	locked_by: Optional[str] = None
 </file>
 
 <file path="replication/routes/admin.py">
@@ -13171,7 +9115,7 @@ from . import admin, orchestrator, orders, replication  # noqa: F401
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 
 from ..config import get_settings
 from ..db import get_pool
@@ -13242,28 +9186,30 @@ async def replication_status(request: Request) -> dict:
 async def toggle_promotion(body: PromoteToggle, request: Request) -> dict:
 	request.app.state.promoted = body.promote
 	return {"promoted": request.app.state.promoted}
-</file>
-
-<file path="replication/utils/partition.py">
-"""Partition helper utilities shared across routes and workers."""
-
-from __future__ import annotations
 
 
-def can_accept_partition(node_name: str, quantity: int, threshold: int) -> bool:
-    """Return True when the node is responsible for the provided quantity."""
-
-    lower = node_name.lower()
-    if lower.endswith("1"):
-        return quantity <= threshold
-    if lower.endswith("2"):
-        return quantity > threshold
-    return True
-
-def target_node_for_quantity(quantity: int, threshold: int) -> str:
-    """Map a quantity value to its logical node name."""
-
-    return "node1" if quantity <= threshold else "node2"
+@router.get("/proxy/node/{node_name}/orders")
+async def proxy_node_orders(node_name: str, request: Request) -> list:
+	"""Proxy request to get local orders from a specific peer node"""
+	settings = get_settings()
+	
+	# Find the peer node URL
+	peer_url = None
+	for peer in settings.peer_nodes:
+		if peer.name.lower() == node_name.lower():
+			peer_url = peer.base_url
+			break
+	
+	if not peer_url:
+		raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Node {node_name} not found in peer list")
+	
+	# Fetch from peer's local endpoint
+	client = request.app.state.http_client
+	try:
+		orders = await client.get_json(f"{peer_url}/orders/local/all")
+		return orders
+	except Exception as e:
+		raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to reach node {node_name}: {str(e)}")
 </file>
 
 <file path="replication/workers/replicator.py">
@@ -13303,10 +9249,12 @@ class ReplicatorWorker:
         self.total_inserted = 0
         self.last_error: Optional[str] = None
         self.peer_errors: Dict[str, Optional[str]] = {peer.base_url: None for peer in settings.peer_nodes}
+        self._cursors_loaded = False
 
     async def start(self) -> None:
         if self._task is None:
             self._stop_event.clear()
+            await self._load_cursors()
             self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -13347,6 +9295,7 @@ class ReplicatorWorker:
                         self.total_inserted += 1
                 max_lamport = max(op.lamport for op in ops)
                 self.last_seen[peer.base_url] = max(self.last_seen.get(peer.base_url, -1), max_lamport)
+                await self.crud.upsert_replication_cursor(conn, peer.name, self.last_seen[peer.base_url])
             self.last_error = None
             self.peer_errors[peer.base_url] = None
         except Exception as exc:  # pragma: no cover - exercised by integration tests
@@ -13361,335 +9310,31 @@ class ReplicatorWorker:
             "last_error": self.last_error,
             "peer_errors": self.peer_errors,
         }
-</file>
 
-<file path="replication/tests/test_applier.py">
-"""Applier worker unit tests."""
-
-from __future__ import annotations
-
-from dataclasses import replace
-
-import pytest
-
-import replication.workers.applier as applier_module
-from replication.workers.applier import ApplierWorker
-
-
-class StubCrud:
-	def __init__(self, ops, apply_exception=None):
-		self.ops = ops
-		self.applied = []
-		self.acks = []
-		self.marked = []
-		self.apply_exception = apply_exception
-
-	async def fetch_unapplied_ops(self, conn, limit=100):
-		return [op for op in self.ops if not op.applied]
-
-	async def apply_op_tx(self, conn, op):
-		if self.apply_exception:
-			raise self.apply_exception
-		op.applied = True
-		self.applied.append(op.op_id)
-
-	async def insert_ack(self, conn, op_id, node):
-		self.acks.append((op_id, node))
-
-	async def mark_op_applied(self, conn, op_id):
-		self.marked.append(op_id)
-		for op in self.ops:
-			if op.op_id == op_id:
-				op.applied = True
-				break
-
-
-@pytest.mark.asyncio
-async def test_applier_is_idempotent(dummy_pool, settings, op_factory) -> None:
-	op = op_factory(1)
-	crud = StubCrud([op])
-	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
-
-	await worker.apply_once()
-	await worker.apply_once()
-
-	assert crud.applied == [op.op_id]
-	assert crud.acks == [(op.op_id, settings.node_name)]
-
-
-@pytest.mark.asyncio
-async def test_applier_skips_ops_outside_partition(dummy_pool, settings, op_factory) -> None:
-	within = op_factory(1, quantity=2)
-	outside = op_factory(2, quantity=10)
-	crud = StubCrud([within, outside])
-	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
-
-	await worker.apply_once()
-
-	assert crud.applied == [within.op_id]
-	assert crud.acks == [(within.op_id, settings.node_name)]
-	assert crud.marked == [outside.op_id]
-
-
-@pytest.mark.asyncio
-async def test_applier_respects_payload_quantity_on_node2(dummy_pool, settings, op_factory) -> None:
-	node2_settings = replace(settings, node_name="node2")
-	op = op_factory(5, quantity=6)
-	crud = StubCrud([op])
-	worker = ApplierWorker(dummy_pool, node2_settings, crud_module=crud)
-
-	await worker.apply_once()
-
-	assert crud.applied == [op.op_id]
-	assert crud.acks == [(op.op_id, node2_settings.node_name)]
-	assert crud.marked == []
-
-
-@pytest.mark.asyncio
-async def test_applier_uses_local_lookup_when_payload_missing(dummy_pool, settings, op_factory) -> None:
-	node2_settings = replace(settings, node_name="node2")
-	op = op_factory(6, quantity=1)
-	op.payload = {"payload": {"demo": True}}
-	dummy_pool.conn.local_rows[op.row_id] = 6
-	crud = StubCrud([op])
-	worker = ApplierWorker(dummy_pool, node2_settings, crud_module=crud)
-
-	await worker.apply_once()
-
-	assert crud.applied == [op.op_id]
-	assert crud.acks == [(op.op_id, node2_settings.node_name)]
-	assert crud.marked == []
-
-
-@pytest.mark.asyncio
-async def test_applier_apply_and_catch_marks_skipped(monkeypatch, dummy_pool, settings, op_factory) -> None:
-	class FakeCheckViolationError(Exception):
-		pass
-
-	monkeypatch.setattr(
-		applier_module.apg_exceptions,
-		"CheckViolationError",
-		FakeCheckViolationError,
-		raising=False,
-	)
-	node2_settings = replace(settings, node_name="node2")
-	op = op_factory(7, quantity=3)
-	op.payload = {"quantity": 3, "target_node": "node2"}
-	crud = StubCrud([op], apply_exception=FakeCheckViolationError("violates qty constraint"))
-	worker = ApplierWorker(dummy_pool, node2_settings, crud_module=crud)
-
-	await worker.apply_once()
-
-	assert crud.applied == []
-	assert crud.acks == []
-	assert crud.marked == [op.op_id]
-	assert worker.skipped_count == 1
-</file>
-
-<file path="replication/workers/applier.py">
-"""Op-log applier worker."""
-
-from __future__ import annotations
-
-import asyncio
-import logging
-from dataclasses import dataclass
-from typing import Optional, Tuple
-from uuid import UUID
-
-import asyncpg
-from asyncpg import exceptions as apg_exceptions
-import httpx
-
-from .. import crud
-from ..config import Settings
-from ..utils.partition import target_node_for_quantity
-
-_LOGGER = logging.getLogger(__name__)
-_REMOTE_DB_TIMEOUT = 1.0
-_REMOTE_HTTP_TIMEOUT = 1.0
-
-
-@dataclass
-class PartitionDecision:
-    mode: str  # apply, skip, attempt
-    path: str
-    quantity: Optional[int]
-    resolved_target: Optional[str]
-    reason: Optional[str] = None
-
-    def with_reason(self, reason: str) -> PartitionDecision:
-        return PartitionDecision(self.mode, self.path, self.quantity, self.resolved_target, reason)
-
-
-class ApplierWorker:
-    """Continuously applies unapplied operations."""
-
-    def __init__(self, pool, settings: Settings, crud_module=crud) -> None:
-        self.pool = pool
-        self.settings = settings
-        self.crud = crud_module
-        self._stop_event = asyncio.Event()
-        self._task: Optional[asyncio.Task] = None
-        self.applied_count = 0
-        self.skipped_count = 0
-        self.last_error: Optional[str] = None
-
-    async def start(self) -> None:
-        if self._task is None:
-            self._stop_event.clear()
-            self._task = asyncio.create_task(self._run())
-
-    async def stop(self) -> None:
-        self._stop_event.set()
-        if self._task is not None:
-            await self._task
-            self._task = None
-
-    async def _run(self) -> None:
-        while not self._stop_event.is_set():
-            await self.apply_once()
-            try:
-                await asyncio.wait_for(self._stop_event.wait(), timeout=self.settings.applier_interval)
-            except asyncio.TimeoutError:
-                continue
-
-    async def apply_once(self) -> None:
+    async def _load_cursors(self) -> None:
+        if self._cursors_loaded:
+            return
         async with self.pool.acquire() as conn:
-            ops = await self.crud.fetch_unapplied_ops(conn)
-            if not ops:
-                self.last_error = None
-                return
-            for op in ops:
-                decision = await self._partition_decision(conn, op)
-                if decision.mode == "skip":
-                    await self.crud.mark_op_applied(conn, op.op_id)
-                    self.skipped_count += 1
-                    self._log_decision(op, decision, "SKIP")
-                    continue
-                try:
-                    await self.crud.apply_op_tx(conn, op)
-                    await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
-                    self.applied_count += 1
-                    self._log_decision(op, decision, "APPLY")
-                except apg_exceptions.CheckViolationError as exc:
-                    await self.crud.mark_op_applied(conn, op.op_id)
-                    self.skipped_count += 1
-                    self._log_decision(op, decision.with_reason(f"constraint_violation: {exc}"), "SKIP")
-                    continue
-                except Exception as exc:  # pragma: no cover - exercised via integration tests
-                    _LOGGER.exception("Failed to apply op %s", op.op_id)
-                    self.last_error = str(exc)
-                    return
-            self.last_error = None
+            rows = await self.crud.load_replication_cursors(conn)
+        for peer in self.settings.peer_nodes:
+            lamport = rows.get(peer.name)
+            if lamport is not None:
+                self.last_seen[peer.base_url] = lamport
+        self._cursors_loaded = True
+</file>
 
-    def _local_node(self) -> str:
-        return self.settings.node_name.lower()
-
-    def _is_master(self) -> bool:
-        return self.settings.node_name == self.settings.default_master
-
-    async def _partition_decision(self, conn, op) -> PartitionDecision:
-        """Choose how to handle an op based on the deterministic ruleset."""
-
-        # Root cause: previously we only looked at inline payload quantities, so
-        # missing or malformed metadata caused shard nodes to skip legitimate ops.
-        if self._is_master():
-            return PartitionDecision("apply", "master", self._extract_quantity(op.payload or {}), self._local_node())
-        payload = op.payload or {}
-        target_node = payload.get("target_node") or payload.get("target_partition")
-        if target_node:
-            target_lower = str(target_node).lower()
-            if target_lower == self._local_node():
-                return PartitionDecision("apply", "target_node", self._extract_quantity(payload), target_lower)
-            return PartitionDecision("skip", "target_node", self._extract_quantity(payload), target_lower, "target_node_mismatch")
-        quantity = self._extract_quantity(payload)
-        if quantity is not None:
-            return self._decision_from_quantity(quantity, "payload_quantity")
-        quantity = await self._lookup_local_quantity(conn, op.row_id)
-        if quantity is not None:
-            return self._decision_from_quantity(quantity, "local_lookup")
-        quantity = await self._lookup_remote_quantity(op.row_id)
-        if quantity is not None:
-            return self._decision_from_quantity(quantity, "remote_lookup")
-        return PartitionDecision("attempt", "apply_and_catch", None, None, "quantity_unresolved")
-
-    def _decision_from_quantity(self, quantity: int, path: str) -> PartitionDecision:
-        target = target_node_for_quantity(quantity, self.settings.partition_rule)
-        if target == self._local_node():
-            return PartitionDecision("apply", path, quantity, target)
-        return PartitionDecision("skip", path, quantity, target, "partition_mismatch")
-
-    async def _lookup_local_quantity(self, conn, row_id: UUID) -> Optional[int]:
-        row = await conn.fetchrow("SELECT quantity FROM orders WHERE order_id=$1", row_id)
-        return int(row["quantity"]) if row else None
-
-    async def _lookup_remote_quantity(self, row_id: UUID) -> Optional[int]:
-        quantity, succeeded = await self._lookup_remote_quantity_db(row_id)
-        if quantity is not None or succeeded:
-            return quantity
-        return await self._lookup_remote_quantity_http(row_id)
-
-    async def _lookup_remote_quantity_db(self, row_id: UUID) -> Tuple[Optional[int], bool]:
-        if not self.settings.node0_dsn:
-            return None, False
-        try:
-            conn = await asyncpg.connect(dsn=self.settings.node0_dsn, timeout=_REMOTE_DB_TIMEOUT)
-            try:
-                row = await conn.fetchrow("SELECT quantity FROM orders WHERE order_id=$1", row_id, timeout=_REMOTE_DB_TIMEOUT)
-                if row:
-                    return int(row["quantity"]), True
-                return None, True
-            finally:
-                await conn.close()
-        except Exception as exc:  # pragma: no cover - relies on network/DB failures
-            _LOGGER.debug("Remote DB lookup failed for %s: %s", row_id, exc)
-            return None, False
-
-    async def _lookup_remote_quantity_http(self, row_id: UUID) -> Optional[int]:
-        if not self.settings.default_master_url:
-            return None
-        url = f"{self.settings.default_master_url}/orders/{row_id}?local=true"
-        try:
-            async with httpx.AsyncClient(timeout=_REMOTE_HTTP_TIMEOUT) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                data = response.json()
-                if not data:
-                    return None
-                quantity = data.get("quantity")
-                return int(quantity) if quantity is not None else None
-        except Exception as exc:  # pragma: no cover - exercised when master HTTP is unavailable
-            _LOGGER.debug("Remote HTTP lookup failed for %s: %s", row_id, exc)
-        return None
-
-    @staticmethod
-    def _extract_quantity(payload: dict) -> Optional[int]:
-        value = payload.get("quantity")
-        try:
-            return int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def _log_decision(self, op, decision: PartitionDecision, outcome: str) -> None:
-        _LOGGER.debug(
-            "applier_decision op=%s origin=%s type=%s path=%s target=%s quantity=%s outcome=%s reason=%s",
-            op.op_id,
-            op.origin_node,
-            op.op_type,
-            decision.path,
-            decision.resolved_target or "unknown",
-            decision.quantity,
-            outcome,
-            decision.reason,
-        )
-
-    def metrics(self) -> dict:
-        return {
-            "applied_count": self.applied_count,
-            "skipped_count": self.skipped_count,
-            "last_error": self.last_error,
-        }
+<file path=".gitignore">
+.env0
+.env1
+.env2
+**/node_modules
+frontend/__pycache__/
+frontend/tabs/__pycache__/
+etl_modules/__pycache__/
+etl_modules/tests/__pycache__/
+__pycache__/
+.venv/
+.env
 </file>
 
 <file path="frontend/web-app/src/App.jsx">
@@ -14714,6 +10359,545 @@ class TransactionOrchestrator:
 		return {"value": str(record)}
 </file>
 
+<file path="replication/tests/test_applier.py">
+"""Applier worker unit tests."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import replace
+
+import pytest
+
+import replication.workers.applier as applier_module
+from replication.tests.conftest import DummyConn, DummyPool
+from replication.workers.applier import ApplierWorker
+
+
+class StubCrud:
+	def __init__(self, ops, apply_exception=None, cursor_map=None):
+		self.ops = ops
+		self.applied = []
+		self.acks = []
+		self.marked = []
+		self.apply_exception = apply_exception
+		self.cursor_map = cursor_map or {"node0": 0}
+		self.current_worker = None
+
+	async def fetch_unapplied_ops(self, conn, limit=100):
+		for op in self.ops:
+			if op.applied:
+				continue
+			locked_by = getattr(op, "locked_by", None)
+			if locked_by and locked_by != self.current_worker:
+				continue
+			if not locked_by:
+				op.locked_by = self.current_worker
+			return [op]
+		return []
+
+	async def apply_op_tx(self, conn, op, use_transaction=True):
+		if self.apply_exception:
+			raise self.apply_exception
+		op.applied = True
+		op.locked_by = None
+		self.applied.append(op.op_id)
+
+	async def insert_ack(self, conn, op_id, node):
+		self.acks.append((op_id, node))
+
+	async def mark_op_applied(self, conn, op_id):
+		self.marked.append(op_id)
+		for op in self.ops:
+			if op.op_id == op_id:
+				op.applied = True
+				op.locked_by = None
+				break
+
+	async def load_replication_cursors(self, conn):
+		return self.cursor_map
+
+
+class TrackingApplier(ApplierWorker):
+	async def _next_locked_op(self, conn):
+		if hasattr(self.crud, "current_worker"):
+			self.crud.current_worker = self.worker_id
+		return await super()._next_locked_op(conn)
+
+
+@pytest.mark.asyncio
+async def test_applier_is_idempotent(dummy_pool, settings, op_factory) -> None:
+	op = op_factory(1)
+	crud = StubCrud([op])
+	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
+
+	await worker.apply_once()
+	await worker.apply_once()
+
+	assert crud.applied == [op.op_id]
+	assert crud.acks == [(op.op_id, settings.node_name)]
+
+
+@pytest.mark.asyncio
+async def test_applier_skips_ops_outside_partition(dummy_pool, settings, op_factory) -> None:
+	within = op_factory(1, quantity=2)
+	outside = op_factory(2, quantity=10)
+	crud = StubCrud([within, outside])
+	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
+
+	await worker.apply_once()
+
+	assert crud.applied == [within.op_id]
+	assert crud.acks == [
+		(within.op_id, settings.node_name),
+		(outside.op_id, settings.node_name),
+	]
+	assert crud.marked == [outside.op_id]
+
+
+@pytest.mark.asyncio
+async def test_applier_respects_payload_quantity_on_node2(dummy_pool, settings, op_factory) -> None:
+	node2_settings = replace(settings, node_name="node2")
+	op = op_factory(5, quantity=6)
+	crud = StubCrud([op])
+	worker = ApplierWorker(dummy_pool, node2_settings, crud_module=crud)
+
+	await worker.apply_once()
+
+	assert crud.applied == [op.op_id]
+	assert crud.acks == [(op.op_id, node2_settings.node_name)]
+	assert crud.marked == []
+
+
+@pytest.mark.asyncio
+async def test_applier_uses_local_lookup_when_payload_missing(dummy_pool, settings, op_factory) -> None:
+	node2_settings = replace(settings, node_name="node2")
+	op = op_factory(6, quantity=1)
+	op.payload = {"payload": {"demo": True}}
+	dummy_pool.conn.local_rows[op.row_id] = 6
+	crud = StubCrud([op])
+	worker = ApplierWorker(dummy_pool, node2_settings, crud_module=crud)
+
+	await worker.apply_once()
+
+	assert crud.applied == [op.op_id]
+	assert crud.acks == [(op.op_id, node2_settings.node_name)]
+	assert crud.marked == []
+
+
+@pytest.mark.asyncio
+async def test_applier_apply_and_catch_marks_skipped(monkeypatch, dummy_pool, settings, op_factory) -> None:
+	class FakeCheckViolationError(Exception):
+		pass
+
+	monkeypatch.setattr(
+		applier_module.apg_exceptions,
+		"CheckViolationError",
+		FakeCheckViolationError,
+		raising=False,
+	)
+	node2_settings = replace(settings, node_name="node2")
+	op = op_factory(7, quantity=3)
+	op.payload = {"quantity": 3, "target_node": "node2"}
+	crud = StubCrud([op], apply_exception=FakeCheckViolationError("violates qty constraint"))
+	worker = ApplierWorker(dummy_pool, node2_settings, crud_module=crud)
+
+	await worker.apply_once()
+
+	assert crud.applied == []
+	assert crud.acks == [(op.op_id, node2_settings.node_name)]
+	assert crud.marked == [op.op_id]
+	assert worker.skipped_count == 1
+
+
+@pytest.mark.asyncio
+async def test_applier_retries_remote_lookup_then_applies(dummy_pool, settings, op_factory) -> None:
+	op = op_factory(8, quantity=1)
+	op.payload = {"payload": {"demo": True}}
+	crud = StubCrud([op])
+	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
+	call_count = {"value": 0}
+
+	async def fake_lookup(row_id):
+		call_count["value"] += 1
+		if call_count["value"] < 3:
+			return None, "error"
+		return 2, "ok"
+
+	worker._lookup_remote_quantity = fake_lookup  # type: ignore[attr-defined]
+
+	await worker.apply_once()
+
+	assert crud.applied == [op.op_id]
+	assert worker.retry_count == 2
+	assert call_count["value"] == 3
+
+
+@pytest.mark.asyncio
+async def test_applier_uses_cursor_cache_for_logging(caplog, dummy_pool, settings, op_factory) -> None:
+	settings = replace(settings, applier_debug=True)
+	op = op_factory(9, quantity=2)
+	crud = StubCrud([op], cursor_map={"node0": 42})
+	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
+
+	with caplog.at_level("DEBUG", logger="replication.workers.applier"):
+		await worker.apply_once()
+
+	assert any("last_seen=42" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_applier_max_attempts_triggers_apply_and_skip(monkeypatch, dummy_pool, settings, op_factory) -> None:
+	class FakeCheckViolationError(Exception):
+		pass
+
+	monkeypatch.setattr(
+		applier_module.apg_exceptions,
+		"CheckViolationError",
+		FakeCheckViolationError,
+		raising=False,
+	)
+	limited_settings = replace(settings, applier_max_attempts=1)
+	op = op_factory(10, quantity=1)
+	op.payload = {"payload": {}}
+	crud = StubCrud([op], apply_exception=FakeCheckViolationError("violates"))
+	worker = ApplierWorker(dummy_pool, limited_settings, crud_module=crud)
+
+	async def always_fail_lookup(row_id):
+		return None, "error"
+
+	worker._lookup_remote_quantity = always_fail_lookup  # type: ignore[attr-defined]
+
+	await worker.apply_once()
+
+	assert crud.applied == []
+	assert crud.marked == [op.op_id]
+	assert worker.skipped_count == 1
+
+
+@pytest.mark.asyncio
+async def test_applier_purges_local_row_on_partition_mismatch(dummy_pool, settings, op_factory) -> None:
+	op = op_factory(20, quantity=9)
+	dummy_pool.conn.local_rows[op.row_id] = 2
+	crud = StubCrud([op])
+	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
+
+	await worker.apply_once()
+
+	assert op.op_id in crud.marked
+	assert op.row_id not in dummy_pool.conn.local_rows
+	assert dummy_pool.conn.deleted_rows == [op.row_id]
+	assert worker.skipped_count == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appliers_do_not_double_apply(dummy_pool, settings, op_factory) -> None:
+	shared_conn = DummyConn()
+	pool_a = DummyPool(shared_conn)
+	pool_b = DummyPool(shared_conn)
+	first = op_factory(11, quantity=2)
+	second = op_factory(12, quantity=3)
+	crud = StubCrud([first, second])
+	worker_a = TrackingApplier(pool_a, settings, crud_module=crud, worker_id="worker-a")
+	worker_b = TrackingApplier(pool_b, settings, crud_module=crud, worker_id="worker-b")
+
+	await asyncio.gather(worker_a.apply_once(), worker_b.apply_once())
+
+	assert set(crud.applied) == {first.op_id, second.op_id}
+	assert crud.marked == []
+</file>
+
+<file path="replication/workers/applier.py">
+"""Op-log applier worker."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from typing import Dict, Optional, Tuple
+from uuid import UUID, uuid4
+
+import asyncpg
+from asyncpg import exceptions as apg_exceptions
+import httpx
+
+from .. import crud
+from ..config import Settings
+from ..utils.partition import target_node_for_quantity
+
+_LOGGER = logging.getLogger(__name__)
+_REMOTE_DB_TIMEOUT = 1.0
+_REMOTE_HTTP_TIMEOUT = 1.0
+_REMOTE_RETRY_DELAYS = (0.2, 0.4)
+
+
+@dataclass
+class PartitionDecision:
+    mode: str  # apply, skip, retry
+    path: str
+    quantity: Optional[int]
+    resolved_target: Optional[str]
+    reason: Optional[str] = None
+
+    def with_reason(self, reason: str) -> PartitionDecision:
+        return PartitionDecision(self.mode, self.path, self.quantity, self.resolved_target, reason)
+
+
+class ApplierWorker:
+    """Continuously applies unapplied operations with partition awareness."""
+
+    def __init__(self, pool, settings: Settings, crud_module=crud, worker_id: Optional[str] = None) -> None:
+        self.pool = pool
+        self.settings = settings
+        self.crud = crud_module
+        self._stop_event = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
+        self.applied_count = 0
+        self.skipped_count = 0
+        self.failed_count = 0
+        self.retry_count = 0
+        self.applier_attempts = 0
+        self.last_error: Optional[str] = None
+        self.worker_id = worker_id or f"applier-{uuid4().hex[:8]}"
+        self._attempts: Dict[UUID, int] = {}
+        self._cursor_cache: Dict[str, int] = {}
+        self._cursor_loaded = False
+        self._max_attempts = max(1, self.settings.applier_max_attempts)
+
+    async def start(self) -> None:
+        if self._task is None:
+            self._stop_event.clear()
+            self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task is not None:
+            await self._task
+            self._task = None
+
+    async def _run(self) -> None:
+        await self._refresh_cursor_cache()
+        while not self._stop_event.is_set():
+            await self.apply_once()
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self.settings.applier_interval)
+            except asyncio.TimeoutError:
+                continue
+
+    async def apply_once(self) -> None:
+        await self._refresh_cursor_cache()
+        async with self.pool.acquire() as conn:
+            while True:
+                retry_requested = False
+                async with conn.transaction():
+                    op = await self._next_locked_op(conn)
+                    if not op:
+                        self.last_error = None
+                        return
+                    outcome = await self._process_locked_op(conn, op)
+                    if outcome == "retry":
+                        retry_requested = True
+                        self.retry_count += 1
+                        self._debug("retrying op %s after releasing lock", op.op_id)
+                if retry_requested:
+                    await asyncio.sleep(_REMOTE_RETRY_DELAYS[0])
+
+    async def _next_locked_op(self, conn):
+        ops = await self.crud.fetch_unapplied_ops(conn, limit=1)
+        return ops[0] if ops else None
+
+    async def _process_locked_op(self, conn, op) -> str:
+        attempt = self._increment_attempt(op.op_id)
+        decision = await self._partition_decision(conn, op, attempt)
+        if decision.mode == "retry":
+            self._log_decision(op, decision, "RETRY", attempt)
+            return "retry"
+        if decision.mode == "skip":
+            if op.op_type != "delete" and decision.reason in {"partition_mismatch", "target_node_mismatch"}:
+                await self._purge_local_row(conn, op.row_id)
+            await self.crud.mark_op_applied(conn, op.op_id)
+            await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
+            self.skipped_count += 1
+            self._clear_attempt(op.op_id)
+            self._log_decision(op, decision, "SKIP", attempt)
+            return "skip"
+        try:
+            await self.crud.apply_op_tx(conn, op, use_transaction=False)
+            await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
+            self.applied_count += 1
+            self._clear_attempt(op.op_id)
+            self.last_error = None
+            self._log_decision(op, decision, "APPLY", attempt)
+            return "apply"
+        except apg_exceptions.CheckViolationError as exc:
+            await self.crud.mark_op_applied(conn, op.op_id)
+            await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
+            self.skipped_count += 1
+            self._clear_attempt(op.op_id)
+            self._log_decision(op, decision.with_reason(f"constraint_violation: {exc}"), "SKIP", attempt)
+            return "skip"
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self.failed_count += 1
+            self.last_error = str(exc)
+            self._log_decision(op, decision.with_reason(str(exc)), "ERROR", attempt)
+            raise
+
+    def _increment_attempt(self, op_id: UUID) -> int:
+        self.applier_attempts += 1
+        self._attempts[op_id] = self._attempts.get(op_id, 0) + 1
+        return self._attempts[op_id]
+
+    def _clear_attempt(self, op_id: UUID) -> None:
+        self._attempts.pop(op_id, None)
+
+    async def _partition_decision(self, conn, op, attempt: int) -> PartitionDecision:
+        if op.op_type == "delete":
+            return PartitionDecision("apply", "delete", None, self._local_node())
+        if self._is_master():
+            return PartitionDecision("apply", "master", self._extract_quantity(op.payload or {}), self._local_node())
+        payload = op.payload or {}
+        target_node = payload.get("target_node") or payload.get("target_partition")
+        if target_node:
+            target_lower = str(target_node).lower()
+            if target_lower == self._local_node():
+                return PartitionDecision("apply", "target_node", self._extract_quantity(payload), target_lower)
+            return PartitionDecision("skip", "target_node", self._extract_quantity(payload), target_lower, "target_node_mismatch")
+        quantity = self._extract_quantity(payload)
+        if quantity is not None:
+            return self._decision_from_quantity(quantity, "payload_quantity")
+        quantity = await self._lookup_local_quantity(conn, op.row_id)
+        if quantity is not None:
+            return self._decision_from_quantity(quantity, "local_lookup")
+        quantity, status = await self._lookup_remote_quantity(op.row_id)
+        if status == "ok" and quantity is not None:
+            return self._decision_from_quantity(quantity, "remote_lookup")
+        if status == "error" and attempt < self._max_attempts:
+            return PartitionDecision("retry", "remote_lookup", None, None, "remote_lookup_failed")
+        return PartitionDecision("apply", "apply_and_catch", None, None, "quantity_unresolved")
+
+    def _decision_from_quantity(self, quantity: int, path: str) -> PartitionDecision:
+        target = target_node_for_quantity(quantity, self.settings.partition_rule)
+        if target == self._local_node():
+            return PartitionDecision("apply", path, quantity, target)
+        return PartitionDecision("skip", path, quantity, target, "partition_mismatch")
+
+    async def _lookup_local_quantity(self, conn, row_id: UUID) -> Optional[int]:
+        row = await conn.fetchrow("SELECT quantity FROM orders WHERE order_id=$1", row_id)
+        return int(row["quantity"]) if row else None
+
+    async def _lookup_remote_quantity(self, row_id: UUID) -> Tuple[Optional[int], str]:
+        quantity, status = await self._lookup_remote_quantity_db(row_id)
+        if status in {"ok", "not_found"}:
+            return quantity, status
+        quantity, status = await self._lookup_remote_quantity_http(row_id)
+        return quantity, status
+
+    async def _lookup_remote_quantity_db(self, row_id: UUID) -> Tuple[Optional[int], str]:
+        if not self.settings.node0_dsn:
+            return None, "error"
+        for attempt, delay in enumerate((0.0, *_REMOTE_RETRY_DELAYS), start=1):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                conn = await asyncpg.connect(dsn=self.settings.node0_dsn, timeout=_REMOTE_DB_TIMEOUT)
+                try:
+                    row = await conn.fetchrow("SELECT quantity FROM orders WHERE order_id=$1", row_id, timeout=_REMOTE_DB_TIMEOUT)
+                    if row:
+                        self._debug("remote_db quantity hit op=%s attempt=%s", row_id, attempt)
+                        return int(row["quantity"]), "ok"
+                    self._debug("remote_db quantity miss op=%s attempt=%s", row_id, attempt)
+                    return None, "not_found"
+                finally:
+                    await conn.close()
+            except Exception as exc:  # pragma: no cover - network/DB failures
+                self._debug("remote_db lookup failure op=%s attempt=%s err=%s", row_id, attempt, exc)
+        return None, "error"
+
+    async def _lookup_remote_quantity_http(self, row_id: UUID) -> Tuple[Optional[int], str]:
+        if not self.settings.default_master_url:
+            return None, "error"
+        url = f"{self.settings.default_master_url}/orders/{row_id}?local=true"
+        async with httpx.AsyncClient(timeout=_REMOTE_HTTP_TIMEOUT) as client:
+            for attempt, delay in enumerate((0.0, *_REMOTE_RETRY_DELAYS), start=1):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    data = response.json()
+                    if not data:
+                        return None, "not_found"
+                    quantity = data.get("quantity")
+                    return (int(quantity) if quantity is not None else None), "ok"
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        return None, "not_found"
+                    self._debug("remote_http status_err op=%s attempt=%s err=%s", row_id, attempt, exc)
+                except Exception as exc:  # pragma: no cover - HTTP client issues
+                    self._debug("remote_http lookup failure op=%s attempt=%s err=%s", row_id, attempt, exc)
+        return None, "error"
+
+    def _local_node(self) -> str:
+        return self.settings.node_name.lower()
+
+    def _is_master(self) -> bool:
+        return self.settings.node_name == self.settings.default_master
+
+    @staticmethod
+    def _extract_quantity(payload: dict) -> Optional[int]:
+        value = payload.get("quantity")
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _log_decision(self, op, decision: PartitionDecision, outcome: str, attempt: int) -> None:
+        if not self.settings.applier_debug:
+            return
+        last_seen = self._cursor_cache.get(op.origin_node.lower(), -1)
+        _LOGGER.debug(
+            "applier_decision op=%s lamport=%s last_seen=%s attempts=%s worker=%s locked=%s path=%s target=%s quantity=%s outcome=%s reason=%s",
+            op.op_id,
+            op.lamport,
+            last_seen,
+            attempt,
+            self.worker_id,
+            True,
+            decision.path,
+            decision.resolved_target or "unknown",
+            decision.quantity,
+            outcome,
+            decision.reason,
+        )
+
+    def metrics(self) -> dict:
+        return {
+            "applied_count": self.applied_count,
+            "skipped_count": self.skipped_count,
+            "failed_count": self.failed_count,
+            "retry_count": self.retry_count,
+            "applier_attempts": self.applier_attempts,
+            "last_error": self.last_error,
+        }
+
+    async def _refresh_cursor_cache(self) -> None:
+        if self._cursor_loaded:
+            return
+        async with self.pool.acquire() as conn:
+            rows = await self.crud.load_replication_cursors(conn)
+            self._cursor_cache = {name.lower(): value for name, value in rows.items()}
+        self._cursor_loaded = True
+
+    def _debug(self, message: str, *args) -> None:
+        if self.settings.applier_debug:
+            _LOGGER.debug(message, *args)
+
+    async def _purge_local_row(self, conn, row_id: UUID) -> None:
+        await conn.execute("DELETE FROM orders WHERE order_id=$1", row_id)
+        self._debug("purged local row=%s due to partition mismatch", row_id)
+</file>
+
 <file path="replication/tests/conftest.py">
 """Pytest fixtures for worker unit tests."""
 
@@ -14735,8 +10919,15 @@ class DummyConn:
 
 	def __init__(self):
 		self.local_rows = {}
+		self.deleted_rows = []
 
-	async def execute(self, *_, **__):
+	async def execute(self, query, *args, **__):
+		needle = query.strip().lower()
+		if needle.startswith("delete from orders"):
+			row_id = args[0] if args else None
+			self.deleted_rows.append(row_id)
+			self.local_rows.pop(row_id, None)
+			return "DELETE 1"
 		return "EXECUTE"
 
 	async def fetch(self, *_, **__):  # pragma: no cover - not used in unit tests
@@ -14789,6 +10980,9 @@ def settings() -> Settings:
 		promoted=False,
 		partition_rule=5,
 		applier_interval=0.1,
+		applier_batch_limit=1,
+		applier_max_attempts=3,
+		applier_debug=False,
 		node0_dsn="node0",
 		node1_dsn="node1",
 		node2_dsn="node2",
@@ -14815,18 +11009,113 @@ def op_factory() -> Callable[[int, int], OpRecord]:
 	return _factory
 </file>
 
-<file path=".gitignore">
-.env0
-.env1
-.env2
-**/node_modules
-frontend/__pycache__/
-frontend/tabs/__pycache__/
-etl_modules/__pycache__/
-etl_modules/tests/__pycache__/
-__pycache__/
-.venv/
-.env
+<file path="replication/routes/orders.py">
+"""Order CRUD endpoints with master routing rules."""
+
+from __future__ import annotations
+
+from typing import Optional
+from uuid import UUID
+
+from fastapi import APIRouter, HTTPException, Query, Request, status
+
+from .. import crud
+from ..config import Settings, get_settings
+from ..db import get_pool
+from ..models import OrderCreate, OrderRead, OrderUpdate
+from ..utils.partition import can_accept_partition
+
+router = APIRouter(tags=["orders"])
+
+
+def _is_master(settings: Settings) -> bool:
+	return settings.node_name == settings.default_master
+
+
+async def _forward(request: Request, method: str, path: str, payload: Optional[dict] = None):
+	settings = get_settings()
+	base_url = settings.default_master_url
+	if not base_url:
+		raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Master URL not configured")
+	client = request.app.state.http_client
+	url = f"{base_url}{path}"
+	if method == "POST":
+		return await client.post_json(url, payload or {})
+	if method == "PUT":
+		return await client.put_json(url, payload or {})
+	if method == "GET":
+		return await client.get_json(url)
+	if method == "DELETE":
+		return await client.delete(url)
+	raise RuntimeError(f"Unsupported forward method {method}")
+
+
+@router.post("/orders", response_model=OrderRead, status_code=status.HTTP_201_CREATED)
+async def create_order(order: OrderCreate, request: Request) -> OrderRead:
+	settings = get_settings()
+	pool = get_pool()
+	promoted: bool = request.app.state.promoted
+	# TODO: Introduce a distributed transaction coordinator for cross-partition writes.
+	if _is_master(settings) or (promoted and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
+		return await crud.create_order(pool, order, settings.node_name)
+	response = await _forward(request, "POST", "/orders", payload=order.model_dump())
+	return OrderRead(**response)
+
+
+@router.get("/orders", response_model=list[OrderRead])
+async def list_orders(request: Request):
+	settings = get_settings()
+	pool = get_pool()
+	if _is_master(settings):
+		orders, _ = await crud.list_orders(pool, page=1, limit=1000000)  # Increased limit
+		return orders
+	response = await _forward(request, "GET", "/orders")
+	return response
+
+
+@router.get("/orders/local/all", response_model=list[OrderRead])
+async def list_local_orders(request: Request):
+	"""Get orders from THIS node's local database only (no forwarding)"""
+	pool = get_pool()
+	orders, _ = await crud.list_orders(pool, page=1, limit=1000000)  # Increased limit to get all orders
+	return orders
+
+
+@router.get("/orders/{order_id}", response_model=Optional[OrderRead])
+async def read_order(order_id: UUID, request: Request, local: bool = False) -> Optional[OrderRead]:
+	settings = get_settings()
+	pool = get_pool()
+	if _is_master(settings) or local:
+		return await crud.get_order(pool, order_id)
+	response = await _forward(request, "GET", f"/orders/{order_id}")
+	return OrderRead(**response) if response else None
+
+
+@router.put("/orders/{order_id}", response_model=OrderRead)
+async def update_order(order_id: UUID, order: OrderUpdate, request: Request) -> OrderRead:
+	settings = get_settings()
+	pool = get_pool()
+	promoted: bool = request.app.state.promoted
+	if _is_master(settings) or (promoted and order.quantity is not None and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
+		updated = await crud.update_order(pool, order_id, order, settings.node_name)
+		if not updated:
+			raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Order not found")
+		return updated
+	response = await _forward(request, "PUT", f"/orders/{order_id}", payload=order.model_dump(exclude_none=True))
+	return OrderRead(**response)
+
+
+@router.delete("/orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_order(order_id: UUID, request: Request) -> None:
+	settings = get_settings()
+	pool = get_pool()
+	promoted: bool = request.app.state.promoted
+	if _is_master(settings) or promoted:
+		deleted = await crud.delete_order(pool, order_id, settings.node_name)
+		if not deleted:
+			raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Order not found")
+		return
+	await _forward(request, "DELETE", f"/orders/{order_id}")
 </file>
 
 <file path="frontend/web-app/src/components/DatabaseDashboard.jsx">
@@ -14837,7 +11126,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders, fetchReplicationStatus } from '../services/api';
+import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders } from '../services/api';
 
 const DEFAULT_NODE_CARDS = [
   { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
@@ -14897,6 +11186,9 @@ export function DatabaseDashboard() {
   const [totalRecords, setTotalRecords] = useState(0);
   const [partitionRule, setPartitionRule] = useState(null);
   const [nodeCards, setNodeCards] = useState(() => buildNodeState());
+  const [nodeMetrics, setNodeMetrics] = useState({}); // Store metrics per node
+  const [node1Data, setNode1Data] = useState([]); // NEW: Store actual Node1 data
+  const [node2Data, setNode2Data] = useState([]); // NEW: Store actual Node2 data
   
   const itemsPerPage = 10;
 
@@ -14914,12 +11206,33 @@ export function DatabaseDashboard() {
     setError(null);
 
     try {
-      const [statusResponse, ordersResponse] = await Promise.all([
+      console.log('🔄 Fetching data from all nodes...');
+      const [statusResponse, ordersResponse, metricsResponse, node1Orders, node2Orders] = await Promise.all([
         fetchReplicationStatus(),
         fetchAllOrders(),
+        fetchAllNodeMetrics(),
+        fetchNodeOrders('node1').catch(err => { 
+          console.error('❌ Node1 fetch failed:', err); 
+          return []; 
+        }),
+        fetchNodeOrders('node2').catch(err => { 
+          console.error('❌ Node2 fetch failed:', err); 
+          return []; 
+        }),
       ]);
 
+      console.log('✅ Data fetched:', {
+        node0Orders: ordersResponse?.length || 0,
+        node1Orders: node1Orders?.length || 0,
+        node2Orders: node2Orders?.length || 0,
+      });
+
       applyReplicationStatus(statusResponse);
+      setNodeMetrics(metricsResponse);
+      
+      // Store node-specific data
+      setNode1Data(Array.isArray(node1Orders) ? node1Orders : []);
+      setNode2Data(Array.isArray(node2Orders) ? node2Orders : []);
 
       const rows = Array.isArray(ordersResponse) ? ordersResponse : [];
       setAllData(rows);
@@ -14931,7 +11244,7 @@ export function DatabaseDashboard() {
       const endIndex = startIndex + itemsPerPage;
       setData(rows.slice(startIndex, endIndex));
     } catch (err) {
-      console.error('Failed to fetch data:', err);
+      console.error('❌ Failed to fetch data:', err);
       setError(err.message || 'Failed to connect to database nodes');
       applyReplicationStatus(null, 'error');
     } finally {
@@ -14952,15 +11265,15 @@ export function DatabaseDashboard() {
     fetchData();
   }, []);
 
-  useEffect(() => {
-    // Check node status every 5 seconds
-    const statusInterval = setInterval(() => {
-      fetchReplicationStatus()
-        .then((statusResponse) => applyReplicationStatus(statusResponse))
-        .catch((err) => console.error('Failed to check node status:', err));
-    }, 5000);
-    return () => clearInterval(statusInterval);
-  }, [applyReplicationStatus]);
+  // Auto-refresh removed due to high query limit causing long fetch times
+  // Users can manually refresh using the refresh button
+
+  // Helper function to get actual node data
+  const getNodeData = (nodeId) => {
+    if (nodeId === 'node1') return node1Data;
+    if (nodeId === 'node2') return node2Data;
+    return [];
+  };
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -15040,15 +11353,18 @@ export function DatabaseDashboard() {
       {/* Header with Refresh Button */}
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-800">Database Overview</h2>
-        <Button
-          onClick={fetchData}
-          disabled={loading}
-          variant="outline"
-          className="flex items-center gap-2"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-gray-500">Auto-refresh: 10s</span>
+          <Button
+            onClick={fetchData}
+            disabled={loading}
+            variant="outline"
+            className="flex items-center gap-2"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {/* Error Display */}
@@ -15084,11 +11400,32 @@ export function DatabaseDashboard() {
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
                     <p className="text-2xl font-bold text-cyan-700">
-                      {card.isPrimary ? totalRecords : 0}
+                      {card.id === 'node1' ? node1Data.length : 
+                       card.id === 'node2' ? node2Data.length :
+                       card.isPrimary ? totalRecords : 0}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {describeNode(card)}
                     </p>
+                    {/* NEW: Display applier and replicator metrics */}
+                    {nodeMetrics[card.id] && !nodeMetrics[card.id].error && (
+                      <div className="text-xs text-gray-500 mt-2 space-y-0.5">
+                        {nodeMetrics[card.id].applier && (
+                          <>
+                            <div>Applied: {nodeMetrics[card.id].applier.applied_count || 0}</div>
+                            <div>Skipped: {nodeMetrics[card.id].applier.skipped_count || 0}</div>
+                          </>
+                        )}
+                        {nodeMetrics[card.id].replicator && (
+                          <div>Replicated: {nodeMetrics[card.id].replicator.total_replicated || 0}</div>
+                        )}
+                      </div>
+                    )}
+                    {nodeMetrics[card.id]?.error && (
+                      <div className="text-xs text-red-500 mt-1">
+                        Error: {nodeMetrics[card.id].error}
+                      </div>
+                    )}
                   </div>
                   <div className={`w-2 h-2 rounded-full ${getStatusColor(card.status)} animate-pulse`} />
                 </div>
@@ -15209,11 +11546,33 @@ export function DatabaseDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    <TableRow>
-                      <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
-                        Fragment-specific data not loaded
-                      </TableCell>
-                    </TableRow>
+                    {loading ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center py-4">
+                          <Loader2 className="w-4 h-4 animate-spin inline" />
+                        </TableCell>
+                      </TableRow>
+                    ) : node1Data.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
+                          No orders in this node
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      node1Data.slice(0, 5).map((order) => (
+                        <TableRow key={order.order_id}>
+                          <TableCell className="text-xs font-mono">{formatUUID(order.order_id)}</TableCell>
+                          <TableCell className="text-xs">{order.quantity}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                    {node1Data.length > 5 && (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-2 text-xs">
+                          ... and {node1Data.length - 5} more
+                        </TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -15238,17 +11597,39 @@ export function DatabaseDashboard() {
               <div className="border rounded-lg overflow-hidden">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-blue-50">
+                    <TableRow className="bg-purple-50">
                       <TableHead className="text-xs">Order ID</TableHead>
                       <TableHead className="text-xs">Quantity</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    <TableRow>
-                      <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
-                        Fragment-specific data not loaded
-                      </TableCell>
-                    </TableRow>
+                    {loading ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center py-4">
+                          <Loader2 className="w-4 h-4 animate-spin inline" />
+                        </TableCell>
+                      </TableRow>
+                    ) : node2Data.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
+                          No orders in this node
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      node2Data.slice(0, 5).map((order) => (
+                        <TableRow key={order.order_id}>
+                          <TableCell className="text-xs font-mono">{formatUUID(order.order_id)}</TableCell>
+                          <TableCell className="text-xs">{order.quantity}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                    {node2Data.length > 5 && (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-2 text-xs">
+                          ... and {node2Data.length - 5} more
+                        </TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -15259,107 +11640,6 @@ export function DatabaseDashboard() {
     </div>
   );
 }
-</file>
-
-<file path="replication/routes/orders.py">
-"""Order CRUD endpoints with master routing rules."""
-
-from __future__ import annotations
-
-from typing import Optional
-from uuid import UUID
-
-from fastapi import APIRouter, HTTPException, Query, Request, status
-
-from .. import crud
-from ..config import Settings, get_settings
-from ..db import get_pool
-from ..models import OrderCreate, OrderRead, OrderUpdate
-from ..utils.partition import can_accept_partition
-
-router = APIRouter(tags=["orders"])
-
-
-def _is_master(settings: Settings) -> bool:
-	return settings.node_name == settings.default_master
-
-
-async def _forward(request: Request, method: str, path: str, payload: Optional[dict] = None):
-	settings = get_settings()
-	base_url = settings.default_master_url
-	if not base_url:
-		raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Master URL not configured")
-	client = request.app.state.http_client
-	url = f"{base_url}{path}"
-	if method == "POST":
-		return await client.post_json(url, payload or {})
-	if method == "PUT":
-		return await client.put_json(url, payload or {})
-	if method == "GET":
-		return await client.get_json(url)
-	if method == "DELETE":
-		return await client.delete(url)
-	raise RuntimeError(f"Unsupported forward method {method}")
-
-
-@router.post("/orders", response_model=OrderRead, status_code=status.HTTP_201_CREATED)
-async def create_order(order: OrderCreate, request: Request) -> OrderRead:
-	settings = get_settings()
-	pool = get_pool()
-	promoted: bool = request.app.state.promoted
-	# TODO: Introduce a distributed transaction coordinator for cross-partition writes.
-	if _is_master(settings) or (promoted and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
-		return await crud.create_order(pool, order, settings.node_name)
-	response = await _forward(request, "POST", "/orders", payload=order.model_dump())
-	return OrderRead(**response)
-
-
-@router.get("/orders", response_model=list[OrderRead])
-async def list_orders(request: Request):
-	settings = get_settings()
-	pool = get_pool()
-	if _is_master(settings):
-		orders, _ = await crud.list_orders(pool, page=1, limit=10000)
-		return orders
-	response = await _forward(request, "GET", "/orders")
-	return response
-
-
-@router.get("/orders/{order_id}", response_model=Optional[OrderRead])
-async def read_order(order_id: UUID, request: Request, local: bool = False) -> Optional[OrderRead]:
-	settings = get_settings()
-	pool = get_pool()
-	if _is_master(settings) or local:
-		return await crud.get_order(pool, order_id)
-	response = await _forward(request, "GET", f"/orders/{order_id}")
-	return OrderRead(**response) if response else None
-
-
-@router.put("/orders/{order_id}", response_model=OrderRead)
-async def update_order(order_id: UUID, order: OrderUpdate, request: Request) -> OrderRead:
-	settings = get_settings()
-	pool = get_pool()
-	promoted: bool = request.app.state.promoted
-	if _is_master(settings) or (promoted and order.quantity is not None and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
-		updated = await crud.update_order(pool, order_id, order, settings.node_name)
-		if not updated:
-			raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Order not found")
-		return updated
-	response = await _forward(request, "PUT", f"/orders/{order_id}", payload=order.model_dump(exclude_none=True))
-	return OrderRead(**response)
-
-
-@router.delete("/orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_order(order_id: UUID, request: Request) -> None:
-	settings = get_settings()
-	pool = get_pool()
-	promoted: bool = request.app.state.promoted
-	if _is_master(settings) or promoted:
-		deleted = await crud.delete_order(pool, order_id, settings.node_name)
-		if not deleted:
-			raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Order not found")
-		return
-	await _forward(request, "DELETE", f"/orders/{order_id}")
 </file>
 
 <file path="frontend/web-app/src/services/api.js">
@@ -15399,6 +11679,28 @@ const fetchAPI = async (endpoint, options = {}) => {
  */
 export const fetchAllOrders = async () => {
   return fetchAPI('/orders');
+};
+
+/**
+ * Fetch orders from a specific node's local database
+ * @param {string} nodeName - Name of the node (e.g., 'node1', 'node2')
+ * @returns {Promise<Array>} Array of orders from that node
+ */
+export const fetchNodeOrders = async (nodeName) => {
+  console.log(`📡 Fetching orders from ${nodeName}...`);
+  if (nodeName === 'node0') {
+    // Node0 is the master, fetch normally
+    return fetchAPI('/orders');
+  }
+  // Proxy through node0 to get local data from other nodes
+  try {
+    const result = await fetchAPI(`/proxy/node/${nodeName}/orders`);
+    console.log(`✅ ${nodeName} returned ${result?.length || 0} orders`);
+    return result;
+  } catch (error) {
+    console.error(`❌ Failed to fetch from ${nodeName}:`, error);
+    throw error;
+  }
 };
 
 /**
@@ -15464,6 +11766,50 @@ export const deleteOrder = async (orderId) => {
  */
 export const fetchReplicationStatus = async () => {
   return fetchAPI('/status/replication');
+};
+
+/**
+ * Fetch detailed metrics from all nodes
+ * @returns {Promise<Object>} Metrics from each node with applier and replicator stats
+ */
+export const fetchAllNodeMetrics = async () => {
+  // Fetch from the current node's /status/replication endpoint
+  // This endpoint already contains metrics for all nodes
+  try {
+    const response = await fetchAPI('/status/replication');
+    
+    // Transform the response to match our expected format
+    const metrics = {};
+    
+    if (response.nodes && Array.isArray(response.nodes)) {
+      response.nodes.forEach(node => {
+        const nodeKey = node.name.toLowerCase();
+        metrics[nodeKey] = {
+          node: node.name,
+          status: node.status,
+          applier: response.applier || {},
+          replicator: response.replicator || {},
+          role: node.role,
+        };
+      });
+    }
+    
+    // Also include the current node's metrics
+    if (response.node) {
+      const nodeKey = response.node.toLowerCase();
+      metrics[nodeKey] = {
+        node: response.node,
+        applier: response.applier || {},
+        replicator: response.replicator || {},
+        promoted: response.promoted,
+      };
+    }
+    
+    return metrics;
+  } catch (error) {
+    console.error('Failed to fetch node metrics:', error);
+    return {};
+  }
 };
 
 // ==================== HEALTH CHECK ====================
@@ -15533,7 +11879,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from asyncpg import Pool
@@ -15742,11 +12088,14 @@ async def get_order(pool: Pool, order_id: UUID) -> Optional[OrderRead]:
 
 
 async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:
-	"""Insert an op if absent. Returns True when actually inserted."""
+	"""Insert an op if absent for local replay.
 
-	# Convert payload dict to JSON string for JSONB column
-	payload_json = json.dumps(op_record.payload) if op_record.payload else json.dumps({})
-	
+	We intentionally reset the applied flag because every node should apply
+	remote operations independently, even when the originating node already
+	marked the op as applied.
+	"""
+
+	payload_json = json.dumps(op_record.payload or {})
 	result = await conn.execute(
 		"""
 		INSERT INTO op_log (
@@ -15763,8 +12112,8 @@ async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:
 		payload_json,
 		op_record.ts,
 		op_record.lamport,
-		op_record.applied,
-		op_record.applied_ts,
+		False,
+		None,
 	)
 	return result.endswith("INSERT 0 1")
 
@@ -15804,12 +12153,15 @@ async def fetch_ops_since(
 
 
 async def fetch_unapplied_ops(conn, limit: int = 100) -> List[OpRecord]:
+	"""Return unapplied ops locked for the caller's transaction."""
+
 	rows = await conn.fetch(
 		"""
 		SELECT op_id, origin_node, op_type, table_name, row_id, payload, ts, lamport, applied, applied_ts
 		FROM op_log
 		WHERE applied = false
 		ORDER BY lamport ASC, origin_node ASC
+		FOR UPDATE SKIP LOCKED
 		LIMIT $1
 		""",
 		limit,
@@ -15817,10 +12169,10 @@ async def fetch_unapplied_ops(conn, limit: int = 100) -> List[OpRecord]:
 	return [_row_to_op_record(row) for row in rows]
 
 
-async def apply_op_tx(conn, op_record: OpRecord) -> None:
+async def apply_op_tx(conn, op_record: OpRecord, use_transaction: bool = True) -> None:
 	"""Apply an operation idempotently and mark it as applied."""
 
-	async with conn.transaction():
+	async def _apply() -> None:
 		if op_record.op_type == "delete":
 			await conn.execute("DELETE FROM orders WHERE order_id=$1", op_record.row_id)
 		else:
@@ -15845,6 +12197,12 @@ async def apply_op_tx(conn, op_record: OpRecord) -> None:
 			)
 		await mark_op_applied(conn, op_record.op_id)
 
+	if use_transaction:
+		async with conn.transaction():
+			await _apply()
+	else:
+		await _apply()
+
 
 async def insert_ack(conn, op_id: UUID, node: str) -> None:
 	await conn.execute(
@@ -15867,164 +12225,39 @@ async def mark_op_applied(conn, op_id: UUID) -> None:
 		op_id,
 		_utcnow(),
 	)
-</file>
 
-<file path="README.md">
-# STADVDB MCO2
-notes:
-software installed in VMs done via:
-`sudo apt update`
-`sudo apt install -y postgresql postgresql-contrib python3 python3-venv python3-pip git gh`
 
-updated postgres from pg14 to pg18 (pg14 isnt in standard ubuntu library yet hence use link)
-`sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'`
-`sudo apt install gnupg gnupg1 gnupg2`
-`wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -`
-`sudo apt update`
-`sudo apt install postgresql-18`
-`sudo systemctl stop postgresql@14-main`
-`sudo systemctl disable postgresql@14-main`
-`sudo systemctl enable postgresql@18-main`
-`sudo systemctl start postgresql`
-`psql --version` should now be 18.1
+async def ensure_replication_metadata(conn) -> None:
+	await conn.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS replication_cursors (
+			node text PRIMARY KEY,
+			last_lamport bigint NOT NULL
+		)
+		"""
+	)
 
-`sudo -i -u postgres` to enter postgres user
-`psql` to enter postgres from user
 
-`\q` to exit postgres
-`exit` to get to root
+async def load_replication_cursors(conn) -> Dict[str, int]:
+	rows = await conn.fetch("SELECT node, last_lamport FROM replication_cursors")
+	return {row["node"]: int(row["last_lamport"]) for row in rows}
 
-`pg_lsclusters` to check port
-`root@STADVDB44-ServerX:~# sudo systemctl <start>/<stop>/<restart> postgresql` to restart/stop server
-`sudo nano /etc/postgresql/18/main/postgresql.conf` to configurate port et al
 
-`CREATE DATABASE nodexdb;` to create database
-`sudo -u postgres psql -c "SELECT version();"` to check database version
-`postgres-# psql -d nodexdb` to go to database
-`nodexdb=# \dt` to describe structure
-`nodexdb=# SELECT * FROM public.orders LIMIT 50;` to viewrows
+async def get_replication_cursor(conn, node: str) -> Optional[int]:
+	row = await conn.fetchrow("SELECT last_lamport FROM replication_cursors WHERE node=$1", node)
+	return int(row["last_lamport"]) if row else None
 
-To find a file within our cloned stadvdb folder:
-`postgres@STADVDB44-Server0:~$ find ~/STADVDB -name "truncated_dump.sql"`
 
-To use our sql dump and load to database:
-`postgres@STADVDB44-Server0:~$ psql -d nodexdb -f /root/STADVDB/MCO2.ETLs/truncated_dump.sql`
-`cd STADVDB; git pull` from root to update
-`rm -r STADVDB` to delete repo
-
-to reset schema for node1 and 2
-`psql -U postgres -d node2db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`
-`psql -U postgres -d node2db -f <(pg_dump -U postgres -d node1db --schema-only)`
-`psql -U postgres -d node2db -f /STADVDB/MCO2.ETLs/schema_only_dump.sql`
-
-initialize node1 and node2:
-`psql -U postgres -d node2db -c "\copy orders FROM '/STADVDB/MCO2.ETLs/node2.csv' CSV HEADER"`
-`ALTER TABLE orders ADD CONSTRAINT qty_1to5 CHECK (quantity <= 5);` on node1
-`ALTER TABLE orders ADD CONSTRAINT qty_6to10 CHECK (quantity > 5);` on node2
-
-install to py to all vms
-`sudo apt update`
-`sudo apt install -y python3.10 python3.10-venv python3-pip`
-`cd /path/to/your/checkout/replication`
-`python3 -m venv .venv`
-`source .venv/bin/activate`
-`pip install --upgrade pip`
-`pip install -r requirements.txt`
-
-to make a new user:
-`sudo -u postgres psql <<'SQL'`
-`CREATE ROLE app_user WITH LOGIN PASSWORD 'password'; GRANT CONNECT ON DATABASE node2db TO app_user; `
-`\c node2db`
-`GRANT USAGE ON SCHEMA public TO app_user; GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.orders TO app_user; GRANT SELECT, INSERT, UPDATE ON TABLE public.op_log TO app_user; GRANT SELECT, INSERT ON TABLE public.log_acknowledgements TO app_user; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO app_user;`
-
-env node0:
-export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node0db"
-export NODE_NAME="node0"
-export PEER_NODES="http://10.2.14.133:8001,http://10.2.14.134:8002"
-export POLL_INTERVAL="5"
-export DEFAULT_MASTER="node0"
-export PROMOTED="false"
-export PARTITION_RULE="5"
-
-env node1:
-export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node1db"
-export NODE_NAME="node1"
-export PEER_NODES="http://10.2.14.132:8000,http://10.2.14.134:8002"
-export DEFAULT_MASTER="node0"
-export PROMOTED="false"
-export PARTITION_RULE="5"
-
-env node2:
-export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node2db"
-export NODE_NAME="node2"
-export PEER_NODES="http://10.2.14.133:8001,http://10.2.14.134:8002"
-export POLL_INTERVAL="5"
-export DEFAULT_MASTER="node0"
-export PROMOTED="false"
-export PARTITION_RULE="5"
-
-start from root:
-# Node0 shell (on VM0)
-cd ~/STADVDB/replication
-export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node0db"
-export NODE_NAME="node0"
-export DEFAULT_MASTER="node0"
-export DEFAULT_MASTER_URL="http://VM0_IP:8000"
-# Peers are node1 + node2
-export PEER_NODES='[{"name":"node1","url":"http://VM1_IP:8001"},{"name":"node2","url":"http://VM2_IP:8002"}]'
-export POLL_INTERVAL="5"
-export APPLIER_INTERVAL="2"
-export PROMOTED="false"
-export PARTITION_RULE="5"
-
-curl http://localhost:8000/health
-
-source replication/.venv/bin/activate
-uvicorn replication.main:app --host 0.0.0.0 --port 8000
-
-==========================================================================================
-UUID TABLE SCHEMA FOR ALL NODES
-=========================================================================================
--- for uuid, use built-in (uuid functions)[https://www.postgresql.org/docs/current/functions-uuid.html] such as gen_random_uuid(), uuidv4(), or uuidv7(). perhaps need to install uuid-ossp.
-
-CREATE EXTENSION IF NOT EXISTS uuid-ossp;
-
-CREATE TABLE IF NOT EXISTS orders (
-  order_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  quantity int NOT NULL,
-  payload jsonb,         -- self contained data. This helps our oplog and makes a particular row/record be standalone.
-  created_at timestamptz DEFAULT now(),
-  updated_at timestamptz DEFAULT now()
-);
-=========================================================================================
-Logs
-=========================================================================================
-CREATE TABLE op_log (
-  op_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),  -- unique event id
-  origin_node text NOT NULL,                         -- 'node1','node2','node3'
-  op_type text NOT NULL,                             -- 'INSERT','UPDATE','DELETE'
-  table_name text NOT NULL,                          -- 'orders'
-  row_id uuid NOT NULL,                              -- the PK of the row affected
-  payload jsonb,                                     -- entire row (for insert/update)
-  ts timestamptz DEFAULT now(),
-  lamport bigint DEFAULT 0,                          -- Lamport timestamp (see below)
-  applied boolean DEFAULT false,
-  applied_ts timestamptz
-);
-CREATE INDEX idx_oplog_origin_ts ON op_log(origin_node, ts);
-CREATE INDEX idx_oplog_lamport ON op_log(lamport);
-
-===========================================================================================
-OPLOG_ACKNOWLEDGEMENTS
-===========================================================================================
-CREATE TABLE IF NOT EXISTS log_acknowledgements (
-  op_id uuid REFERENCES op_log(op_id) ON DELETE CASCADE,
-  node text NOT NULL,
-  ack_ts timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (op_id, node)
-);
-
-===========================================================================================
+async def upsert_replication_cursor(conn, node: str, lamport: int) -> None:
+	await conn.execute(
+		"""
+		INSERT INTO replication_cursors (node, last_lamport)
+		VALUES ($1, $2)
+		ON CONFLICT (node) DO UPDATE SET last_lamport = EXCLUDED.last_lamport
+		""",
+		node,
+		lamport,
+	)
 </file>
 
 </files>
