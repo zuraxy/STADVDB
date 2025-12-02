@@ -23,8 +23,8 @@ class RunOrchestrationRequest(BaseModel):
     order_id: Optional[str] = Field(default=None)
     new_value_1: Optional[int] = Field(default=None)
     new_value_2: Optional[int] = Field(default=None)
-    node_x: str = Field(default="node0", regex=r"^node[0-2]$")
-    node_y: str = Field(default="node1", regex=r"^node[0-2]$")
+    node_x: str = Field(default="node0", pattern=r"^node[0-2]$")  # pydantic v2: use pattern instead of regex
+    node_y: str = Field(default="node1", pattern=r"^node[0-2]$")  # pydantic v2: use pattern instead of regex
 
     @validator("order_id")
     def _blank_to_none(cls, value: Optional[str]) -> Optional[str]:  # noqa: N805
