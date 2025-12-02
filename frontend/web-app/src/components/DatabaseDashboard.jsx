@@ -144,23 +144,8 @@ export function DatabaseDashboard() {
     fetchData();
   }, []);
 
-  useEffect(() => {
-    // Check node status every 5 seconds
-    const statusInterval = setInterval(() => {
-      fetchReplicationStatus()
-        .then((statusResponse) => applyReplicationStatus(statusResponse))
-        .catch((err) => console.error('Failed to check node status:', err));
-    }, 5000);
-    return () => clearInterval(statusInterval);
-  }, [applyReplicationStatus]);
-
-  useEffect(() => {
-    // Refresh all data (including node-specific data) every 10 seconds
-    const dataInterval = setInterval(() => {
-      fetchData();
-    }, 10000);
-    return () => clearInterval(dataInterval);
-  }, []);
+  // Auto-refresh removed due to high query limit causing long fetch times
+  // Users can manually refresh using the refresh button
 
   // Helper function to get actual node data
   const getNodeData = (nodeId) => {
