@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 
 from ..config import get_settings
 from ..db import get_pool
@@ -73,3 +73,27 @@ async def replication_status(request: Request) -> dict:
 async def toggle_promotion(body: PromoteToggle, request: Request) -> dict:
 	request.app.state.promoted = body.promote
 	return {"promoted": request.app.state.promoted}
+
+
+@router.get("/proxy/node/{node_name}/orders")
+async def proxy_node_orders(node_name: str, request: Request) -> list:
+	"""Proxy request to get local orders from a specific peer node"""
+	settings = get_settings()
+	
+	# Find the peer node URL
+	peer_url = None
+	for peer in settings.peer_nodes:
+		if peer.name.lower() == node_name.lower():
+			peer_url = peer.base_url
+			break
+	
+	if not peer_url:
+		raise HTTPException(status.HTTP_404_NOT_FOUND, detail=f"Node {node_name} not found in peer list")
+	
+	# Fetch from peer's local endpoint
+	client = request.app.state.http_client
+	try:
+		orders = await client.get_json(f"{peer_url}/orders/local/all")
+		return orders
+	except Exception as e:
+		raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=f"Failed to reach node {node_name}: {str(e)}")

@@ -37,6 +37,28 @@ export const fetchAllOrders = async () => {
 };
 
 /**
+ * Fetch orders from a specific node's local database
+ * @param {string} nodeName - Name of the node (e.g., 'node1', 'node2')
+ * @returns {Promise<Array>} Array of orders from that node
+ */
+export const fetchNodeOrders = async (nodeName) => {
+  console.log(`📡 Fetching orders from ${nodeName}...`);
+  if (nodeName === 'node0') {
+    // Node0 is the master, fetch normally
+    return fetchAPI('/orders');
+  }
+  // Proxy through node0 to get local data from other nodes
+  try {
+    const result = await fetchAPI(`/proxy/node/${nodeName}/orders`);
+    console.log(`✅ ${nodeName} returned ${result?.length || 0} orders`);
+    return result;
+  } catch (error) {
+    console.error(`❌ Failed to fetch from ${nodeName}:`, error);
+    throw error;
+  }
+};
+
+/**
  * Fetch a single order by ID
  * @param {string} orderId - UUID of the order
  * @returns {Promise<Object|null>} Order object or null if not found
@@ -106,30 +128,43 @@ export const fetchReplicationStatus = async () => {
  * @returns {Promise<Object>} Metrics from each node with applier and replicator stats
  */
 export const fetchAllNodeMetrics = async () => {
-  const nodeUrls = {
-    node0: 'http://ccscloud.dlsu.edu.ph:60232/api',
-    node1: 'http://10.2.14.133:8001',
-    node2: 'http://10.2.14.134:8002',
-  };
-
-  const results = {};
-  
-  await Promise.all(
-    Object.entries(nodeUrls).map(async ([nodeId, baseUrl]) => {
-      try {
-        const response = await fetch(`${baseUrl}/status/replication`);
-        if (response.ok) {
-          results[nodeId] = await response.json();
-        } else {
-          results[nodeId] = { error: `HTTP ${response.status}` };
-        }
-      } catch (error) {
-        results[nodeId] = { error: error.message };
-      }
-    })
-  );
-
-  return results;
+  // Fetch from the current node's /status/replication endpoint
+  // This endpoint already contains metrics for all nodes
+  try {
+    const response = await fetchAPI('/status/replication');
+    
+    // Transform the response to match our expected format
+    const metrics = {};
+    
+    if (response.nodes && Array.isArray(response.nodes)) {
+      response.nodes.forEach(node => {
+        const nodeKey = node.name.toLowerCase();
+        metrics[nodeKey] = {
+          node: node.name,
+          status: node.status,
+          applier: response.applier || {},
+          replicator: response.replicator || {},
+          role: node.role,
+        };
+      });
+    }
+    
+    // Also include the current node's metrics
+    if (response.node) {
+      const nodeKey = response.node.toLowerCase();
+      metrics[nodeKey] = {
+        node: response.node,
+        applier: response.applier || {},
+        replicator: response.replicator || {},
+        promoted: response.promoted,
+      };
+    }
+    
+    return metrics;
+  } catch (error) {
+    console.error('Failed to fetch node metrics:', error);
+    return {};
+  }
 };
 
 // ==================== HEALTH CHECK ====================

@@ -61,6 +61,14 @@ async def list_orders(request: Request):
 	return response
 
 
+@router.get("/orders/local/all", response_model=list[OrderRead])
+async def list_local_orders(request: Request):
+	"""Get orders from THIS node's local database only (no forwarding)"""
+	pool = get_pool()
+	orders, _ = await crud.list_orders(pool, page=1, limit=10000)
+	return orders
+
+
 @router.get("/orders/{order_id}", response_model=Optional[OrderRead])
 async def read_order(order_id: UUID, request: Request, local: bool = False) -> Optional[OrderRead]:
 	settings = get_settings()
