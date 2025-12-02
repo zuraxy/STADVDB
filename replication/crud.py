@@ -216,12 +216,15 @@ async def get_order(pool: Pool, order_id: UUID) -> Optional[OrderRead]:
 async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:
 	"""Insert an op if absent. Returns True when actually inserted."""
 
+	# Convert payload dict to JSON string for JSONB column
+	payload_json = json.dumps(op_record.payload) if op_record.payload else json.dumps({})
+	
 	result = await conn.execute(
 		"""
 		INSERT INTO op_log (
 			op_id, origin_node, op_type, table_name, row_id, payload,
 			ts, lamport, applied, applied_ts
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10)
 		ON CONFLICT (op_id) DO NOTHING
 		""",
 		op_record.op_id,
@@ -229,7 +232,7 @@ async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:
 		op_record.op_type,
 		op_record.table_name,
 		op_record.row_id,
-		op_record.payload,
+		payload_json,
 		op_record.ts,
 		op_record.lamport,
 		op_record.applied,
