@@ -16,6 +16,9 @@ from replication.models import OpRecord
 class DummyConn:
 	"""Simple stand-in for an asyncpg connection."""
 
+	def __init__(self):
+		self.local_rows = {}
+
 	async def execute(self, *_, **__):
 		return "EXECUTE"
 
@@ -24,6 +27,15 @@ class DummyConn:
 
 	async def fetchval(self, *_, **__):  # pragma: no cover - not used in unit tests
 		return 0
+
+	async def fetchrow(self, query, *args, **__):
+		needle = query.lower()
+		if "from orders" in needle and "where order_id" in needle and args:
+			quantity = self.local_rows.get(args[0])
+			if quantity is None:
+				return None
+			return {"quantity": quantity}
+		return None
 
 	@asynccontextmanager
 	async def transaction(self):
@@ -37,6 +49,10 @@ class DummyPool:
 	@asynccontextmanager
 	async def acquire(self):
 		yield self._conn
+
+	@property
+	def conn(self) -> DummyConn:
+		return self._conn
 
 
 @pytest.fixture
