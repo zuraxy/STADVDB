@@ -2,66 +2,75 @@
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import List, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from ..orchestrator import CustomClientScript, IsolationLevel, OrchestrationInput, StatementPlan
+from ..orchestrator import (
+    IsolationLevel,
+    OrchestrationInput,
+    ScenarioType,
+    TransactionActorInput,
+)
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
 
-class CustomStatementModel(BaseModel):
-    sql: str
-    params: List[Any] = Field(default_factory=list)
-    delay_after: Optional[float] = Field(default=None, ge=0)
-    description: Optional[str] = None
-
-    def to_plan(self) -> StatementPlan:
-        return StatementPlan(
-            sql=self.sql,
-            params=tuple(self.params),
-            delay_after=self.delay_after or 0.0,
-            description=self.description,
-        )
-
-
-class CustomClientModel(BaseModel):
+class TransactionActorModel(BaseModel):
+    """Pydantic model for a single transaction actor."""
+    name: str = Field(default="tx_a", min_length=1, max_length=32)
     node: str = Field(default="node0")
-    statements: List[CustomStatementModel]
+    isolation_level: IsolationLevel = IsolationLevel.READ_COMMITTED
+    delay_seconds: float = Field(default=0.0, ge=0.0, le=30.0)
+    new_quantity: Optional[int] = None
 
-    def to_script(self) -> CustomClientScript:
-        return CustomClientScript(
+    def to_input(self) -> TransactionActorInput:
+        return TransactionActorInput(
+            name=self.name.strip() or "actor",
             node=self.node.lower(),
-            statements=[stmt.to_plan() for stmt in self.statements],
+            isolation_level=self.isolation_level,
+            delay_seconds=self.delay_seconds,
+            new_quantity=self.new_quantity,
         )
 
 
 class RunOrchestrationRequest(BaseModel):
-    scenario: str = Field(
-        pattern="^(Case1_readers_only|Case2_writer_readers|Case3_concurrent_writers|custom)$"
-    )
-    isolation_level: IsolationLevel = IsolationLevel.READ_COMMITTED
-    parallel_clients: int = Field(default=2, ge=1, le=16)
-    custom_transactions: Optional[List[CustomClientModel]] = None
+    """Request model for starting an orchestration run."""
+    scenario: ScenarioType
+    order_id: Optional[UUID] = None
+    actors: List[TransactionActorModel]
+
+    @model_validator(mode="after")
+    def validate_actors(self):
+        scenario = self.scenario
+        actors = self.actors or []
+        if scenario is None:
+            return self
+        expected = scenario.roles
+        if len(actors) != len(expected):
+            raise ValueError(
+                f"Scenario {scenario.value} requires exactly {len(expected)} actors"
+            )
+        for actor, role in zip(actors, expected):
+            if role == "write" and actor.new_quantity is None:
+                raise ValueError(
+                    f"Actor '{actor.name}' must include new_quantity for write operations"
+                )
+        return self
 
     def to_input(self) -> OrchestrationInput:
-        custom = None
-        if self.scenario == "custom":
-            if not self.custom_transactions:
-                raise ValueError("Custom scenario requires custom_transactions payload")
-            custom = [client.to_script() for client in self.custom_transactions]
         return OrchestrationInput(
             scenario=self.scenario,
-            isolation_level=self.isolation_level,
-            parallel_clients=self.parallel_clients,
-            custom_transactions=custom,
+            actors=[actor.to_input() for actor in self.actors],
+            order_id=self.order_id,
         )
 
 
 @router.post("/run", status_code=status.HTTP_202_ACCEPTED)
 async def run_orchestration(request: Request, payload: RunOrchestrationRequest) -> dict:
+    """Start a new orchestration run with the specified scenario and actors."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Orchestrator not configured")
@@ -74,6 +83,7 @@ async def run_orchestration(request: Request, payload: RunOrchestrationRequest) 
 
 @router.get("/status/{run_id}")
 async def orchestration_status(request: Request, run_id: str) -> dict:
+    """Get the current status of an orchestration run."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Orchestrator not configured")
@@ -85,6 +95,7 @@ async def orchestration_status(request: Request, run_id: str) -> dict:
 
 @router.get("/logs/{run_id}")
 async def orchestration_logs(request: Request, run_id: str) -> dict:
+    """Get the event logs for an orchestration run."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Orchestrator not configured")
@@ -96,6 +107,7 @@ async def orchestration_logs(request: Request, run_id: str) -> dict:
 
 @router.post("/abort/{run_id}")
 async def orchestration_abort(request: Request, run_id: str) -> dict:
+    """Abort an in-progress orchestration run."""
     orchestrator = getattr(request.app.state, "orchestrator", None)
     if orchestrator is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Orchestrator not configured")
