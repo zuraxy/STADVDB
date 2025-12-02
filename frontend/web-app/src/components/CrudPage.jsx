@@ -209,7 +209,6 @@ export function CrudPage() {
                   value={formData.quantity}
                   onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
                   min="1"
-                  data-testid="create-quantity-input"
                 />
               </div>
               <div>
@@ -295,7 +294,6 @@ export function CrudPage() {
                               onChange={(e) => setFormData({ ...formData, quantity: e.target.value })}
                               className="w-32"
                               min="1"
-                              data-testid="edit-quantity-input"
                             />
                           ) : (
                             <Badge variant="secondary">{order.quantity}</Badge>
