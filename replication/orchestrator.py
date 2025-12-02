@@ -14,7 +14,26 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from .config import Settings
-from .utils.iso_map import iso_clause_for, iso_note_for
+
+try:  # pragma: no cover - fallback for nodes that lack the helper file
+	from .utils.iso_map import iso_clause_for, iso_note_for
+except ModuleNotFoundError:  # pragma: no cover - defensive path for older deployments
+	LOGGER = logging.getLogger(__name__)
+	LOGGER.warning("replication.utils.iso_map missing; falling back to inline mapping")
+
+	def iso_clause_for(level: str) -> str:
+		mapping = {
+			"READ_UNCOMMITTED": "READ COMMITTED",
+			"READ_COMMITTED": "READ COMMITTED",
+			"REPEATABLE_READ": "REPEATABLE READ",
+			"SERIALIZABLE": "SERIALIZABLE",
+		}
+		return mapping.get(level, "READ COMMITTED")
+
+	def iso_note_for(level: str) -> Optional[str]:
+		if level == "READ_UNCOMMITTED":
+			return "PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED."
+		return None
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_START_QUANTITY = 10
@@ -297,31 +316,30 @@ class TransactionOrchestrator:
 			return parameters.order_id, DEFAULT_START_QUANTITY
 		primary = self._primary_node().lower()
 		dsn = self._node_dsns.get(primary)
-		if not dsn:
-			raise RuntimeError(f"Missing DSN for node {primary}")
-		conn = await self._connection_factory(dsn)
-		try:
-			row = await conn.fetchrow(
-				"SELECT order_id, quantity FROM orders ORDER BY updated_at DESC LIMIT 1"
-			)
-			if row:
-				return row["order_id"], row["quantity"]
-			order_id = uuid4()
-			await self._create_order(order_id, DEFAULT_START_QUANTITY)
-			return order_id, DEFAULT_START_QUANTITY
-		finally:
-			await conn.close()
+		import asyncpg
 
-	async def _locate_order(self, order_id: UUID) -> Optional[Tuple[UUID, int]]:
-		for node, dsn in self._node_dsns.items():
-			if not dsn:
-				continue
-			conn = await self._connection_factory(dsn)
-			try:
-				row = await conn.fetchrow(
-					"SELECT order_id, quantity FROM orders WHERE order_id = $1",
-					order_id,
-				)
+		from .config import Settings
+
+		LOGGER = logging.getLogger(__name__)
+
+		try:  # pragma: no cover - fallback for nodes that lack the helper file
+			from .utils.iso_map import iso_clause_for, iso_note_for
+		except ModuleNotFoundError:  # pragma: no cover - defensive path for older deployments
+			LOGGER.warning("replication.utils.iso_map missing; using inline isolation map")
+
+			def iso_clause_for(level: str) -> str:
+				mapping = {
+					"READ_UNCOMMITTED": "READ COMMITTED",
+					"READ_COMMITTED": "READ COMMITTED",
+					"REPEATABLE_READ": "REPEATABLE READ",
+					"SERIALIZABLE": "SERIALIZABLE",
+				}
+				return mapping.get(level, "READ COMMITTED")
+
+			def iso_note_for(level: str) -> Optional[str]:
+				if level == "READ_UNCOMMITTED":
+					return "PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED."
+				return None
 				if row:
 					return row["order_id"], row["quantity"]
 			finally:
