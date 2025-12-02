@@ -224,3 +224,30 @@ export const abortOrchestratorRun = async (runId) => {
     method: 'POST',
   });
 };
+
+/**
+ * Subscribe to the orchestrator stream (Server-Sent Events).
+ * Caller is responsible for closing the returned EventSource when finished.
+ */
+export const subscribeToOrchestratorStream = (runId, { onMessage, onError } = {}) => {
+  if (typeof EventSource === 'undefined') {
+    console.warn('EventSource not supported in this environment.');
+    return null;
+  }
+  const streamUrl = `${API_BASE_URL}/orchestrator/stream/${runId}`.replace('//orchestrator', '/orchestrator');
+  const source = new EventSource(streamUrl);
+  source.onmessage = (event) => {
+    if (!onMessage) return;
+    try {
+      const payload = JSON.parse(event.data);
+      onMessage(payload);
+    } catch (err) {
+      console.error('Failed to parse orchestrator stream payload', err);
+    }
+  };
+  source.onerror = (err) => {
+    console.error('Orchestrator stream error', err);
+    onError?.(err);
+  };
+  return source;
+};

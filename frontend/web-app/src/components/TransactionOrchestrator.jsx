@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, FileText, Play, RefreshCw, Shield, StopCircle } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
@@ -11,31 +11,26 @@ import {
   getOrchestratorLogs,
   getOrchestratorStatus,
   runOrchestratorScenario,
+  subscribeToOrchestratorStream,
 } from '../services/api';
 
 const scenarioOptions = [
   {
-    id: 'READ_READ',
-    label: 'Scenario · Read vs Read',
-    description: 'Two concurrent readers observe the same row and hold locks for optional delays.',
+    id: 'read_read',
+    label: 'Readers vs Readers',
+    description: 'Two+ readers issue BEGIN/SELECT/pg_sleep/SELECT to visualize snapshot semantics.',
   },
   {
-    id: 'READ_WRITE',
-    label: 'Scenario · Read vs Write',
-    description: 'A reader races a writer against the same order to highlight non-repeatable reads.',
+    id: 'read_write',
+    label: 'Writer vs Readers',
+    description: 'A writer updates Node X while readers on Node Y observe visibility differences.',
   },
   {
-    id: 'WRITE_WRITE',
-    label: 'Scenario · Write vs Write',
-    description: 'Two writers lock and update the same row to surface serialization behavior.',
+    id: 'write_write',
+    label: 'Writer vs Writer',
+    description: 'Two writers concurrently update the same row to provoke serialization conflicts.',
   },
 ];
-
-const scenarioRoles = {
-  READ_READ: ['read', 'read'],
-  READ_WRITE: ['read', 'write'],
-  WRITE_WRITE: ['write', 'write'],
-};
 
 const isolationLevels = [
   { id: 'READ_UNCOMMITTED', label: 'Read Uncommitted' },
@@ -44,11 +39,7 @@ const isolationLevels = [
   { id: 'SERIALIZABLE', label: 'Serializable' },
 ];
 
-const nodeOptions = [
-  { id: 'node0', label: 'Node 0 · Primary' },
-  { id: 'node1', label: 'Node 1 · Fragment 1-5' },
-  { id: 'node2', label: 'Node 2 · Fragment 6-10' },
-];
+const nodeOptions = ['node0', 'node1', 'node2'];
 
 const statusTone = {
   running: 'bg-blue-100 text-blue-800 border-blue-200',
@@ -66,41 +57,41 @@ const clientTone = {
 };
 
 export function TransactionOrchestrator() {
-  const [scenario, setScenario] = useState('READ_READ');
-  const [orderIdInput, setOrderIdInput] = useState('');
-  const [actors, setActors] = useState([
-    { name: 'tx_a', node: 'node0', isolationLevel: 'READ_COMMITTED', delaySeconds: 0.1, newQuantity: '' },
-    { name: 'tx_b', node: 'node0', isolationLevel: 'READ_COMMITTED', delaySeconds: 0.1, newQuantity: '' },
-  ]);
+  const [scenario, setScenario] = useState('read_read');
+  const [isolation, setIsolation] = useState('READ_COMMITTED');
+  const [parallelClients, setParallelClients] = useState(2);
+  const [orderId, setOrderId] = useState('');
+  const [nodeX, setNodeX] = useState('node0');
+  const [nodeY, setNodeY] = useState('node1');
+  const [newValue1, setNewValue1] = useState('');
+  const [newValue2, setNewValue2] = useState('');
   const [runId, setRunId] = useState(null);
   const [statusSnapshot, setStatusSnapshot] = useState(null);
   const [logs, setLogs] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [streamError, setStreamError] = useState(null);
+  const streamRef = useRef(null);
 
   const activeScenario = useMemo(() => scenarioOptions.find((opt) => opt.id === scenario), [scenario]);
-  const activeRoles = scenarioRoles[scenario] || scenarioRoles.READ_READ;
-
-  const updateActor = (index, field, value) => {
-    setActors((prev) => {
-      const clone = [...prev];
-      clone[index] = { ...clone[index], [field]: value };
-      return clone;
-    });
-  };
+  const requiresWriter = scenario !== 'read_read';
+  const requiresSecondWriter = scenario === 'write_write';
 
   const fetchRunData = useCallback(
     async (targetRunId) => {
       const effectiveRunId = targetRunId || runId;
       if (!effectiveRunId) return;
       try {
+        const hasLiveStream = Boolean(streamRef.current);
         const [statusPayload, logPayload] = await Promise.all([
           getOrchestratorStatus(effectiveRunId),
-          getOrchestratorLogs(effectiveRunId),
+          hasLiveStream ? Promise.resolve({ logs: [] }) : getOrchestratorLogs(effectiveRunId),
         ]);
         setStatusSnapshot(statusPayload);
-        setLogs(logPayload.logs || []);
+        if (!hasLiveStream) {
+          setLogs(logPayload.logs || []);
+        }
         if (statusPayload.status !== 'running') {
           setAutoRefresh(false);
         }
@@ -112,10 +103,46 @@ export function TransactionOrchestrator() {
     [runId],
   );
 
+  const attachStream = useCallback(
+    (targetRunId) => {
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
+      const source = subscribeToOrchestratorStream(targetRunId, {
+        onMessage: (entry) => {
+          setLogs((prev) => [...prev.slice(-199), entry]);
+        },
+        onError: () => {
+          setStreamError('Live stream interrupted. Falling back to polling.');
+          if (streamRef.current) {
+            streamRef.current.close();
+            streamRef.current = null;
+          }
+        },
+      });
+      if (source) {
+        streamRef.current = source;
+        setStreamError(null);
+      } else {
+        setStreamError('Live stream unavailable in this browser.');
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!runId) return;
     fetchRunData(runId);
   }, [runId, fetchRunData]);
+
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.close();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!runId || !autoRefresh) {
@@ -125,39 +152,46 @@ export function TransactionOrchestrator() {
     return () => clearInterval(interval);
   }, [autoRefresh, fetchRunData, runId]);
 
+  useEffect(() => {
+    if (statusSnapshot?.status && statusSnapshot.status !== 'running' && streamRef.current) {
+      streamRef.current.close();
+      streamRef.current = null;
+    }
+  }, [statusSnapshot]);
+
   const handleRun = async () => {
     setError(null);
     setIsSubmitting(true);
     try {
-      const actorPayload = activeRoles.map((role, idx) => {
-        const actor = actors[idx] || {};
-        const baseName = role === 'read' ? `reader_${idx + 1}` : `writer_${idx + 1}`;
-        const name = (actor.name || baseName).trim() || baseName;
-        const delaySeconds = Number(actor.delaySeconds) || 0;
-        const payload = {
-          name,
-          node: actor.node || 'node0',
-          isolation_level: actor.isolationLevel || 'READ_COMMITTED',
-          delay_seconds: delaySeconds,
-        };
-        if (role === 'write') {
-          if (actor.newQuantity === '' || actor.newQuantity === null || Number.isNaN(Number(actor.newQuantity))) {
-            throw new Error(`${name} requires a new quantity value`);
-          }
-          payload.new_quantity = Number(actor.newQuantity);
-        }
-        return payload;
-      });
+      const normalizedClients = Math.min(16, Math.max(2, Number(parallelClients) || 2));
       const payload = {
         scenario,
-        order_id: orderIdInput ? orderIdInput.trim() : null,
-        actors: actorPayload,
+        isolation_level: isolation,
+        parallel_clients: normalizedClients,
+        order_id: orderId.trim() || undefined,
+        node_x: nodeX,
+        node_y: nodeY,
       };
+      if (scenario !== 'read_read') {
+        const parsedValue1 = newValue1 === '' ? undefined : Number(newValue1);
+        if (Number.isNaN(parsedValue1)) {
+          throw new Error('New Value 1 must be numeric when provided');
+        }
+        payload.new_value_1 = parsedValue1;
+      }
+      if (scenario === 'write_write') {
+        const parsedValue2 = newValue2 === '' ? undefined : Number(newValue2);
+        if (Number.isNaN(parsedValue2)) {
+          throw new Error('New Value 2 must be numeric when provided');
+        }
+        payload.new_value_2 = parsedValue2;
+      }
       const response = await runOrchestratorScenario(payload);
       setRunId(response.run_id);
       setStatusSnapshot(null);
       setLogs([]);
       setAutoRefresh(true);
+      attachStream(response.run_id);
       await fetchRunData(response.run_id);
     } catch (err) {
       setError(err.message || 'Failed to start orchestrator run');
@@ -170,6 +204,10 @@ export function TransactionOrchestrator() {
     if (!runId) return;
     try {
       await abortOrchestratorRun(runId);
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
       setAutoRefresh(true);
       await fetchRunData(runId);
     } catch (err) {
@@ -182,12 +220,13 @@ export function TransactionOrchestrator() {
     if (!statusSnapshot?.clients) return [];
     return Object.entries(statusSnapshot.clients).sort(([a], [b]) => a.localeCompare(b));
   }, [statusSnapshot]);
-  const isolationOverview = statusSnapshot?.result_summary?.isolation_overview || {};
-  const readUncommittedSelected = actors.some((actor) => actor.isolationLevel === 'READ_UNCOMMITTED');
-  const orchestrationNote = statusSnapshot?.result_summary?.read_uncommitted_note;
-  const isolationNote = orchestrationNote || (readUncommittedSelected
-    ? 'PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED to stay standards compliant.'
-    : null);
+  const isolationDisplayLabel = useMemo(() => {
+    if (statusSnapshot?.result_summary?.isolation_level) {
+      return statusSnapshot.result_summary.isolation_level;
+    }
+    const selected = isolationLevels.find((lvl) => lvl.id === isolation);
+    return selected ? selected.label : isolation;
+  }, [isolation, statusSnapshot]);
   const finalStateEntries = useMemo(() => {
     const snapshots = statusSnapshot?.result_summary?.final_states;
     if (!snapshots) return [];
@@ -195,9 +234,21 @@ export function TransactionOrchestrator() {
   }, [statusSnapshot]);
   const serializationConflicts = statusSnapshot?.result_summary?.serialization_conflicts || [];
 
+  const isolationNote =
+    isolation === 'READ_UNCOMMITTED'
+      ? 'PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED to stay standards compliant.'
+      : null;
+
   const formatLogDetails = (details) => {
     if (!details || Object.keys(details).length === 0) {
       return '—';
+    }
+    if (details.client_id && details.action) {
+      const base = `${details.client_id} · ${details.action}`;
+      if (details.error) {
+        return `${base} · ${details.error}`;
+      }
+      return base;
     }
     if (details.description) {
       return details.description;
@@ -208,6 +259,23 @@ export function TransactionOrchestrator() {
         return `${key}: ${text}`;
       })
       .join(' · ');
+  };
+
+  const summarizeStep = (step) => {
+    if (!step) return '';
+    if (step.error) {
+      return `${step.action}: ${step.error}`;
+    }
+    if (Array.isArray(step.result) && step.result.length > 0) {
+      const first = step.result[0];
+      if (first?.quantity !== undefined) {
+        return `${step.action}: qty ${first.quantity}`;
+      }
+    }
+    if (typeof step.result === 'string') {
+      return `${step.action}: ${step.result}`;
+    }
+    return step.action;
   };
 
   return (
@@ -257,28 +325,119 @@ export function TransactionOrchestrator() {
             </Select>
           </div>
           <div className="space-y-2">
+            <Label htmlFor="isolation" className="text-slate-700 font-medium">Isolation Level</Label>
+            <Select value={isolation} onValueChange={setIsolation}>
+              <SelectTrigger id="isolation" className="bg-white border-slate-300">
+                <SelectValue placeholder="Pick isolation" />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                {isolationLevels.map((level) => (
+                  <SelectItem key={level.id} value={level.id}>
+                    {level.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {isolationNote && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 flex items-center gap-2">
+                <Shield className="w-3 h-3" />
+                {isolationNote}
+              </p>
+            )}
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="parallelClients" className="text-slate-700 font-medium">Parallel Clients</Label>
+            <Input
+              id="parallelClients"
+              type="number"
+              min={2}
+              max={16}
+              value={parallelClients}
+              onChange={(e) => setParallelClients(Math.max(2, Math.min(16, Number(e.target.value) || 2)))}
+              className="bg-white border-slate-300"
+            />
+            <p className="text-xs text-muted-foreground">2-16 concurrent scripts (writer included).</p>
+          </div>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="space-y-2">
             <Label htmlFor="orderId" className="text-slate-700 font-medium">Order ID (optional)</Label>
             <Input
               id="orderId"
-              value={orderIdInput}
-              onChange={(e) => setOrderIdInput(e.target.value)}
-              placeholder="Leave blank to auto-select latest"
+              value={orderId}
+              onChange={(e) => setOrderId(e.target.value)}
+              placeholder="Leave blank to auto-provision"
               className="bg-white border-slate-300"
             />
             <p className="text-xs text-muted-foreground">Provide a UUID to target a specific order.</p>
           </div>
           <div className="space-y-2">
-            <Label className="text-slate-700 font-medium">Read Uncommitted note</Label>
-            {isolationNote ? (
-              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 flex items-center gap-2">
-                <Shield className="w-3 h-3" />
-                {isolationNote}
-              </p>
-            ) : (
-              <p className="text-xs text-muted-foreground">Shown when any actor requests READ UNCOMMITTED.</p>
-            )}
+            <Label htmlFor="nodeX" className="text-slate-700 font-medium">Node X (Writer / Primary)</Label>
+            <Select value={nodeX} onValueChange={setNodeX}>
+              <SelectTrigger id="nodeX" className="bg-white border-slate-300">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                {nodeOptions.map((node) => (
+                  <SelectItem key={node} value={node}>
+                    {node.toUpperCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="nodeY" className="text-slate-700 font-medium">Node Y (Readers / Secondary)</Label>
+            <Select value={nodeY} onValueChange={setNodeY}>
+              <SelectTrigger id="nodeY" className="bg-white border-slate-300">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                {nodeOptions.map((node) => (
+                  <SelectItem key={node} value={node}>
+                    {node.toUpperCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
+
+        {requiresWriter && (
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="newValue1" className="text-slate-700 font-medium">
+                {scenario === 'read_write' ? 'Writer target quantity' : 'Writer A increment'}
+              </Label>
+              <Input
+                id="newValue1"
+                type="number"
+                value={newValue1}
+                onChange={(e) => setNewValue1(e.target.value)}
+                placeholder={scenario === 'read_write' ? 'e.g., 42' : 'e.g., 1'}
+                className="bg-white border-slate-300"
+              />
+              <p className="text-xs text-muted-foreground">
+                Applies to Node X client ({scenario === 'read_write' ? 'absolute set' : 'increment'}).
+              </p>
+            </div>
+            {requiresSecondWriter && (
+              <div className="space-y-2">
+                <Label htmlFor="newValue2" className="text-slate-700 font-medium">Writer B increment</Label>
+                <Input
+                  id="newValue2"
+                  type="number"
+                  value={newValue2}
+                  onChange={(e) => setNewValue2(e.target.value)}
+                  placeholder="e.g., 1"
+                  className="bg-white border-slate-300"
+                />
+                <p className="text-xs text-muted-foreground">Applied to Node Y writer.</p>
+              </div>
+            )}
+          </div>
+        )}
 
         {activeScenario?.description && (
           <div className="rounded-md border border-cyan-100 bg-cyan-50 px-4 py-3 text-sm text-cyan-800 flex items-start gap-3">
@@ -290,79 +449,17 @@ export function TransactionOrchestrator() {
           </div>
         )}
 
-        <div className="grid gap-4 md:grid-cols-2">
-          {actors.map((actor, idx) => {
-            const role = activeRoles[idx] ?? 'read';
-            const writeMode = role === 'write';
-            return (
-              <div key={idx} className="border rounded-lg p-4 space-y-3 bg-white">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-slate-700">{`Transaction ${idx === 0 ? 'A' : 'B'}`} · {role.toUpperCase()}</p>
-                  <Badge variant="outline" className="bg-cyan-50 text-cyan-700 border-cyan-200">{role}</Badge>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase text-slate-500">Label</Label>
-                  <Input value={actor.name} onChange={(e) => updateActor(idx, 'name', e.target.value)} className="bg-white border-slate-300" />
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase text-slate-500">Node</Label>
-                  <Select value={actor.node} onValueChange={(value) => updateActor(idx, 'node', value)}>
-                    <SelectTrigger className="bg-white border-slate-300">
-                      <SelectValue placeholder="Choose node" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white">
-                      {nodeOptions.map((node) => (
-                        <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase text-slate-500">Isolation Level</Label>
-                  <Select value={actor.isolationLevel} onValueChange={(value) => updateActor(idx, 'isolationLevel', value)}>
-                    <SelectTrigger className="bg-white border-slate-300">
-                      <SelectValue placeholder="Pick isolation" />
-                    </SelectTrigger>
-                    <SelectContent className="bg-white">
-                      {isolationLevels.map((level) => (
-                        <SelectItem key={level.id} value={level.id}>{level.label}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs uppercase text-slate-500">pg_sleep delay (seconds)</Label>
-                  <Input
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={actor.delaySeconds}
-                    onChange={(e) => updateActor(idx, 'delaySeconds', e.target.value)}
-                    className="bg-white border-slate-300"
-                  />
-                </div>
-                {writeMode && (
-                  <div className="space-y-2">
-                    <Label className="text-xs uppercase text-slate-500">Commit quantity</Label>
-                    <Input
-                      type="number"
-                      value={actor.newQuantity}
-                      onChange={(e) => updateActor(idx, 'newQuantity', e.target.value)}
-                      placeholder="e.g., 5"
-                      className="bg-white border-slate-300"
-                    />
-                    <p className="text-xs text-muted-foreground">Required for write transactions.</p>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
         {error && (
           <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 mt-0.5" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {streamError && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 flex items-start gap-2">
+            <Shield className="w-4 h-4 mt-0.5" />
+            <span>{streamError}</span>
           </div>
         )}
 
@@ -422,21 +519,10 @@ export function TransactionOrchestrator() {
                 </div>
               </div>
 
-                <div className="space-y-2">
+              <div className="space-y-2">
                 <p className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                  <Shield className="w-4 h-4" /> Isolation Overview
+                  <Shield className="w-4 h-4" /> Isolation: {isolationDisplayLabel}
                 </p>
-                <div className="grid gap-2 md:grid-cols-2">
-                  {Object.entries(isolationOverview).map(([actorId, iso]) => (
-                    <div key={actorId} className="p-3 border rounded-md bg-slate-50">
-                      <p className="text-xs uppercase text-slate-500">{actorId}</p>
-                      <p className="text-sm font-semibold">{iso}</p>
-                    </div>
-                  ))}
-                  {Object.keys(isolationOverview).length === 0 && (
-                    <p className="text-xs text-slate-500">Pending actor metadata...</p>
-                  )}
-                </div>
                 {statusSnapshot.result_summary ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="p-3 border rounded-md bg-slate-50">
@@ -455,6 +541,12 @@ export function TransactionOrchestrator() {
                       <p className="text-xs uppercase text-slate-500">Final Qty</p>
                       <p className="text-sm font-semibold">{statusSnapshot.result_summary.final_quantity ?? '—'}</p>
                     </div>
+                    {statusSnapshot.result_summary.verdict && (
+                      <div className="md:col-span-2 p-3 border rounded-md bg-white">
+                        <p className="text-xs uppercase text-slate-500">Verdict</p>
+                        <p className="text-sm text-slate-700">{statusSnapshot.result_summary.verdict}</p>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="text-sm text-slate-500">Waiting for summary...</p>
@@ -468,20 +560,6 @@ export function TransactionOrchestrator() {
                   <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
                     Serialization retries triggered for: {serializationConflicts.join(', ')}
                   </p>
-                )}
-                {statusSnapshot.result_summary?.actor_results && (
-                  <div className="space-y-2">
-                    <p className="text-xs uppercase text-slate-500">Actor observations</p>
-                    {Object.entries(statusSnapshot.result_summary.actor_results).map(([actorId, result]) => (
-                      <div key={actorId} className="border rounded-md p-3 bg-white">
-                        <p className="text-sm font-semibold">{actorId} · {result.role}</p>
-                        <p className="text-xs text-slate-500">Node: {result.node} · Delay: {result.delay_seconds}s</p>
-                        <pre className="text-xs text-slate-700 bg-slate-50 rounded-md p-2 mt-2 overflow-x-auto">
-                          {JSON.stringify(result.details, null, 2)}
-                        </pre>
-                      </div>
-                    ))}
-                  </div>
                 )}
                 {finalStateEntries.length > 0 && (
                   <div className="space-y-2">
@@ -517,17 +595,28 @@ export function TransactionOrchestrator() {
                   {clientEntries.map(([clientId, info]) => (
                     <div
                       key={clientId}
-                      className={`flex items-center justify-between border rounded-md px-3 py-2 ${
+                      className={`border rounded-md px-3 py-2 ${
                         clientTone[info.status] || 'bg-slate-50 text-slate-700 border-slate-200'
                       }`}
                     >
-                      <div>
-                        <p className="text-sm font-semibold">{clientId}</p>
-                        <p className="text-xs capitalize">{info.role} · {info.node}</p>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">{clientId}</p>
+                          <p className="text-xs capitalize">{info.role} · {info.node}</p>
+                          {info.steps?.length > 0 && (
+                            <div className="mt-2 space-y-1 text-xs text-slate-600 max-h-24 overflow-y-auto">
+                              {info.steps.slice(-4).map((step, idx) => (
+                                <p key={`${clientId}-step-${idx}`} className="font-mono">
+                                  {summarizeStep(step)}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <Badge variant="outline" className="bg-white/70 text-slate-700">
+                          {info.status}
+                        </Badge>
                       </div>
-                      <Badge variant="outline" className="bg-white/70 text-slate-700">
-                        {info.status}
-                      </Badge>
                     </div>
                   ))}
                 </div>
