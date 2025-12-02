@@ -5,39 +5,32 @@ The FastAPI service now exposes a transaction orchestrator that can launch canne
 
 ### REST endpoints
 
-- `POST /orchestrator/run` — body requires `scenario` (`Case1_readers_only`, `Case2_writer_readers`, `Case3_concurrent_writers`, or `custom`), `isolation_level` (`READ_UNCOMMITTED`, `READ_COMMITTED`, `REPEATABLE_READ`, `SERIALIZABLE`), `parallel_clients` (1-16), and optional `custom_transactions` (list of client scripts when `scenario=custom`). Returns `{ "run_id": "..." }`.
-- `GET /orchestrator/status/{run_id}` — returns run metadata, per-client state, and a result summary (including node snapshots and detected serialization conflicts).
+- `POST /orchestrator/run` — Body requires a `scenario` (`READ_READ`, `READ_WRITE`, or `WRITE_WRITE`), optional `order_id`, and **exactly two** `actors`. Each actor defines `name`, `node` (`node0`/`node1`/`node2`), `isolation_level`, optional `delay_seconds`, and (for writers only) a `new_quantity`. Returns `{ "run_id": "..." }` once the transactions are queued.
+- `GET /orchestrator/status/{run_id}` — returns run metadata, per-client state, isolation overview, actor observations, and node snapshots.
 - `GET /orchestrator/logs/{run_id}` — streaming-friendly log feed for UI polling.
 - `POST /orchestrator/abort/{run_id}` — cancels an in-flight run.
 
-> ℹ️ PostgreSQL folds `READ_UNCOMMITTED` into `READ COMMITTED`; the orchestrator surfaces this note in both the API and UI so readers understand why dirty reads cannot be demonstrated directly.
+> ℹ️ PostgreSQL folds `READ_UNCOMMITTED` into `READ COMMITTED`; the orchestrator surfaces this note per actor so it is obvious why dirty reads cannot be demonstrated directly.
 
 #### Sample payload
 
 ```json
 {
-  "scenario": "Case3_concurrent_writers",
-  "isolation_level": "SERIALIZABLE",
-  "parallel_clients": 3
-}
-```
-
-#### Custom scripts
-
-Provide your own clients when `scenario` is `custom`:
-
-```json
-{
-  "scenario": "custom",
-  "isolation_level": "REPEATABLE_READ",
-  "parallel_clients": 1,
-  "custom_transactions": [
+  "scenario": "READ_WRITE",
+  "order_id": "3f911688-9c02-4b4f-8f24-5b8c2d7f2d41",
+  "actors": [
     {
+      "name": "reader_a",
       "node": "node0",
-      "statements": [
-        {"sql": "SELECT quantity FROM orders WHERE order_id = $1", "params": ["<uuid>"]},
-        {"sql": "UPDATE orders SET quantity = quantity + 2 WHERE order_id = $1", "params": ["<uuid>"]}
-      ]
+      "isolation_level": "REPEATABLE_READ",
+      "delay_seconds": 0.25
+    },
+    {
+      "name": "writer_b",
+      "node": "node0",
+      "isolation_level": "SERIALIZABLE",
+      "delay_seconds": 0.1,
+      "new_quantity": 12
     }
   ]
 }
@@ -46,8 +39,8 @@ Provide your own clients when `scenario` is `custom`:
 ### Frontend usage
 
 - Navigate to **Concurrency Testing → Transaction Orchestrator**.
-- Pick a scenario, isolation level, and client count, then click **Run Scenario**.
-- Status, per-client outcomes, node snapshots, and recent logs refresh automatically; you can also click **Abort Run** to simulate cancellations.
+- Pick a scenario, optionally target an order ID, configure the two transaction actors (node, isolation, pg_sleep delay, and new quantity for writers), then click **Run Scenario**.
+- Status, per-actor outcomes, node snapshots, and recent logs refresh automatically; you can also click **Abort Run** to simulate cancellations.
 
 ### Tests
 

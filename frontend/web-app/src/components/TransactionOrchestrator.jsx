@@ -5,7 +5,6 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import {
   abortOrchestratorRun,
@@ -16,26 +15,27 @@ import {
 
 const scenarioOptions = [
   {
-    id: 'Case1_readers_only',
-    label: 'Case 1 · Readers Only',
-    description: 'Baseline scenario showing snapshot consistency with concurrent readers.',
+    id: 'READ_READ',
+    label: 'Scenario · Read vs Read',
+    description: 'Two concurrent readers observe the same row and hold locks for optional delays.',
   },
   {
-    id: 'Case2_writer_readers',
-    label: 'Case 2 · Writer vs Readers',
-    description: 'One writer competes with readers to highlight non-repeatable reads.',
+    id: 'READ_WRITE',
+    label: 'Scenario · Read vs Write',
+    description: 'A reader races a writer against the same order to highlight non-repeatable reads.',
   },
   {
-    id: 'Case3_concurrent_writers',
-    label: 'Case 3 · Concurrent Writers',
-    description: 'Multiple writers contend for the same row to surface serialization anomalies.',
-  },
-  {
-    id: 'custom',
-    label: 'Custom JSON Script',
-    description: 'Bring your own transactions and nodes (advanced).',
+    id: 'WRITE_WRITE',
+    label: 'Scenario · Write vs Write',
+    description: 'Two writers lock and update the same row to surface serialization behavior.',
   },
 ];
+
+const scenarioRoles = {
+  READ_READ: ['read', 'read'],
+  READ_WRITE: ['read', 'write'],
+  WRITE_WRITE: ['write', 'write'],
+};
 
 const isolationLevels = [
   { id: 'READ_UNCOMMITTED', label: 'Read Uncommitted' },
@@ -44,14 +44,11 @@ const isolationLevels = [
   { id: 'SERIALIZABLE', label: 'Serializable' },
 ];
 
-const defaultCustomScript = `[
-  {
-    "node": "node0",
-    "statements": [
-      { "sql": "SELECT pg_sleep(0.5)", "description": "custom delay" }
-    ]
-  }
-]`;
+const nodeOptions = [
+  { id: 'node0', label: 'Node 0 · Primary' },
+  { id: 'node1', label: 'Node 1 · Fragment 1-5' },
+  { id: 'node2', label: 'Node 2 · Fragment 6-10' },
+];
 
 const statusTone = {
   running: 'bg-blue-100 text-blue-800 border-blue-200',
@@ -69,10 +66,12 @@ const clientTone = {
 };
 
 export function TransactionOrchestrator() {
-  const [scenario, setScenario] = useState('Case1_readers_only');
-  const [isolation, setIsolation] = useState('READ_COMMITTED');
-  const [parallelClients, setParallelClients] = useState(2);
-  const [customJson, setCustomJson] = useState(defaultCustomScript);
+  const [scenario, setScenario] = useState('READ_READ');
+  const [orderIdInput, setOrderIdInput] = useState('');
+  const [actors, setActors] = useState([
+    { name: 'tx_a', node: 'node0', isolationLevel: 'READ_COMMITTED', delaySeconds: 0.1, newQuantity: '' },
+    { name: 'tx_b', node: 'node0', isolationLevel: 'READ_COMMITTED', delaySeconds: 0.1, newQuantity: '' },
+  ]);
   const [runId, setRunId] = useState(null);
   const [statusSnapshot, setStatusSnapshot] = useState(null);
   const [logs, setLogs] = useState([]);
@@ -81,6 +80,15 @@ export function TransactionOrchestrator() {
   const [autoRefresh, setAutoRefresh] = useState(false);
 
   const activeScenario = useMemo(() => scenarioOptions.find((opt) => opt.id === scenario), [scenario]);
+  const activeRoles = scenarioRoles[scenario] || scenarioRoles.READ_READ;
+
+  const updateActor = (index, field, value) => {
+    setActors((prev) => {
+      const clone = [...prev];
+      clone[index] = { ...clone[index], [field]: value };
+      return clone;
+    });
+  };
 
   const fetchRunData = useCallback(
     async (targetRunId) => {
@@ -121,18 +129,30 @@ export function TransactionOrchestrator() {
     setError(null);
     setIsSubmitting(true);
     try {
+      const actorPayload = activeRoles.map((role, idx) => {
+        const actor = actors[idx] || {};
+        const baseName = role === 'read' ? `reader_${idx + 1}` : `writer_${idx + 1}`;
+        const name = (actor.name || baseName).trim() || baseName;
+        const delaySeconds = Number(actor.delaySeconds) || 0;
+        const payload = {
+          name,
+          node: actor.node || 'node0',
+          isolation_level: actor.isolationLevel || 'READ_COMMITTED',
+          delay_seconds: delaySeconds,
+        };
+        if (role === 'write') {
+          if (actor.newQuantity === '' || actor.newQuantity === null || Number.isNaN(Number(actor.newQuantity))) {
+            throw new Error(`${name} requires a new quantity value`);
+          }
+          payload.new_quantity = Number(actor.newQuantity);
+        }
+        return payload;
+      });
       const payload = {
         scenario,
-        isolation_level: isolation,
-        parallel_clients: Math.min(16, Math.max(1, Number(parallelClients) || 1)),
+        order_id: orderIdInput ? orderIdInput.trim() : null,
+        actors: actorPayload,
       };
-      if (scenario === 'custom') {
-        const parsed = JSON.parse(customJson);
-        if (!Array.isArray(parsed) || parsed.length === 0) {
-          throw new Error('Custom transactions must be a non-empty array');
-        }
-        payload.custom_transactions = parsed;
-      }
       const response = await runOrchestratorScenario(payload);
       setRunId(response.run_id);
       setStatusSnapshot(null);
@@ -162,24 +182,18 @@ export function TransactionOrchestrator() {
     if (!statusSnapshot?.clients) return [];
     return Object.entries(statusSnapshot.clients).sort(([a], [b]) => a.localeCompare(b));
   }, [statusSnapshot]);
-  const isolationDisplayLabel = useMemo(() => {
-    if (statusSnapshot?.result_summary?.isolation_level) {
-      return statusSnapshot.result_summary.isolation_level;
-    }
-    const selected = isolationLevels.find((lvl) => lvl.id === isolation);
-    return selected ? selected.label : isolation;
-  }, [isolation, statusSnapshot]);
+  const isolationOverview = statusSnapshot?.result_summary?.isolation_overview || {};
+  const readUncommittedSelected = actors.some((actor) => actor.isolationLevel === 'READ_UNCOMMITTED');
+  const orchestrationNote = statusSnapshot?.result_summary?.read_uncommitted_note;
+  const isolationNote = orchestrationNote || (readUncommittedSelected
+    ? 'PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED to stay standards compliant.'
+    : null);
   const finalStateEntries = useMemo(() => {
     const snapshots = statusSnapshot?.result_summary?.final_states;
     if (!snapshots) return [];
     return Object.entries(snapshots);
   }, [statusSnapshot]);
   const serializationConflicts = statusSnapshot?.result_summary?.serialization_conflicts || [];
-
-  const isolationNote =
-    isolation === 'READ_UNCOMMITTED'
-      ? 'PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED to stay standards compliant.'
-      : null;
 
   const formatLogDetails = (details) => {
     if (!details || Object.keys(details).length === 0) {
@@ -243,38 +257,26 @@ export function TransactionOrchestrator() {
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="isolation" className="text-slate-700 font-medium">Isolation Level</Label>
-            <Select value={isolation} onValueChange={setIsolation}>
-              <SelectTrigger id="isolation" className="bg-white border-slate-300">
-                <SelectValue placeholder="Pick isolation" />
-              </SelectTrigger>
-              <SelectContent className="bg-white">
-                {isolationLevels.map((level) => (
-                  <SelectItem key={level.id} value={level.id}>
-                    {level.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {isolationNote && (
+            <Label htmlFor="orderId" className="text-slate-700 font-medium">Order ID (optional)</Label>
+            <Input
+              id="orderId"
+              value={orderIdInput}
+              onChange={(e) => setOrderIdInput(e.target.value)}
+              placeholder="Leave blank to auto-select latest"
+              className="bg-white border-slate-300"
+            />
+            <p className="text-xs text-muted-foreground">Provide a UUID to target a specific order.</p>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-slate-700 font-medium">Read Uncommitted note</Label>
+            {isolationNote ? (
               <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 flex items-center gap-2">
                 <Shield className="w-3 h-3" />
                 {isolationNote}
               </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">Shown when any actor requests READ UNCOMMITTED.</p>
             )}
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="parallelClients" className="text-slate-700 font-medium">Parallel Clients</Label>
-            <Input
-              id="parallelClients"
-              type="number"
-              min={1}
-              max={16}
-              value={parallelClients}
-              onChange={(e) => setParallelClients(Math.max(1, Math.min(16, Number(e.target.value) || 1)))}
-              className="bg-white border-slate-300"
-            />
-            <p className="text-xs text-muted-foreground">1-16 parallel client scripts per scenario.</p>
           </div>
         </div>
 
@@ -288,21 +290,74 @@ export function TransactionOrchestrator() {
           </div>
         )}
 
-        {scenario === 'custom' && (
-          <div className="space-y-2">
-            <Label htmlFor="customJson" className="text-slate-700 font-medium">Custom Transactions (JSON array)</Label>
-            <Textarea
-              id="customJson"
-              rows={8}
-              value={customJson}
-              onChange={(e) => setCustomJson(e.target.value)}
-              className="bg-white border-slate-300 font-mono text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              Provide a list of clients: each entry needs a <code>node</code> and <code>statements</code> with SQL, params, optional delays.
-            </p>
-          </div>
-        )}
+        <div className="grid gap-4 md:grid-cols-2">
+          {actors.map((actor, idx) => {
+            const role = activeRoles[idx] ?? 'read';
+            const writeMode = role === 'write';
+            return (
+              <div key={idx} className="border rounded-lg p-4 space-y-3 bg-white">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-slate-700">{`Transaction ${idx === 0 ? 'A' : 'B'}`} · {role.toUpperCase()}</p>
+                  <Badge variant="outline" className="bg-cyan-50 text-cyan-700 border-cyan-200">{role}</Badge>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase text-slate-500">Label</Label>
+                  <Input value={actor.name} onChange={(e) => updateActor(idx, 'name', e.target.value)} className="bg-white border-slate-300" />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase text-slate-500">Node</Label>
+                  <Select value={actor.node} onValueChange={(value) => updateActor(idx, 'node', value)}>
+                    <SelectTrigger className="bg-white border-slate-300">
+                      <SelectValue placeholder="Choose node" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-white">
+                      {nodeOptions.map((node) => (
+                        <SelectItem key={node.id} value={node.id}>{node.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase text-slate-500">Isolation Level</Label>
+                  <Select value={actor.isolationLevel} onValueChange={(value) => updateActor(idx, 'isolationLevel', value)}>
+                    <SelectTrigger className="bg-white border-slate-300">
+                      <SelectValue placeholder="Pick isolation" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-white">
+                      {isolationLevels.map((level) => (
+                        <SelectItem key={level.id} value={level.id}>{level.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-xs uppercase text-slate-500">pg_sleep delay (seconds)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    value={actor.delaySeconds}
+                    onChange={(e) => updateActor(idx, 'delaySeconds', e.target.value)}
+                    className="bg-white border-slate-300"
+                  />
+                </div>
+                {writeMode && (
+                  <div className="space-y-2">
+                    <Label className="text-xs uppercase text-slate-500">Commit quantity</Label>
+                    <Input
+                      type="number"
+                      value={actor.newQuantity}
+                      onChange={(e) => updateActor(idx, 'newQuantity', e.target.value)}
+                      placeholder="e.g., 5"
+                      className="bg-white border-slate-300"
+                    />
+                    <p className="text-xs text-muted-foreground">Required for write transactions.</p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
 
         {error && (
           <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 flex items-start gap-2">
@@ -367,10 +422,21 @@ export function TransactionOrchestrator() {
                 </div>
               </div>
 
-              <div className="space-y-2">
+                <div className="space-y-2">
                 <p className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                  <Shield className="w-4 h-4" /> Isolation: {isolationDisplayLabel}
+                  <Shield className="w-4 h-4" /> Isolation Overview
                 </p>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {Object.entries(isolationOverview).map(([actorId, iso]) => (
+                    <div key={actorId} className="p-3 border rounded-md bg-slate-50">
+                      <p className="text-xs uppercase text-slate-500">{actorId}</p>
+                      <p className="text-sm font-semibold">{iso}</p>
+                    </div>
+                  ))}
+                  {Object.keys(isolationOverview).length === 0 && (
+                    <p className="text-xs text-slate-500">Pending actor metadata...</p>
+                  )}
+                </div>
                 {statusSnapshot.result_summary ? (
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="p-3 border rounded-md bg-slate-50">
@@ -402,6 +468,20 @@ export function TransactionOrchestrator() {
                   <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
                     Serialization retries triggered for: {serializationConflicts.join(', ')}
                   </p>
+                )}
+                {statusSnapshot.result_summary?.actor_results && (
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase text-slate-500">Actor observations</p>
+                    {Object.entries(statusSnapshot.result_summary.actor_results).map(([actorId, result]) => (
+                      <div key={actorId} className="border rounded-md p-3 bg-white">
+                        <p className="text-sm font-semibold">{actorId} · {result.role}</p>
+                        <p className="text-xs text-slate-500">Node: {result.node} · Delay: {result.delay_seconds}s</p>
+                        <pre className="text-xs text-slate-700 bg-slate-50 rounded-md p-2 mt-2 overflow-x-auto">
+                          {JSON.stringify(result.details, null, 2)}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
                 )}
                 {finalStateEntries.length > 0 && (
                   <div className="space-y-2">
