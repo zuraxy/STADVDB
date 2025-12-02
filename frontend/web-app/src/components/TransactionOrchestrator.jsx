@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, FileText, Play, RefreshCw, Shield, StopCircle } from 'lucide-react';
+import { Activity, AlertTriangle, BookOpen, Check, Clock, Database, Edit3, FileText, Play, RefreshCw, Shield, StopCircle, User, Zap } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -77,6 +77,19 @@ export function TransactionOrchestrator() {
   const activeScenario = useMemo(() => scenarioOptions.find((opt) => opt.id === scenario), [scenario]);
   const requiresWriter = scenario !== 'READ_READ';
   const requiresSecondWriter = scenario === 'WRITE_WRITE';
+
+  // Dynamic labels based on scenario
+  const nodeXLabel = useMemo(() => {
+    if (scenario === 'READ_READ') return 'Reader A Node';
+    if (scenario === 'READ_WRITE') return 'Writer Node (Master)';
+    return 'Writer A Node';
+  }, [scenario]);
+
+  const nodeYLabel = useMemo(() => {
+    if (scenario === 'READ_READ') return 'Reader B Node';
+    if (scenario === 'READ_WRITE') return 'Reader Node (Slave)';
+    return 'Writer B Node';
+  }, [scenario]);
 
   const fetchRunData = useCallback(
     async (targetRunId) => {
@@ -239,26 +252,135 @@ export function TransactionOrchestrator() {
       ? 'PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED to stay standards compliant.'
       : null;
 
-  const formatLogDetails = (details) => {
+  const getLogIcon = (event) => {
+    const iconMap = {
+      'scenario_compiled': <Zap className="w-3.5 h-3.5 text-purple-500" />,
+      'transaction_started': <Play className="w-3.5 h-3.5 text-blue-500" />,
+      'read_snapshot': <BookOpen className="w-3.5 h-3.5 text-cyan-500" />,
+      'read_complete': <Check className="w-3.5 h-3.5 text-emerald-500" />,
+      'write_locked': <Database className="w-3.5 h-3.5 text-amber-500" />,
+      'write_complete': <Edit3 className="w-3.5 h-3.5 text-emerald-500" />,
+      'pg_sleep': <Clock className="w-3.5 h-3.5 text-slate-400" />,
+      'client_error': <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />,
+      'client_serialization_abort': <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />,
+      'run_failed': <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />,
+      'run_aborted': <StopCircle className="w-3.5 h-3.5 text-amber-500" />,
+    };
+    return iconMap[event] || <Activity className="w-3.5 h-3.5 text-slate-400" />;
+  };
+
+  const formatLogEvent = (event) => {
+    const eventLabels = {
+      'scenario_compiled': 'Scenario Ready',
+      'transaction_started': 'Transaction Started',
+      'read_snapshot': 'Read Snapshot',
+      'read_complete': 'Read Complete',
+      'write_locked': 'Row Locked',
+      'write_complete': 'Write Complete',
+      'pg_sleep': 'Waiting',
+      'client_error': 'Error',
+      'client_serialization_abort': 'Serialization Conflict',
+      'run_failed': 'Run Failed',
+      'run_aborted': 'Run Aborted',
+    };
+    return eventLabels[event] || event.replace(/_/g, ' ');
+  };
+
+  const formatLogDetails = (details, event) => {
     if (!details || Object.keys(details).length === 0) {
-      return '—';
+      return null;
     }
-    if (details.client_id && details.action) {
-      const base = `${details.client_id} · ${details.action}`;
-      if (details.error) {
-        return `${base} · ${details.error}`;
-      }
-      return base;
+
+    // Format based on event type
+    if (event === 'transaction_started') {
+      const remote = details.remote ? ' (remote)' : '';
+      return (
+        <span className="flex items-center gap-1">
+          <User className="w-3 h-3" />
+          <span className="font-medium">{details.actor_id}</span>
+          <span className="text-slate-400">on</span>
+          <span className="font-medium">{details.node?.toUpperCase()}</span>
+          <span className="text-slate-400">as</span>
+          <span className={details.role === 'write' ? 'text-amber-600 font-medium' : 'text-cyan-600 font-medium'}>
+            {details.role}
+          </span>
+          {remote && <span className="text-xs text-purple-500">{remote}</span>}
+        </span>
+      );
     }
-    if (details.description) {
-      return details.description;
+
+    if (event === 'read_snapshot' || event === 'read_complete') {
+      const qty = details.quantity ?? details.initial_quantity;
+      const finalQty = details.final_quantity;
+      return (
+        <span className="flex items-center gap-1">
+          <span className="font-medium">{details.actor_id}</span>
+          <span className="text-slate-400">→</span>
+          <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-sm">qty: {qty}</span>
+          {finalQty !== undefined && finalQty !== qty && (
+            <><span className="text-slate-400">→</span>
+            <span className="font-mono bg-emerald-100 px-1.5 py-0.5 rounded text-sm">final: {finalQty}</span></>
+          )}
+        </span>
+      );
     }
-    return Object.entries(details)
-      .map(([key, value]) => {
-        const text = typeof value === 'object' ? JSON.stringify(value) : value;
-        return `${key}: ${text}`;
-      })
-      .join(' · ');
+
+    if (event === 'write_locked') {
+      return (
+        <span className="flex items-center gap-1">
+          <span className="font-medium">{details.actor_id}</span>
+          <span className="text-slate-400">locked row with</span>
+          <span className="font-mono bg-amber-100 px-1.5 py-0.5 rounded text-sm">qty: {details.quantity}</span>
+        </span>
+      );
+    }
+
+    if (event === 'write_complete') {
+      return (
+        <span className="flex items-center gap-1">
+          <span className="font-medium">{details.actor_id}</span>
+          <span className="text-slate-400">{details.previous_quantity ?? '?'} →</span>
+          <span className="font-mono bg-emerald-100 px-1.5 py-0.5 rounded text-sm font-medium">{details.committed_quantity}</span>
+        </span>
+      );
+    }
+
+    if (event === 'pg_sleep') {
+      return (
+        <span className="flex items-center gap-1">
+          <span className="font-medium">{details.actor_id}</span>
+          <span className="text-slate-400">sleeping for</span>
+          <span className="font-mono">{details.seconds}s</span>
+        </span>
+      );
+    }
+
+    if (event === 'scenario_compiled') {
+      return (
+        <span className="flex items-center gap-1">
+          <span className="text-slate-400">Order:</span>
+          <span className="font-mono text-xs">{details.order_id?.slice(0, 8)}...</span>
+          <span className="text-slate-400">Actors:</span>
+          <span className="font-medium">{details.actors?.join(', ')}</span>
+        </span>
+      );
+    }
+
+    if (details.error) {
+      return <span className="text-rose-600">{details.error}</span>;
+    }
+
+    // Fallback to key-value display
+    return (
+      <span>
+        {Object.entries(details).map(([key, value], idx) => (
+          <span key={key}>
+            {idx > 0 && <span className="text-slate-300 mx-1">·</span>}
+            <span className="text-slate-500">{key}:</span> {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+          </span>
+        ))}
+      </span>
+    );
   };
 
   const summarizeStep = (step) => {
@@ -373,7 +495,7 @@ export function TransactionOrchestrator() {
             <p className="text-xs text-muted-foreground">Provide a UUID to target a specific order.</p>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="nodeX" className="text-slate-700 font-medium">Node X (Writer / Primary)</Label>
+            <Label htmlFor="nodeX" className="text-slate-700 font-medium">{nodeXLabel}</Label>
             <Select value={nodeX} onValueChange={setNodeX}>
               <SelectTrigger id="nodeX" className="bg-white border-slate-300">
                 <SelectValue />
@@ -388,7 +510,7 @@ export function TransactionOrchestrator() {
             </Select>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="nodeY" className="text-slate-700 font-medium">Node Y (Readers / Secondary)</Label>
+            <Label htmlFor="nodeY" className="text-slate-700 font-medium">{nodeYLabel}</Label>
             <Select value={nodeY} onValueChange={setNodeY}>
               <SelectTrigger id="nodeY" className="bg-white border-slate-300">
                 <SelectValue />
@@ -632,16 +754,22 @@ export function TransactionOrchestrator() {
                   <span className="text-xs text-blue-600">Auto-refreshing…</span>
                 )}
               </div>
-              <div className="max-h-64 overflow-y-auto space-y-2">
+              <div className="max-h-80 overflow-y-auto space-y-2">
                 {latestLogs.length === 0 && <p className="text-sm text-slate-500">No log entries yet.</p>}
                 {latestLogs.map((entry, idx) => (
-                  <div key={`${entry.timestamp}-${entry.event}-${idx}`} className="border rounded-md p-3 bg-white">
-                    <p className="text-xs text-slate-500">
-                      {new Date(entry.timestamp).toLocaleTimeString()} · {entry.event}
-                    </p>
-                    <p className="text-sm text-slate-700">
-                      {formatLogDetails(entry.details)}
-                    </p>
+                  <div key={`${entry.timestamp}-${entry.event}-${idx}`} className="border rounded-md p-3 bg-white hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-2 mb-1">
+                      {getLogIcon(entry.event)}
+                      <span className="text-xs font-medium text-slate-600">
+                        {formatLogEvent(entry.event)}
+                      </span>
+                      <span className="text-xs text-slate-400 ml-auto">
+                        {new Date(entry.timestamp).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <div className="text-sm text-slate-700 pl-5">
+                      {formatLogDetails(entry.details, entry.event)}
+                    </div>
                   </div>
                 ))}
               </div>
