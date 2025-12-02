@@ -30,6 +30,9 @@ class Settings:
 	promoted: bool
 	partition_rule: int
 	applier_interval: float
+	applier_batch_limit: int
+	applier_max_attempts: int
+	applier_debug: bool
 	node0_dsn: Optional[str]
 	node1_dsn: Optional[str]
 	node2_dsn: Optional[str]
@@ -104,6 +107,9 @@ def get_settings() -> Settings:
 	default_master_url = os.getenv("DEFAULT_MASTER_URL")
 	poll_interval = float(os.getenv("POLL_INTERVAL", "5"))
 	applier_interval = float(os.getenv("APPLIER_INTERVAL", "2"))
+	applier_batch_limit = int(os.getenv("APPLIER_BATCH_LIMIT", "1"))
+	applier_max_attempts = int(os.getenv("APPLIER_MAX_ATTEMPTS", "3"))
+	applier_debug = _parse_bool(os.getenv("APPLIER_DEBUG"), default=False)
 	promoted = _parse_bool(os.getenv("PROMOTED"), default=False)
 	partition_rule = int(os.getenv("PARTITION_RULE", "5"))
 	node0_dsn = os.getenv("NODE0_DSN") or (database_dsn if node_name.lower() == "node0" else None)
@@ -134,6 +140,9 @@ def get_settings() -> Settings:
 		promoted=promoted,
 		partition_rule=partition_rule,
 		applier_interval=applier_interval,
+		applier_batch_limit=applier_batch_limit,
+		applier_max_attempts=applier_max_attempts,
+		applier_debug=applier_debug,
 		node0_dsn=node0_dsn,
 		node1_dsn=node1_dsn,
 		node2_dsn=node2_dsn,

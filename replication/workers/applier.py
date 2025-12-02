@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple
-from uuid import UUID
+from typing import Dict, Optional, Tuple
+from uuid import UUID, uuid4
 
 import asyncpg
 from asyncpg import exceptions as apg_exceptions
@@ -19,11 +19,12 @@ from ..utils.partition import target_node_for_quantity
 _LOGGER = logging.getLogger(__name__)
 _REMOTE_DB_TIMEOUT = 1.0
 _REMOTE_HTTP_TIMEOUT = 1.0
+_REMOTE_RETRY_DELAYS = (0.2, 0.4)
 
 
 @dataclass
 class PartitionDecision:
-    mode: str  # apply, skip, attempt
+    mode: str  # apply, skip, retry
     path: str
     quantity: Optional[int]
     resolved_target: Optional[str]
@@ -34,9 +35,9 @@ class PartitionDecision:
 
 
 class ApplierWorker:
-    """Continuously applies unapplied operations."""
+    """Continuously applies unapplied operations with partition awareness."""
 
-    def __init__(self, pool, settings: Settings, crud_module=crud) -> None:
+    def __init__(self, pool, settings: Settings, crud_module=crud, worker_id: Optional[str] = None) -> None:
         self.pool = pool
         self.settings = settings
         self.crud = crud_module
@@ -44,7 +45,15 @@ class ApplierWorker:
         self._task: Optional[asyncio.Task] = None
         self.applied_count = 0
         self.skipped_count = 0
+        self.failed_count = 0
+        self.retry_count = 0
+        self.applier_attempts = 0
         self.last_error: Optional[str] = None
+        self.worker_id = worker_id or f"applier-{uuid4().hex[:8]}"
+        self._attempts: Dict[UUID, int] = {}
+        self._cursor_cache: Dict[str, int] = {}
+        self._cursor_loaded = False
+        self._max_attempts = max(1, self.settings.applier_max_attempts)
 
     async def start(self) -> None:
         if self._task is None:
@@ -58,6 +67,7 @@ class ApplierWorker:
             self._task = None
 
     async def _run(self) -> None:
+        await self._refresh_cursor_cache()
         while not self._stop_event.is_set():
             await self.apply_once()
             try:
@@ -66,45 +76,72 @@ class ApplierWorker:
                 continue
 
     async def apply_once(self) -> None:
+        await self._refresh_cursor_cache()
         async with self.pool.acquire() as conn:
-            ops = await self.crud.fetch_unapplied_ops(conn)
-            if not ops:
-                self.last_error = None
-                return
-            for op in ops:
-                decision = await self._partition_decision(conn, op)
-                if decision.mode == "skip":
-                    await self.crud.mark_op_applied(conn, op.op_id)
-                    self.skipped_count += 1
-                    self._log_decision(op, decision, "SKIP")
-                    continue
-                try:
-                    await self.crud.apply_op_tx(conn, op)
-                    await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
-                    self.applied_count += 1
-                    self._log_decision(op, decision, "APPLY")
-                except apg_exceptions.CheckViolationError as exc:
-                    await self.crud.mark_op_applied(conn, op.op_id)
-                    self.skipped_count += 1
-                    self._log_decision(op, decision.with_reason(f"constraint_violation: {exc}"), "SKIP")
-                    continue
-                except Exception as exc:  # pragma: no cover - exercised via integration tests
-                    _LOGGER.exception("Failed to apply op %s", op.op_id)
-                    self.last_error = str(exc)
-                    return
+            while True:
+                retry_requested = False
+                async with conn.transaction():
+                    op = await self._next_locked_op(conn)
+                    if not op:
+                        self.last_error = None
+                        return
+                    outcome = await self._process_locked_op(conn, op)
+                    if outcome == "retry":
+                        retry_requested = True
+                        self.retry_count += 1
+                        self._debug("retrying op %s after releasing lock", op.op_id)
+                if retry_requested:
+                    await asyncio.sleep(_REMOTE_RETRY_DELAYS[0])
+
+    async def _next_locked_op(self, conn):
+        ops = await self.crud.fetch_unapplied_ops(conn, limit=1)
+        return ops[0] if ops else None
+
+    async def _process_locked_op(self, conn, op) -> str:
+        attempt = self._increment_attempt(op.op_id)
+        decision = await self._partition_decision(conn, op, attempt)
+        if decision.mode == "retry":
+            self._log_decision(op, decision, "RETRY", attempt)
+            return "retry"
+        if decision.mode == "skip":
+            await self.crud.mark_op_applied(conn, op.op_id)
+            await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
+            self.skipped_count += 1
+            self._clear_attempt(op.op_id)
+            self._log_decision(op, decision, "SKIP", attempt)
+            return "skip"
+        try:
+            await self.crud.apply_op_tx(conn, op, use_transaction=False)
+            await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
+            self.applied_count += 1
+            self._clear_attempt(op.op_id)
             self.last_error = None
+            self._log_decision(op, decision, "APPLY", attempt)
+            return "apply"
+        except apg_exceptions.CheckViolationError as exc:
+            await self.crud.mark_op_applied(conn, op.op_id)
+            await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
+            self.skipped_count += 1
+            self._clear_attempt(op.op_id)
+            self._log_decision(op, decision.with_reason(f"constraint_violation: {exc}"), "SKIP", attempt)
+            return "skip"
+        except Exception as exc:  # pragma: no cover - defensive guard
+            self.failed_count += 1
+            self.last_error = str(exc)
+            self._log_decision(op, decision.with_reason(str(exc)), "ERROR", attempt)
+            raise
 
-    def _local_node(self) -> str:
-        return self.settings.node_name.lower()
+    def _increment_attempt(self, op_id: UUID) -> int:
+        self.applier_attempts += 1
+        self._attempts[op_id] = self._attempts.get(op_id, 0) + 1
+        return self._attempts[op_id]
 
-    def _is_master(self) -> bool:
-        return self.settings.node_name == self.settings.default_master
+    def _clear_attempt(self, op_id: UUID) -> None:
+        self._attempts.pop(op_id, None)
 
-    async def _partition_decision(self, conn, op) -> PartitionDecision:
-        """Choose how to handle an op based on the deterministic ruleset."""
-
-        # Root cause: previously we only looked at inline payload quantities, so
-        # missing or malformed metadata caused shard nodes to skip legitimate ops.
+    async def _partition_decision(self, conn, op, attempt: int) -> PartitionDecision:
+        if op.op_type == "delete":
+            return PartitionDecision("apply", "delete", None, self._local_node())
         if self._is_master():
             return PartitionDecision("apply", "master", self._extract_quantity(op.payload or {}), self._local_node())
         payload = op.payload or {}
@@ -120,10 +157,12 @@ class ApplierWorker:
         quantity = await self._lookup_local_quantity(conn, op.row_id)
         if quantity is not None:
             return self._decision_from_quantity(quantity, "local_lookup")
-        quantity = await self._lookup_remote_quantity(op.row_id)
-        if quantity is not None:
+        quantity, status = await self._lookup_remote_quantity(op.row_id)
+        if status == "ok" and quantity is not None:
             return self._decision_from_quantity(quantity, "remote_lookup")
-        return PartitionDecision("attempt", "apply_and_catch", None, None, "quantity_unresolved")
+        if status == "error" and attempt < self._max_attempts:
+            return PartitionDecision("retry", "remote_lookup", None, None, "remote_lookup_failed")
+        return PartitionDecision("apply", "apply_and_catch", None, None, "quantity_unresolved")
 
     def _decision_from_quantity(self, quantity: int, path: str) -> PartitionDecision:
         target = target_node_for_quantity(quantity, self.settings.partition_rule)
@@ -135,44 +174,63 @@ class ApplierWorker:
         row = await conn.fetchrow("SELECT quantity FROM orders WHERE order_id=$1", row_id)
         return int(row["quantity"]) if row else None
 
-    async def _lookup_remote_quantity(self, row_id: UUID) -> Optional[int]:
-        quantity, succeeded = await self._lookup_remote_quantity_db(row_id)
-        if quantity is not None or succeeded:
-            return quantity
-        return await self._lookup_remote_quantity_http(row_id)
+    async def _lookup_remote_quantity(self, row_id: UUID) -> Tuple[Optional[int], str]:
+        quantity, status = await self._lookup_remote_quantity_db(row_id)
+        if status in {"ok", "not_found"}:
+            return quantity, status
+        quantity, status = await self._lookup_remote_quantity_http(row_id)
+        return quantity, status
 
-    async def _lookup_remote_quantity_db(self, row_id: UUID) -> Tuple[Optional[int], bool]:
+    async def _lookup_remote_quantity_db(self, row_id: UUID) -> Tuple[Optional[int], str]:
         if not self.settings.node0_dsn:
-            return None, False
-        try:
-            conn = await asyncpg.connect(dsn=self.settings.node0_dsn, timeout=_REMOTE_DB_TIMEOUT)
+            return None, "error"
+        for attempt, delay in enumerate((0.0, *_REMOTE_RETRY_DELAYS), start=1):
+            if delay:
+                await asyncio.sleep(delay)
             try:
-                row = await conn.fetchrow("SELECT quantity FROM orders WHERE order_id=$1", row_id, timeout=_REMOTE_DB_TIMEOUT)
-                if row:
-                    return int(row["quantity"]), True
-                return None, True
-            finally:
-                await conn.close()
-        except Exception as exc:  # pragma: no cover - relies on network/DB failures
-            _LOGGER.debug("Remote DB lookup failed for %s: %s", row_id, exc)
-            return None, False
+                conn = await asyncpg.connect(dsn=self.settings.node0_dsn, timeout=_REMOTE_DB_TIMEOUT)
+                try:
+                    row = await conn.fetchrow("SELECT quantity FROM orders WHERE order_id=$1", row_id, timeout=_REMOTE_DB_TIMEOUT)
+                    if row:
+                        self._debug("remote_db quantity hit op=%s attempt=%s", row_id, attempt)
+                        return int(row["quantity"]), "ok"
+                    self._debug("remote_db quantity miss op=%s attempt=%s", row_id, attempt)
+                    return None, "not_found"
+                finally:
+                    await conn.close()
+            except Exception as exc:  # pragma: no cover - network/DB failures
+                self._debug("remote_db lookup failure op=%s attempt=%s err=%s", row_id, attempt, exc)
+        return None, "error"
 
-    async def _lookup_remote_quantity_http(self, row_id: UUID) -> Optional[int]:
+    async def _lookup_remote_quantity_http(self, row_id: UUID) -> Tuple[Optional[int], str]:
         if not self.settings.default_master_url:
-            return None
+            return None, "error"
         url = f"{self.settings.default_master_url}/orders/{row_id}?local=true"
-        try:
-            async with httpx.AsyncClient(timeout=_REMOTE_HTTP_TIMEOUT) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                data = response.json()
-                if not data:
-                    return None
-                quantity = data.get("quantity")
-                return int(quantity) if quantity is not None else None
-        except Exception as exc:  # pragma: no cover - exercised when master HTTP is unavailable
-            _LOGGER.debug("Remote HTTP lookup failed for %s: %s", row_id, exc)
-        return None
+        async with httpx.AsyncClient(timeout=_REMOTE_HTTP_TIMEOUT) as client:
+            for attempt, delay in enumerate((0.0, *_REMOTE_RETRY_DELAYS), start=1):
+                if delay:
+                    await asyncio.sleep(delay)
+                try:
+                    response = await client.get(url)
+                    response.raise_for_status()
+                    data = response.json()
+                    if not data:
+                        return None, "not_found"
+                    quantity = data.get("quantity")
+                    return (int(quantity) if quantity is not None else None), "ok"
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        return None, "not_found"
+                    self._debug("remote_http status_err op=%s attempt=%s err=%s", row_id, attempt, exc)
+                except Exception as exc:  # pragma: no cover - HTTP client issues
+                    self._debug("remote_http lookup failure op=%s attempt=%s err=%s", row_id, attempt, exc)
+        return None, "error"
+
+    def _local_node(self) -> str:
+        return self.settings.node_name.lower()
+
+    def _is_master(self) -> bool:
+        return self.settings.node_name == self.settings.default_master
 
     @staticmethod
     def _extract_quantity(payload: dict) -> Optional[int]:
@@ -182,12 +240,18 @@ class ApplierWorker:
         except (TypeError, ValueError):
             return None
 
-    def _log_decision(self, op, decision: PartitionDecision, outcome: str) -> None:
+    def _log_decision(self, op, decision: PartitionDecision, outcome: str, attempt: int) -> None:
+        if not self.settings.applier_debug:
+            return
+        last_seen = self._cursor_cache.get(op.origin_node.lower(), -1)
         _LOGGER.debug(
-            "applier_decision op=%s origin=%s type=%s path=%s target=%s quantity=%s outcome=%s reason=%s",
+            "applier_decision op=%s lamport=%s last_seen=%s attempts=%s worker=%s locked=%s path=%s target=%s quantity=%s outcome=%s reason=%s",
             op.op_id,
-            op.origin_node,
-            op.op_type,
+            op.lamport,
+            last_seen,
+            attempt,
+            self.worker_id,
+            True,
             decision.path,
             decision.resolved_target or "unknown",
             decision.quantity,
@@ -199,5 +263,20 @@ class ApplierWorker:
         return {
             "applied_count": self.applied_count,
             "skipped_count": self.skipped_count,
+            "failed_count": self.failed_count,
+            "retry_count": self.retry_count,
+            "applier_attempts": self.applier_attempts,
             "last_error": self.last_error,
         }
+
+    async def _refresh_cursor_cache(self) -> None:
+        if self._cursor_loaded:
+            return
+        async with self.pool.acquire() as conn:
+            rows = await self.crud.load_replication_cursors(conn)
+            self._cursor_cache = {name.lower(): value for name, value in rows.items()}
+        self._cursor_loaded = True
+
+    def _debug(self, message: str, *args) -> None:
+        if self.settings.applier_debug:
+            _LOGGER.debug(message, *args)

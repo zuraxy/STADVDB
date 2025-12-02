@@ -153,3 +153,13 @@ CREATE TABLE IF NOT EXISTS log_acknowledgements (
 );
 
 ===========================================================================================
+REPLICATION_CURSORS
+===========================================================================================
+
+CREATE TABLE IF NOT EXISTS replication_cursors (
+  node TEXT PRIMARY KEY,
+  last_lamport BIGINT NOT NULL
+);
+
+
+===========================================================================================

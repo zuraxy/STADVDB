@@ -6,6 +6,7 @@ import logging
 
 from fastapi import FastAPI
 
+from . import crud
 from .config import get_settings
 from .db import close_db, get_pool, init_db
 from .orchestrator import TransactionOrchestrator
@@ -30,6 +31,8 @@ app.include_router(orchestrator_routes.router)
 async def on_startup() -> None:  # pragma: no cover - exercised via integration tests
 	await init_db(settings.database_dsn)
 	pool = get_pool()
+	async with pool.acquire() as conn:
+		await crud.ensure_replication_metadata(conn)
 	app.state.promoted = settings.promoted
 	app.state.http_client = HTTPClient()
 	app.state.replicator = ReplicatorWorker(pool, settings, app.state.http_client)

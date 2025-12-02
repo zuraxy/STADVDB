@@ -34,10 +34,12 @@ class ReplicatorWorker:
         self.total_inserted = 0
         self.last_error: Optional[str] = None
         self.peer_errors: Dict[str, Optional[str]] = {peer.base_url: None for peer in settings.peer_nodes}
+        self._cursors_loaded = False
 
     async def start(self) -> None:
         if self._task is None:
             self._stop_event.clear()
+            await self._load_cursors()
             self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -78,6 +80,7 @@ class ReplicatorWorker:
                         self.total_inserted += 1
                 max_lamport = max(op.lamport for op in ops)
                 self.last_seen[peer.base_url] = max(self.last_seen.get(peer.base_url, -1), max_lamport)
+                await self.crud.upsert_replication_cursor(conn, peer.name, self.last_seen[peer.base_url])
             self.last_error = None
             self.peer_errors[peer.base_url] = None
         except Exception as exc:  # pragma: no cover - exercised by integration tests
@@ -92,3 +95,14 @@ class ReplicatorWorker:
             "last_error": self.last_error,
             "peer_errors": self.peer_errors,
         }
+
+    async def _load_cursors(self) -> None:
+        if self._cursors_loaded:
+            return
+        async with self.pool.acquire() as conn:
+            rows = await self.crud.load_replication_cursors(conn)
+        for peer in self.settings.peer_nodes:
+            lamport = rows.get(peer.name)
+            if lamport is not None:
+                self.last_seen[peer.base_url] = lamport
+        self._cursors_loaded = True

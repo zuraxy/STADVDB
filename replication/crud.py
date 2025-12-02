@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
 from asyncpg import Pool
@@ -276,12 +276,15 @@ async def fetch_ops_since(
 
 
 async def fetch_unapplied_ops(conn, limit: int = 100) -> List[OpRecord]:
+	"""Return unapplied ops locked for the caller's transaction."""
+
 	rows = await conn.fetch(
 		"""
 		SELECT op_id, origin_node, op_type, table_name, row_id, payload, ts, lamport, applied, applied_ts
 		FROM op_log
 		WHERE applied = false
 		ORDER BY lamport ASC, origin_node ASC
+		FOR UPDATE SKIP LOCKED
 		LIMIT $1
 		""",
 		limit,
@@ -289,10 +292,10 @@ async def fetch_unapplied_ops(conn, limit: int = 100) -> List[OpRecord]:
 	return [_row_to_op_record(row) for row in rows]
 
 
-async def apply_op_tx(conn, op_record: OpRecord) -> None:
+async def apply_op_tx(conn, op_record: OpRecord, use_transaction: bool = True) -> None:
 	"""Apply an operation idempotently and mark it as applied."""
 
-	async with conn.transaction():
+	async def _apply() -> None:
 		if op_record.op_type == "delete":
 			await conn.execute("DELETE FROM orders WHERE order_id=$1", op_record.row_id)
 		else:
@@ -317,6 +320,12 @@ async def apply_op_tx(conn, op_record: OpRecord) -> None:
 			)
 		await mark_op_applied(conn, op_record.op_id)
 
+	if use_transaction:
+		async with conn.transaction():
+			await _apply()
+	else:
+		await _apply()
+
 
 async def insert_ack(conn, op_id: UUID, node: str) -> None:
 	await conn.execute(
@@ -338,4 +347,37 @@ async def mark_op_applied(conn, op_id: UUID) -> None:
 		"UPDATE op_log SET applied=true, applied_ts=$2 WHERE op_id=$1",
 		op_id,
 		_utcnow(),
+	)
+
+
+async def ensure_replication_metadata(conn) -> None:
+	await conn.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS replication_cursors (
+			node text PRIMARY KEY,
+			last_lamport bigint NOT NULL
+		)
+		"""
+	)
+
+
+async def load_replication_cursors(conn) -> Dict[str, int]:
+	rows = await conn.fetch("SELECT node, last_lamport FROM replication_cursors")
+	return {row["node"]: int(row["last_lamport"]) for row in rows}
+
+
+async def get_replication_cursor(conn, node: str) -> Optional[int]:
+	row = await conn.fetchrow("SELECT last_lamport FROM replication_cursors WHERE node=$1", node)
+	return int(row["last_lamport"]) if row else None
+
+
+async def upsert_replication_cursor(conn, node: str, lamport: int) -> None:
+	await conn.execute(
+		"""
+		INSERT INTO replication_cursors (node, last_lamport)
+		VALUES ($1, $2)
+		ON CONFLICT (node) DO UPDATE SET last_lamport = EXCLUDED.last_lamport
+		""",
+		node,
+		lamport,
 	)

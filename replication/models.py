@@ -62,4 +62,5 @@ class OpRecord(BaseModel):
 	lamport: int
 	applied: bool
 	applied_ts: Optional[datetime]
+	locked_by: Optional[str] = None
 
