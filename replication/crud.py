@@ -214,11 +214,14 @@ async def get_order(pool: Pool, order_id: UUID) -> Optional[OrderRead]:
 
 
 async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:
-	"""Insert an op if absent. Returns True when actually inserted."""
+	"""Insert an op if absent for local replay.
 
-	# Convert payload dict to JSON string for JSONB column
-	payload_json = json.dumps(op_record.payload) if op_record.payload else json.dumps({})
-	
+	We intentionally reset the applied flag because every node should apply
+	remote operations independently, even when the originating node already
+	marked the op as applied.
+	"""
+
+	payload_json = json.dumps(op_record.payload or {})
 	result = await conn.execute(
 		"""
 		INSERT INTO op_log (
@@ -235,8 +238,8 @@ async def insert_op_if_missing(conn, op_record: OpRecord) -> bool:
 		payload_json,
 		op_record.ts,
 		op_record.lamport,
-		op_record.applied,
-		op_record.applied_ts,
+		False,
+		None,
 	)
 	return result.endswith("INSERT 0 1")
 
