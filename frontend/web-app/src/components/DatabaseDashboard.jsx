@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics } from '../services/api';
+import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders } from '../services/api';
 
 const DEFAULT_NODE_CARDS = [
   { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
@@ -65,7 +65,9 @@ export function DatabaseDashboard() {
   const [totalRecords, setTotalRecords] = useState(0);
   const [partitionRule, setPartitionRule] = useState(null);
   const [nodeCards, setNodeCards] = useState(() => buildNodeState());
-  const [nodeMetrics, setNodeMetrics] = useState({}); // NEW: Store metrics per node
+  const [nodeMetrics, setNodeMetrics] = useState({}); // Store metrics per node
+  const [node1Data, setNode1Data] = useState([]); // NEW: Store actual Node1 data
+  const [node2Data, setNode2Data] = useState([]); // NEW: Store actual Node2 data
   
   const itemsPerPage = 10;
 
@@ -83,14 +85,20 @@ export function DatabaseDashboard() {
     setError(null);
 
     try {
-      const [statusResponse, ordersResponse, metricsResponse] = await Promise.all([
+      const [statusResponse, ordersResponse, metricsResponse, node1Orders, node2Orders] = await Promise.all([
         fetchReplicationStatus(),
         fetchAllOrders(),
-        fetchAllNodeMetrics(), // NEW: Fetch metrics from all nodes
+        fetchAllNodeMetrics(),
+        fetchNodeOrders('node1').catch(err => { console.error('Node1 fetch failed:', err); return []; }),
+        fetchNodeOrders('node2').catch(err => { console.error('Node2 fetch failed:', err); return []; }),
       ]);
 
       applyReplicationStatus(statusResponse);
-      setNodeMetrics(metricsResponse); // NEW: Store metrics
+      setNodeMetrics(metricsResponse);
+      
+      // Store node-specific data
+      setNode1Data(Array.isArray(node1Orders) ? node1Orders : []);
+      setNode2Data(Array.isArray(node2Orders) ? node2Orders : []);
 
       const rows = Array.isArray(ordersResponse) ? ordersResponse : [];
       setAllData(rows);
@@ -132,6 +140,13 @@ export function DatabaseDashboard() {
     }, 5000);
     return () => clearInterval(statusInterval);
   }, [applyReplicationStatus]);
+
+  // Helper function to get actual node data
+  const getNodeData = (nodeId) => {
+    if (nodeId === 'node1') return node1Data;
+    if (nodeId === 'node2') return node2Data;
+    return [];
+  };
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -255,7 +270,9 @@ export function DatabaseDashboard() {
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
                     <p className="text-2xl font-bold text-cyan-700">
-                      {card.isPrimary ? totalRecords : 0}
+                      {card.id === 'node1' ? node1Data.length : 
+                       card.id === 'node2' ? node2Data.length :
+                       card.isPrimary ? totalRecords : 0}
                     </p>
                     <p className="text-xs text-muted-foreground">
                       {describeNode(card)}
@@ -399,11 +416,33 @@ export function DatabaseDashboard() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    <TableRow>
-                      <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
-                        Fragment-specific data not loaded
-                      </TableCell>
-                    </TableRow>
+                    {loading ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center py-4">
+                          <Loader2 className="w-4 h-4 animate-spin inline" />
+                        </TableCell>
+                      </TableRow>
+                    ) : node1Data.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
+                          No orders in this node
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      node1Data.slice(0, 5).map((order) => (
+                        <TableRow key={order.order_id}>
+                          <TableCell className="text-xs font-mono">{formatUUID(order.order_id)}</TableCell>
+                          <TableCell className="text-xs">{order.quantity}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                    {node1Data.length > 5 && (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-2 text-xs">
+                          ... and {node1Data.length - 5} more
+                        </TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </div>
@@ -428,17 +467,39 @@ export function DatabaseDashboard() {
               <div className="border rounded-lg overflow-hidden">
                 <Table>
                   <TableHeader>
-                    <TableRow className="bg-blue-50">
+                    <TableRow className="bg-purple-50">
                       <TableHead className="text-xs">Order ID</TableHead>
                       <TableHead className="text-xs">Quantity</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    <TableRow>
-                      <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
-                        Fragment-specific data not loaded
-                      </TableCell>
-                    </TableRow>
+                    {loading ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center py-4">
+                          <Loader2 className="w-4 h-4 animate-spin inline" />
+                        </TableCell>
+                      </TableRow>
+                    ) : node2Data.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-4 text-sm">
+                          No orders in this node
+                        </TableCell>
+                      </TableRow>
+                    ) : (
+                      node2Data.slice(0, 5).map((order) => (
+                        <TableRow key={order.order_id}>
+                          <TableCell className="text-xs font-mono">{formatUUID(order.order_id)}</TableCell>
+                          <TableCell className="text-xs">{order.quantity}</TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                    {node2Data.length > 5 && (
+                      <TableRow>
+                        <TableCell colSpan={2} className="text-center text-gray-500 py-2 text-xs">
+                          ... and {node2Data.length - 5} more
+                        </TableCell>
+                      </TableRow>
+                    )}
                   </TableBody>
                 </Table>
               </div>
