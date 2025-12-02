@@ -31,6 +31,7 @@ class TransactionActorModel(BaseModel):
     isolation_level: IsolationLevel = IsolationLevel.READ_COMMITTED
     delay_seconds: float = Field(default=0.0, ge=0.0, le=30.0)
     new_quantity: Optional[int] = None
+    auto_increment: bool = False  # If True, increment quantity by 1 instead of setting
 
     def to_input(self) -> TransactionActorInput:
         return TransactionActorInput(
@@ -39,6 +40,7 @@ class TransactionActorModel(BaseModel):
             isolation_level=self.isolation_level,
             delay_seconds=self.delay_seconds,
             new_quantity=self.new_quantity,
+            auto_increment=self.auto_increment,
         )
 
 
@@ -109,22 +111,20 @@ class RunOrchestrationRequest(BaseModel):
                 ),
             ]
         elif scenario == ScenarioType.WRITE_WRITE:
-            # Two writers on same or different nodes
-            # Default to 1 if no values specified
-            write_value_1 = self.new_value_1 if self.new_value_1 is not None else 1
-            write_value_2 = self.new_value_2 if self.new_value_2 is not None else 1
+            # Two writers with auto-increment (each adds 1 to current quantity)
+            # This demonstrates lost update scenarios
             self.actors = [
                 TransactionActorModel(
                     name="writer_a",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    new_quantity=write_value_1,
+                    auto_increment=True,
                 ),
                 TransactionActorModel(
                     name="writer_b",
                     node=self.node_y or "node1",
                     isolation_level=isolation,
-                    new_quantity=write_value_2,
+                    auto_increment=True,
                 ),
             ]
         
@@ -132,9 +132,9 @@ class RunOrchestrationRequest(BaseModel):
         if self.actors:
             expected = scenario.roles
             for actor, role in zip(self.actors, expected):
-                if role == "write" and actor.new_quantity is None:
+                if role == "write" and actor.new_quantity is None and not actor.auto_increment:
                     raise ValueError(
-                        f"Actor '{actor.name}' requires new_quantity for write operations (provide new_value_1/new_value_2)"
+                        f"Actor '{actor.name}' requires new_quantity or auto_increment for write operations"
                     )
         
         return self
@@ -199,7 +199,10 @@ class LocalTransactionRequest(BaseModel):
     role: str  # "read" or "write"
     isolation_level: IsolationLevel = IsolationLevel.READ_COMMITTED
     delay_seconds: float = 0.0
+    delay_before_commit: float = 0.0  # Delay after write but before commit (for dirty read testing)
+    delay_after_lock: float = 0.0  # Delay after FOR UPDATE lock (for write-write contention)
     new_quantity: Optional[int] = None
+    auto_increment: bool = False  # If True, increment quantity by 1 instead of setting
 
 
 @router.post("/local-transaction")
@@ -248,8 +251,8 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
             }
             
         elif payload.role == "write":
-            if payload.new_quantity is None:
-                raise ValueError("new_quantity required for write operations")
+            if payload.new_quantity is None and not payload.auto_increment:
+                raise ValueError("new_quantity or auto_increment required for write operations")
             
             # Get settings for origin node
             settings = get_settings()
@@ -263,20 +266,30 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
             current_qty = row["quantity"] if row else None
             current_payload = row["payload"] if row else None
             
-            # Optional delay
+            # Delay after getting lock (for write-write contention testing)
+            if payload.delay_after_lock > 0:
+                await asyncio.sleep(payload.delay_after_lock)
+            
+            # Optional delay using pg_sleep
             if payload.delay_seconds > 0:
                 await conn.execute("SELECT pg_sleep($1)", payload.delay_seconds)
+            
+            # Determine final quantity value
+            if payload.auto_increment:
+                final_quantity = (current_qty or 0) + 1
+            else:
+                final_quantity = payload.new_quantity
             
             # Perform update
             await conn.execute(
                 "UPDATE orders SET quantity = $2, updated_at = NOW() WHERE order_id = $1",
                 payload.order_id,
-                payload.new_quantity,
+                final_quantity,
             )
             
             # Write to op_log for replication
             lamport_value = await lamport_utils.next_lamport(conn, origin_node)
-            op_payload = {"quantity": payload.new_quantity, "payload": current_payload}
+            op_payload = {"quantity": final_quantity, "payload": current_payload}
             op_payload_json = json.dumps(op_payload)
             await conn.execute(
                 """
@@ -295,11 +308,15 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
                 lamport_value,
             )
             
+            # Delay before commit (for dirty read testing in READ_WRITE scenarios)
+            if payload.delay_before_commit > 0:
+                await asyncio.sleep(payload.delay_before_commit)
+            
             await conn.execute("COMMIT")
             result["status"] = "committed"
             result["details"] = {
                 "locked_quantity": current_qty,
-                "committed_quantity": payload.new_quantity,
+                "committed_quantity": final_quantity,
             }
         else:
             raise ValueError(f"Unknown role: {payload.role}")

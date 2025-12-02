@@ -70,6 +70,7 @@ class TransactionActorInput:
     isolation_level: IsolationLevel
     delay_seconds: float = 0.0
     new_quantity: Optional[int] = None
+    auto_increment: bool = False  # If True, increment quantity by 1 instead of setting
 
 
 @dataclass
@@ -82,6 +83,7 @@ class ActorPlan:
     isolation_level: IsolationLevel
     delay_seconds: float
     new_quantity: Optional[int]
+    auto_increment: bool = False
 
 
 @dataclass
@@ -235,8 +237,37 @@ class TransactionOrchestrator:
                 order_id=str(order_id),
                 actors=[plan.actor_id for plan in plans],
             )
-            tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # For READ_WRITE scenario: writer executes first, reader follows
+            # This allows testing dirty reads (reader sees uncommitted) or 
+            # committed reads (reader sees after commit)
+            if state.payload.scenario == ScenarioType.READ_WRITE and len(plans) == 2:
+                writer_plan = plans[0]  # First actor is writer
+                reader_plan = plans[1]  # Second actor is reader
+                
+                # Start writer first
+                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                
+                # Small delay to let writer start its transaction and perform UPDATE
+                await asyncio.sleep(0.3)
+                
+                # Then start reader
+                reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
+                
+                results = await asyncio.gather(writer_task, reader_task, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.WRITE_WRITE and len(plans) == 2:
+                # WRITE_WRITE: Both writers start simultaneously to create contention
+                # This tests FOR UPDATE locking behavior and serialization conflicts
+                await state.log("write_write_concurrent_start", 
+                    message="Both writers starting simultaneously for maximum contention")
+                
+                tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                # Other scenarios: run concurrently
+                tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            
             for result in results:
                 if isinstance(result, Exception) and state.status == "running":
                     state.status = "failed"
@@ -306,8 +337,9 @@ class TransactionOrchestrator:
             node = actor.node.lower()
             if node not in self._node_dsns:
                 raise ValueError(f"Unknown node '{actor.node}'")
-            if role == "write" and actor.new_quantity is None:
-                raise ValueError(f"Actor {actor_id} must provide new_quantity for write operations")
+            # For write role: need either new_quantity OR auto_increment
+            if role == "write" and actor.new_quantity is None and not actor.auto_increment:
+                raise ValueError(f"Actor {actor_id} must provide new_quantity or use auto_increment for write operations")
             plan = ActorPlan(
                 actor_id=actor_id,
                 node=node,
@@ -315,6 +347,7 @@ class TransactionOrchestrator:
                 isolation_level=actor.isolation_level,
                 delay_seconds=max(0.0, actor.delay_seconds),
                 new_quantity=actor.new_quantity,
+                auto_increment=actor.auto_increment,
             )
             state.actor_levels[actor_id] = actor.isolation_level
             plans.append(plan)
@@ -328,7 +361,9 @@ class TransactionOrchestrator:
             "isolation_level": plan.isolation_level.sql_clause,
             "delay_seconds": plan.delay_seconds,
         }
-        if plan.new_quantity is not None:
+        if plan.auto_increment:
+            state.client_status[plan.actor_id]["auto_increment"] = True
+        elif plan.new_quantity is not None:
             state.client_status[plan.actor_id]["new_quantity"] = plan.new_quantity
 
         # Check if this is a remote node - use HTTP instead of direct DB connection
@@ -356,6 +391,11 @@ class TransactionOrchestrator:
                 details = await self._perform_read(state, conn, plan, order_id)
             else:
                 details = await self._perform_write(state, conn, plan, order_id)
+                # For READ_WRITE scenario: writer delays before commit to allow
+                # reader to attempt reading uncommitted data (dirty read test)
+                if state.payload.scenario == ScenarioType.READ_WRITE:
+                    await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=1.0)
+                    await asyncio.sleep(1.0)  # Hold transaction open for dirty read testing
             await conn.execute("COMMIT")
             state.client_status[plan.actor_id]["status"] = "committed"
             state.actor_results[plan.actor_id] = {
@@ -410,7 +450,14 @@ class TransactionOrchestrator:
                 "isolation_level": plan.isolation_level.value,
                 "delay_seconds": plan.delay_seconds,
                 "new_quantity": plan.new_quantity,
+                "auto_increment": plan.auto_increment,
             }
+            # For READ_WRITE scenario writers, add delay before commit for dirty read testing
+            if state.payload.scenario == ScenarioType.READ_WRITE and plan.role == "write":
+                payload["delay_before_commit"] = 1.0
+            # For WRITE_WRITE scenario, add delay after lock to create contention
+            if state.payload.scenario == ScenarioType.WRITE_WRITE and plan.role == "write":
+                payload["delay_after_lock"] = 0.5
             url = f"{node_url}/orchestrator/local-transaction"
             result = await self._http_client.post_json(url, payload)
 
@@ -511,19 +558,33 @@ class TransactionOrchestrator:
         current_qty = row["quantity"] if row else None
         current_payload = row["payload"] if row else None
         await state.log("write_locked", actor_id=plan.actor_id, quantity=current_qty)
+        
+        # For WRITE_WRITE: add delay after getting lock to let other writer queue up
+        # This creates contention and demonstrates serialization behavior
+        if state.payload.scenario == ScenarioType.WRITE_WRITE:
+            await asyncio.sleep(0.5)  # Hold lock to create contention
+        
         if plan.delay_seconds:
             await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
             await state.log("pg_sleep", actor_id=plan.actor_id, seconds=plan.delay_seconds)
+        
+        # Determine the new quantity value
+        if plan.auto_increment:
+            # Auto-increment: add 1 to current quantity
+            final_quantity = (current_qty or 0) + 1
+        else:
+            final_quantity = plan.new_quantity
+        
         await conn.execute(
             "UPDATE orders SET quantity = $2, updated_at = NOW() WHERE order_id = $1",
             order_id,
-            plan.new_quantity,
+            final_quantity,
         )
         
         # Write to op_log for replication
         origin_node = self.settings.node_name
         lamport_value = await lamport_utils.next_lamport(conn, origin_node)
-        op_payload = {"quantity": plan.new_quantity, "payload": current_payload}
+        op_payload = {"quantity": final_quantity, "payload": current_payload}
         op_payload_json = json.dumps(op_payload)
         await conn.execute(
             """
@@ -546,11 +607,11 @@ class TransactionOrchestrator:
             "write_complete",
             actor_id=plan.actor_id,
             previous_quantity=current_qty,
-            committed_quantity=plan.new_quantity,
+            committed_quantity=final_quantity,
         )
         return {
             "locked_quantity": current_qty,
-            "committed_quantity": plan.new_quantity,
+            "committed_quantity": final_quantity,
         }
 
     async def _collect_summary(self, state: RunState) -> Dict[str, Any]:
@@ -573,6 +634,31 @@ class TransactionOrchestrator:
             for actor_id, level in state.actor_levels.items()
         }
         note = next((level.note for level in state.actor_levels.values() if level.note), None)
+        
+        # Generate verdict based on scenario and results
+        verdict = None
+        if state.payload.scenario == ScenarioType.WRITE_WRITE:
+            # For WRITE_WRITE: analyze if both increments succeeded
+            committed_count = sum(
+                1 for info in state.client_status.values() 
+                if info.get("status") == "committed"
+            )
+            conflict_count = len(state.serialization_conflicts)
+            
+            if committed_count == 2 and conflict_count == 0:
+                if delta == 2:
+                    verdict = "✅ Both writers committed successfully. Quantity increased by 2 (no lost update). FOR UPDATE locking prevented conflicts."
+                elif delta == 1:
+                    verdict = "⚠️ Both writers committed but only +1 delta. Possible race condition or same value written."
+                else:
+                    verdict = f"Both writers committed. Delta: {delta}"
+            elif committed_count == 1 and conflict_count == 1:
+                verdict = "✅ One writer succeeded, one aborted (serialization conflict). This is expected behavior for REPEATABLE READ/SERIALIZABLE isolation."
+            elif conflict_count > 0:
+                verdict = f"⚠️ Serialization conflicts detected: {conflict_count}. {committed_count} writer(s) committed."
+            else:
+                verdict = f"Writers status: {committed_count} committed, {conflict_count} conflicts."
+        
         return {
             "order_id": str(order_id),
             "initial_quantity": state.initial_quantity,
@@ -583,6 +669,7 @@ class TransactionOrchestrator:
             "isolation_overview": isolation_overview,
             "read_uncommitted_note": note,
             "serialization_conflicts": state.serialization_conflicts,
+            "verdict": verdict,
             "replication_note": "Node snapshots reflect latest pull at query time; minor lag is expected.",
         }
 

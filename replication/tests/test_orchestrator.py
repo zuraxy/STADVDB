@@ -205,13 +205,13 @@ async def test_write_write_serialization_conflict(orchestrator):
 				name="writer_a",
 				node="node0",
 				isolation_level=IsolationLevel.SERIALIZABLE,
-				new_quantity=10,
+				auto_increment=True,
 			),
 			TransactionActorInput(
 				name="writer_b",
 				node="node0",
 				isolation_level=IsolationLevel.SERIALIZABLE,
-				new_quantity=11,
+				auto_increment=True,
 			),
 		],
 	)

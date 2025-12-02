@@ -28,7 +28,7 @@ const scenarioOptions = [
   {
     id: 'WRITE_WRITE',
     label: 'Writer vs Writer',
-    description: 'Two writers concurrently update the same row to provoke serialization conflicts.',
+    description: 'Two writers concurrently increment the same row. Each reads current value and adds 1. Tests for lost updates and serialization conflicts.',
   },
 ];
 
@@ -247,10 +247,20 @@ export function TransactionOrchestrator() {
   }, [statusSnapshot]);
   const serializationConflicts = statusSnapshot?.result_summary?.serialization_conflicts || [];
 
-  const isolationNote =
-    isolation === 'READ_UNCOMMITTED'
-      ? 'PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED to stay standards compliant.'
-      : null;
+  const isolationNote = useMemo(() => {
+    if (isolation === 'READ_UNCOMMITTED') {
+      return 'PostgreSQL promotes READ UNCOMMITTED to READ COMMITTED to stay standards compliant.';
+    }
+    if (scenario === 'WRITE_WRITE') {
+      if (isolation === 'READ_COMMITTED') {
+        return 'With FOR UPDATE locking, second writer waits for first. Both increments should succeed.';
+      }
+      if (isolation === 'REPEATABLE_READ' || isolation === 'SERIALIZABLE') {
+        return 'Expect one writer to abort with a serialization conflict. Only one increment succeeds.';
+      }
+    }
+    return null;
+  }, [isolation, scenario]);
 
   const getLogIcon = (event) => {
     const iconMap = {
@@ -260,6 +270,8 @@ export function TransactionOrchestrator() {
       'read_complete': <Check className="w-3.5 h-3.5 text-emerald-500" />,
       'write_locked': <Database className="w-3.5 h-3.5 text-amber-500" />,
       'write_complete': <Edit3 className="w-3.5 h-3.5 text-emerald-500" />,
+      'write_delay_before_commit': <Clock className="w-3.5 h-3.5 text-orange-500" />,
+      'write_write_concurrent_start': <Zap className="w-3.5 h-3.5 text-purple-500" />,
       'pg_sleep': <Clock className="w-3.5 h-3.5 text-slate-400" />,
       'client_error': <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />,
       'client_serialization_abort': <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />,
@@ -277,6 +289,8 @@ export function TransactionOrchestrator() {
       'read_complete': 'Read Complete',
       'write_locked': 'Row Locked',
       'write_complete': 'Write Complete',
+      'write_delay_before_commit': 'Holding Transaction',
+      'write_write_concurrent_start': 'Concurrent Writers Starting',
       'pg_sleep': 'Waiting',
       'client_error': 'Error',
       'client_serialization_abort': 'Serialization Conflict',
@@ -526,38 +540,41 @@ export function TransactionOrchestrator() {
           </div>
         </div>
 
-        {requiresWriter && (
+        {requiresWriter && scenario === 'READ_WRITE' && (
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="newValue1" className="text-slate-700 font-medium">
-                {scenario === 'READ_WRITE' ? 'Writer target quantity' : 'Writer A increment'}
+                Writer target quantity
               </Label>
               <Input
                 id="newValue1"
                 type="number"
                 value={newValue1}
                 onChange={(e) => setNewValue1(e.target.value)}
-                placeholder={scenario === 'READ_WRITE' ? 'e.g., 42' : 'e.g., 1'}
+                placeholder="e.g., 42"
                 className="bg-white border-slate-300"
               />
               <p className="text-xs text-muted-foreground">
-                Applies to Node X client ({scenario === 'READ_WRITE' ? 'absolute set' : 'increment'}).
+                The value the writer will set the quantity to.
               </p>
             </div>
-            {requiresSecondWriter && (
+          </div>
+        )}
+
+        {requiresSecondWriter && (
+          <div className="rounded-md border border-purple-100 bg-purple-50 px-4 py-3 text-sm text-purple-800">
+            <div className="flex items-start gap-3">
+              <Zap className="w-4 h-4 mt-0.5" />
               <div className="space-y-2">
-                <Label htmlFor="newValue2" className="text-slate-700 font-medium">Writer B increment</Label>
-                <Input
-                  id="newValue2"
-                  type="number"
-                  value={newValue2}
-                  onChange={(e) => setNewValue2(e.target.value)}
-                  placeholder="e.g., 1"
-                  className="bg-white border-slate-300"
-                />
-                <p className="text-xs text-muted-foreground">Applied to Node Y writer.</p>
+                <p className="font-medium">Auto-Increment Mode</p>
+                <p>Both writers will read the current quantity and increment by 1. This tests for <strong>lost updates</strong>:</p>
+                <ul className="list-disc list-inside space-y-1 text-xs">
+                  <li><strong>READ COMMITTED:</strong> With FOR UPDATE lock, second writer waits. Both increments succeed (qty +2).</li>
+                  <li><strong>REPEATABLE READ:</strong> Second writer gets serialization error. One increment succeeds (qty +1).</li>
+                  <li><strong>SERIALIZABLE:</strong> Strictest isolation. One writer aborts with serialization conflict.</li>
+                </ul>
               </div>
-            )}
+            </div>
           </div>
         )}
 
@@ -724,7 +741,11 @@ export function TransactionOrchestrator() {
                       <div className="flex items-start justify-between gap-3">
                         <div>
                           <p className="text-sm font-semibold">{clientId}</p>
-                          <p className="text-xs capitalize">{info.role} · {info.node}</p>
+                          <p className="text-xs capitalize">
+                            {info.role} · {info.node}
+                            {info.auto_increment && <span className="ml-1 text-purple-600">(+1 increment)</span>}
+                            {info.new_quantity !== undefined && <span className="ml-1 text-blue-600">(set to {info.new_quantity})</span>}
+                          </p>
                           {info.steps?.length > 0 && (
                             <div className="mt-2 space-y-1 text-xs text-slate-600 max-h-24 overflow-y-auto">
                               {info.steps.slice(-4).map((step, idx) => (
