@@ -36,26 +36,95 @@ class TransactionActorModel(BaseModel):
 
 
 class RunOrchestrationRequest(BaseModel):
+    """Request model that accepts both frontend format and explicit actors format."""
     scenario: ScenarioType
     order_id: Optional[UUID] = None
-    actors: List[TransactionActorModel]
+    # Explicit actors array (advanced usage)
+    actors: Optional[List[TransactionActorModel]] = None
+    # Frontend simplified fields
+    isolation_level: Optional[IsolationLevel] = IsolationLevel.READ_COMMITTED
+    parallel_clients: Optional[int] = Field(default=2, ge=2, le=16)
+    node_x: Optional[str] = "node0"
+    node_y: Optional[str] = "node1"
+    new_value_1: Optional[int] = None
+    new_value_2: Optional[int] = None
 
     @model_validator(mode='after')
-    def validate_actors(self):
-        scenario = self.scenario
-        actors = self.actors or []
-        if scenario is None:
-            return self
-        expected = scenario.roles
-        if len(actors) != len(expected):
-            raise ValueError(
-                f"Scenario {scenario.value} requires exactly {len(expected)} actors"
-            )
-        for actor, role in zip(actors, expected):
-            if role == "write" and actor.new_quantity is None:
+    def validate_and_build_actors(self):
+        # If actors are explicitly provided, validate them
+        if self.actors is not None and len(self.actors) > 0:
+            scenario = self.scenario
+            expected = scenario.roles
+            if len(self.actors) != len(expected):
                 raise ValueError(
-                    f"Actor '{actor.name}' must include new_quantity for write operations"
+                    f"Scenario {scenario.value} requires exactly {len(expected)} actors"
                 )
+            for actor, role in zip(self.actors, expected):
+                if role == "write" and actor.new_quantity is None:
+                    raise ValueError(
+                        f"Actor '{actor.name}' must include new_quantity for write operations"
+                    )
+            return self
+        
+        # Build actors from frontend simplified fields
+        scenario = self.scenario
+        isolation = self.isolation_level or IsolationLevel.READ_COMMITTED
+        
+        if scenario == ScenarioType.READ_READ:
+            # Two readers on different nodes
+            self.actors = [
+                TransactionActorModel(
+                    name="reader_a",
+                    node=self.node_x or "node0",
+                    isolation_level=isolation,
+                ),
+                TransactionActorModel(
+                    name="reader_b",
+                    node=self.node_y or "node1",
+                    isolation_level=isolation,
+                ),
+            ]
+        elif scenario == ScenarioType.READ_WRITE:
+            # One writer, one reader
+            self.actors = [
+                TransactionActorModel(
+                    name="writer",
+                    node=self.node_x or "node0",
+                    isolation_level=isolation,
+                    new_quantity=self.new_value_1,
+                ),
+                TransactionActorModel(
+                    name="reader",
+                    node=self.node_y or "node1",
+                    isolation_level=isolation,
+                ),
+            ]
+        elif scenario == ScenarioType.WRITE_WRITE:
+            # Two writers on same or different nodes
+            self.actors = [
+                TransactionActorModel(
+                    name="writer_a",
+                    node=self.node_x or "node0",
+                    isolation_level=isolation,
+                    new_quantity=self.new_value_1,
+                ),
+                TransactionActorModel(
+                    name="writer_b",
+                    node=self.node_y or "node1",
+                    isolation_level=isolation,
+                    new_quantity=self.new_value_2,
+                ),
+            ]
+        
+        # Validate the generated actors
+        if self.actors:
+            expected = scenario.roles
+            for actor, role in zip(self.actors, expected):
+                if role == "write" and actor.new_quantity is None:
+                    raise ValueError(
+                        f"Actor '{actor.name}' requires new_quantity for write operations (provide new_value_1/new_value_2)"
+                    )
+        
         return self
 
     def to_input(self) -> OrchestrationInput:
