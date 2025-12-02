@@ -85,13 +85,26 @@ export function DatabaseDashboard() {
     setError(null);
 
     try {
+      console.log('🔄 Fetching data from all nodes...');
       const [statusResponse, ordersResponse, metricsResponse, node1Orders, node2Orders] = await Promise.all([
         fetchReplicationStatus(),
         fetchAllOrders(),
         fetchAllNodeMetrics(),
-        fetchNodeOrders('node1').catch(err => { console.error('Node1 fetch failed:', err); return []; }),
-        fetchNodeOrders('node2').catch(err => { console.error('Node2 fetch failed:', err); return []; }),
+        fetchNodeOrders('node1').catch(err => { 
+          console.error('❌ Node1 fetch failed:', err); 
+          return []; 
+        }),
+        fetchNodeOrders('node2').catch(err => { 
+          console.error('❌ Node2 fetch failed:', err); 
+          return []; 
+        }),
       ]);
+
+      console.log('✅ Data fetched:', {
+        node0Orders: ordersResponse?.length || 0,
+        node1Orders: node1Orders?.length || 0,
+        node2Orders: node2Orders?.length || 0,
+      });
 
       applyReplicationStatus(statusResponse);
       setNodeMetrics(metricsResponse);
@@ -110,7 +123,7 @@ export function DatabaseDashboard() {
       const endIndex = startIndex + itemsPerPage;
       setData(rows.slice(startIndex, endIndex));
     } catch (err) {
-      console.error('Failed to fetch data:', err);
+      console.error('❌ Failed to fetch data:', err);
       setError(err.message || 'Failed to connect to database nodes');
       applyReplicationStatus(null, 'error');
     } finally {

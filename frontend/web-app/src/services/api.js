@@ -42,12 +42,20 @@ export const fetchAllOrders = async () => {
  * @returns {Promise<Array>} Array of orders from that node
  */
 export const fetchNodeOrders = async (nodeName) => {
+  console.log(`📡 Fetching orders from ${nodeName}...`);
   if (nodeName === 'node0') {
     // Node0 is the master, fetch normally
     return fetchAPI('/orders');
   }
   // Proxy through node0 to get local data from other nodes
-  return fetchAPI(`/proxy/node/${nodeName}/orders`);
+  try {
+    const result = await fetchAPI(`/proxy/node/${nodeName}/orders`);
+    console.log(`✅ ${nodeName} returned ${result?.length || 0} orders`);
+    return result;
+  } catch (error) {
+    console.error(`❌ Failed to fetch from ${nodeName}:`, error);
+    throw error;
+  }
 };
 
 /**
