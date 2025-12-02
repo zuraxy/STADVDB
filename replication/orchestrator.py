@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -239,10 +240,12 @@ class TransactionOrchestrator:
 			quantity,
 			payload_json,
 		)
-		return order_id, quantity
-	finally:
-		await conn.close()	def _build_plans(self, state: RunState, order_id: UUID) -> List[ClientPlan]:
-		scenario = state.payload.scenario
+	return order_id, quantity
+finally:
+	await conn.close()
+
+def _build_plans(self, state: RunState, order_id: UUID) -> List[ClientPlan]:
+	scenario = state.payload.scenario
 		count = max(1, state.payload.parallel_clients)
 		if scenario == "Case1_readers_only":
 			return self._case_readers_only(order_id, count)
