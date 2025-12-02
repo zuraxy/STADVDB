@@ -299,10 +299,12 @@ async def apply_op_tx(conn, op_record: OpRecord) -> None:
 			payload = op_record.payload or {}
 			quantity = payload.get("quantity")
 			order_payload = payload.get("payload")
+			# Convert payload dict to JSON string for JSONB column
+			order_payload_json = json.dumps(order_payload) if order_payload is not None else None
 			await conn.execute(
 				"""
 				INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-				VALUES ($1,$2,$3,$4,$4)
+				VALUES ($1,$2,$3::jsonb,$4,$4)
 				ON CONFLICT (order_id)
 				DO UPDATE SET quantity = EXCLUDED.quantity,
 							  payload = EXCLUDED.payload,
@@ -310,7 +312,7 @@ async def apply_op_tx(conn, op_record: OpRecord) -> None:
 				""",
 				op_record.row_id,
 				quantity,
-				order_payload,
+				order_payload_json,
 				op_record.ts,
 			)
 		await conn.execute(

@@ -217,30 +217,31 @@ class TransactionOrchestrator:
 		dsn = self._node_dsns.get(node)
 		if not dsn:
 			raise RuntimeError(f"Missing DSN for node {node}")
-		conn = await self._connection_factory(dsn)
-		try:
-			row = await conn.fetchrow(
-				"SELECT order_id, quantity FROM orders ORDER BY updated_at DESC LIMIT 1"
-			)
-			if row:
-				return row["order_id"], row["quantity"]
-			order_id = uuid4()
-			quantity = 1 if node != "node2" else self.settings.partition_rule + 1
-			await conn.execute(
-				"""
-				INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-				VALUES ($1, $2, $3, NOW(), NOW())
-				ON CONFLICT (order_id) DO NOTHING
-				""",
-				order_id,
-				quantity,
-				{},
-			)
-			return order_id, quantity
-		finally:
-			await conn.close()
-
-	def _build_plans(self, state: RunState, order_id: UUID) -> List[ClientPlan]:
+	conn = await self._connection_factory(dsn)
+	try:
+		row = await conn.fetchrow(
+			"SELECT order_id, quantity FROM orders ORDER BY updated_at DESC LIMIT 1"
+		)
+		if row:
+			return row["order_id"], row["quantity"]
+		order_id = uuid4()
+		quantity = 1 if node != "node2" else self.settings.partition_rule + 1
+		# Convert empty dict to JSON string for JSONB column
+		import json
+		payload_json = json.dumps({})
+		await conn.execute(
+			"""
+			INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
+			VALUES ($1, $2, $3::jsonb, NOW(), NOW())
+			ON CONFLICT (order_id) DO NOTHING
+			""",
+			order_id,
+			quantity,
+			payload_json,
+		)
+		return order_id, quantity
+	finally:
+		await conn.close()	def _build_plans(self, state: RunState, order_id: UUID) -> List[ClientPlan]:
 		scenario = state.payload.scenario
 		count = max(1, state.payload.parallel_clients)
 		if scenario == "Case1_readers_only":
