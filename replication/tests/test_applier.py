@@ -214,6 +214,21 @@ async def test_applier_max_attempts_triggers_apply_and_skip(monkeypatch, dummy_p
 
 
 @pytest.mark.asyncio
+async def test_applier_purges_local_row_on_partition_mismatch(dummy_pool, settings, op_factory) -> None:
+	op = op_factory(20, quantity=9)
+	dummy_pool.conn.local_rows[op.row_id] = 2
+	crud = StubCrud([op])
+	worker = ApplierWorker(dummy_pool, settings, crud_module=crud)
+
+	await worker.apply_once()
+
+	assert op.op_id in crud.marked
+	assert op.row_id not in dummy_pool.conn.local_rows
+	assert dummy_pool.conn.deleted_rows == [op.row_id]
+	assert worker.skipped_count == 1
+
+
+@pytest.mark.asyncio
 async def test_concurrent_appliers_do_not_double_apply(dummy_pool, settings, op_factory) -> None:
 	shared_conn = DummyConn()
 	pool_a = DummyPool(shared_conn)

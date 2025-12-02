@@ -104,6 +104,8 @@ class ApplierWorker:
             self._log_decision(op, decision, "RETRY", attempt)
             return "retry"
         if decision.mode == "skip":
+            if op.op_type != "delete" and decision.reason in {"partition_mismatch", "target_node_mismatch"}:
+                await self._purge_local_row(conn, op.row_id)
             await self.crud.mark_op_applied(conn, op.op_id)
             await self.crud.insert_ack(conn, op.op_id, self.settings.node_name)
             self.skipped_count += 1
@@ -280,3 +282,7 @@ class ApplierWorker:
     def _debug(self, message: str, *args) -> None:
         if self.settings.applier_debug:
             _LOGGER.debug(message, *args)
+
+    async def _purge_local_row(self, conn, row_id: UUID) -> None:
+        await conn.execute("DELETE FROM orders WHERE order_id=$1", row_id)
+        self._debug("purged local row=%s due to partition mismatch", row_id)

@@ -18,8 +18,15 @@ class DummyConn:
 
 	def __init__(self):
 		self.local_rows = {}
+		self.deleted_rows = []
 
-	async def execute(self, *_, **__):
+	async def execute(self, query, *args, **__):
+		needle = query.strip().lower()
+		if needle.startswith("delete from orders"):
+			row_id = args[0] if args else None
+			self.deleted_rows.append(row_id)
+			self.local_rows.pop(row_id, None)
+			return "DELETE 1"
 		return "EXECUTE"
 
 	async def fetch(self, *_, **__):  # pragma: no cover - not used in unit tests
