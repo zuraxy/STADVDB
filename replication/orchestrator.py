@@ -144,6 +144,7 @@ class TransactionOrchestrator:
         settings: Settings,
         promoted_flag: Callable[[], bool],
         connection_factory: Optional[Callable[[str], Awaitable[asyncpg.Connection]]] = None,
+        http_client: Optional[Any] = None,
     ):
         self.settings = settings
         self._promoted_flag = promoted_flag
@@ -151,6 +152,8 @@ class TransactionOrchestrator:
         self._run_lock = asyncio.Lock()
         self._connection_factory = connection_factory or (lambda dsn: asyncpg.connect(dsn=dsn))
         self._node_dsns = self._build_node_dsn_map()
+        self._http_client = http_client
+        self._node_urls = self._build_node_url_map()
 
     def _build_node_dsn_map(self) -> Dict[str, Optional[str]]:
         mapping = {
@@ -161,6 +164,22 @@ class TransactionOrchestrator:
         local_key = self.settings.node_name.lower()
         mapping[local_key] = self.settings.database_dsn
         return mapping
+
+    def _build_node_url_map(self) -> Dict[str, Optional[str]]:
+        """Build a mapping from node names to their HTTP base URLs."""
+        mapping: Dict[str, Optional[str]] = {}
+        # Local node doesn't need a URL (we use direct DB connection)
+        local_key = self.settings.node_name.lower()
+        mapping[local_key] = None  # None means use local DB
+        # Map peer nodes from config
+        for peer in self.settings.peer_nodes:
+            peer_key = peer.name.lower()
+            mapping[peer_key] = peer.base_url
+        return mapping
+
+    def _is_local_node(self, node: str) -> bool:
+        """Check if the given node is the local node."""
+        return node.lower() == self.settings.node_name.lower()
 
     def _primary_node(self) -> str:
         if self.settings.node_name == self.settings.default_master:
@@ -310,6 +329,13 @@ class TransactionOrchestrator:
         }
         if plan.new_quantity is not None:
             state.client_status[plan.actor_id]["new_quantity"] = plan.new_quantity
+
+        # Check if this is a remote node - use HTTP instead of direct DB connection
+        if not self._is_local_node(plan.node):
+            await self._execute_remote_actor(state, plan, order_id)
+            return
+
+        # Local node - use direct database connection
         dsn = self._node_dsns.get(plan.node)
         if not dsn:
             raise RuntimeError(f"Missing DSN for node {plan.node}")
@@ -356,6 +382,86 @@ class TransactionOrchestrator:
                 raise
         finally:
             await conn.close()
+
+    async def _execute_remote_actor(self, state: RunState, plan: ActorPlan, order_id: UUID) -> None:
+        """Execute an actor on a remote node via HTTP API."""
+        node_url = self._node_urls.get(plan.node)
+        if not node_url:
+            raise RuntimeError(f"No URL configured for remote node {plan.node}")
+        if not self._http_client:
+            raise RuntimeError("HTTP client not configured for remote node communication")
+
+        await state.log(
+            "transaction_started",
+            actor_id=plan.actor_id,
+            node=plan.node,
+            role=plan.role,
+            isolation=plan.isolation_level.sql_clause,
+            remote=True,
+        )
+
+        try:
+            # Call the remote node's local-transaction endpoint
+            payload = {
+                "order_id": str(order_id),
+                "actor_id": plan.actor_id,
+                "role": plan.role,
+                "isolation_level": plan.isolation_level.value,
+                "delay_seconds": plan.delay_seconds,
+                "new_quantity": plan.new_quantity,
+            }
+            url = f"{node_url}/orchestrator/local-transaction"
+            result = await self._http_client.post_json(url, payload)
+
+            # Process the result
+            remote_status = result.get("status", "error")
+            state.client_status[plan.actor_id]["status"] = remote_status
+
+            if remote_status == "committed":
+                details = result.get("details", {})
+                state.actor_results[plan.actor_id] = {
+                    "node": plan.node,
+                    "role": plan.role,
+                    "isolation_level": plan.isolation_level.sql_clause,
+                    "delay_seconds": plan.delay_seconds,
+                    "details": details,
+                }
+                if plan.role == "read":
+                    await state.log(
+                        "read_complete",
+                        actor_id=plan.actor_id,
+                        initial_quantity=details.get("initial_quantity"),
+                        final_quantity=details.get("final_quantity"),
+                    )
+                else:
+                    await state.log(
+                        "write_complete",
+                        actor_id=plan.actor_id,
+                        previous_quantity=details.get("locked_quantity"),
+                        committed_quantity=details.get("committed_quantity"),
+                    )
+            elif remote_status == "serialization_aborted":
+                state.serialization_conflicts.append(plan.actor_id)
+                await state.log(
+                    "client_serialization_abort",
+                    actor_id=plan.actor_id,
+                    error=result.get("error", "Serialization conflict"),
+                )
+            else:
+                await state.log(
+                    "client_error",
+                    actor_id=plan.actor_id,
+                    error=result.get("error", "Remote transaction failed"),
+                )
+                state.status = "failed"
+                raise RuntimeError(result.get("error", "Remote transaction failed"))
+
+        except Exception as exc:
+            if "serialization" not in str(exc).lower():
+                await state.log("client_error", actor_id=plan.actor_id, error=str(exc))
+                state.client_status[plan.actor_id]["status"] = "error"
+                state.status = "failed"
+            raise
 
     async def _perform_read(
         self,

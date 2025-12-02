@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+import asyncpg
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
+from ..db import get_pool
 from ..orchestrator import (
     IsolationLevel,
     OrchestrationInput,
@@ -180,6 +182,107 @@ async def orchestration_abort(request: Request, run_id: str) -> dict:
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Run not found")
     return {"run_id": run_id, "status": "aborted"}
+
+
+class LocalTransactionRequest(BaseModel):
+    """Request to execute a transaction actor on this node's local database."""
+    order_id: UUID
+    actor_id: str
+    role: str  # "read" or "write"
+    isolation_level: IsolationLevel = IsolationLevel.READ_COMMITTED
+    delay_seconds: float = 0.0
+    new_quantity: Optional[int] = None
+
+
+@router.post("/local-transaction")
+async def execute_local_transaction(request: Request, payload: LocalTransactionRequest) -> Dict[str, Any]:
+    """
+    Execute a transaction on THIS node's local database.
+    Called by the orchestrator on the master node to run actors on slave nodes.
+    """
+    pool = get_pool()
+    result: Dict[str, Any] = {
+        "actor_id": payload.actor_id,
+        "role": payload.role,
+        "status": "running",
+    }
+    
+    conn = await pool.acquire()
+    try:
+        await conn.execute(
+            f"BEGIN TRANSACTION ISOLATION LEVEL {payload.isolation_level.sql_clause}"
+        )
+        
+        if payload.role == "read":
+            # First read with FOR SHARE lock
+            snapshot = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
+                payload.order_id,
+            )
+            qty_before = snapshot["quantity"] if snapshot else None
+            
+            # Optional delay for concurrency testing
+            if payload.delay_seconds > 0:
+                await conn.execute("SELECT pg_sleep($1)", payload.delay_seconds)
+            
+            # Second read to check for changes
+            follow_up = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1",
+                payload.order_id,
+            )
+            qty_after = follow_up["quantity"] if follow_up else None
+            
+            await conn.execute("COMMIT")
+            result["status"] = "committed"
+            result["details"] = {
+                "initial_quantity": qty_before,
+                "final_quantity": qty_after,
+            }
+            
+        elif payload.role == "write":
+            if payload.new_quantity is None:
+                raise ValueError("new_quantity required for write operations")
+            
+            # Lock row for update
+            row = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1 FOR UPDATE",
+                payload.order_id,
+            )
+            current_qty = row["quantity"] if row else None
+            
+            # Optional delay
+            if payload.delay_seconds > 0:
+                await conn.execute("SELECT pg_sleep($1)", payload.delay_seconds)
+            
+            # Perform update
+            await conn.execute(
+                "UPDATE orders SET quantity = $2, updated_at = NOW() WHERE order_id = $1",
+                payload.order_id,
+                payload.new_quantity,
+            )
+            
+            await conn.execute("COMMIT")
+            result["status"] = "committed"
+            result["details"] = {
+                "locked_quantity": current_qty,
+                "committed_quantity": payload.new_quantity,
+            }
+        else:
+            raise ValueError(f"Unknown role: {payload.role}")
+            
+    except Exception as exc:
+        await conn.execute("ROLLBACK")
+        sqlstate = getattr(exc, "sqlstate", None)
+        if sqlstate == "40001":
+            result["status"] = "serialization_aborted"
+            result["error"] = str(exc)
+        else:
+            result["status"] = "error"
+            result["error"] = str(exc)
+    finally:
+        await pool.release(conn)
+    
+    return result
 
 
 @router.get("/stream/{run_id}")

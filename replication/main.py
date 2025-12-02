@@ -37,7 +37,11 @@ async def on_startup() -> None:  # pragma: no cover - exercised via integration 
 	app.state.http_client = HTTPClient()
 	app.state.replicator = ReplicatorWorker(pool, settings, app.state.http_client)
 	app.state.applier = ApplierWorker(pool, settings)
-	app.state.orchestrator = TransactionOrchestrator(settings, lambda: bool(app.state.promoted))
+	app.state.orchestrator = TransactionOrchestrator(
+		settings,
+		lambda: bool(app.state.promoted),
+		http_client=app.state.http_client,
+	)
 	await app.state.replicator.start()
 	await app.state.applier.start()
 	LOGGER.info("Startup complete for node %s", settings.node_name)
