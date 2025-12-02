@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders, fetchReplicationStatus } from '../services/api';
+import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics } from '../services/api';
 
 const DEFAULT_NODE_CARDS = [
   { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
@@ -65,6 +65,7 @@ export function DatabaseDashboard() {
   const [totalRecords, setTotalRecords] = useState(0);
   const [partitionRule, setPartitionRule] = useState(null);
   const [nodeCards, setNodeCards] = useState(() => buildNodeState());
+  const [nodeMetrics, setNodeMetrics] = useState({}); // NEW: Store metrics per node
   
   const itemsPerPage = 10;
 
@@ -82,12 +83,14 @@ export function DatabaseDashboard() {
     setError(null);
 
     try {
-      const [statusResponse, ordersResponse] = await Promise.all([
+      const [statusResponse, ordersResponse, metricsResponse] = await Promise.all([
         fetchReplicationStatus(),
         fetchAllOrders(),
+        fetchAllNodeMetrics(), // NEW: Fetch metrics from all nodes
       ]);
 
       applyReplicationStatus(statusResponse);
+      setNodeMetrics(metricsResponse); // NEW: Store metrics
 
       const rows = Array.isArray(ordersResponse) ? ordersResponse : [];
       setAllData(rows);
@@ -257,6 +260,25 @@ export function DatabaseDashboard() {
                     <p className="text-xs text-muted-foreground">
                       {describeNode(card)}
                     </p>
+                    {/* NEW: Display applier and replicator metrics */}
+                    {nodeMetrics[card.id] && !nodeMetrics[card.id].error && (
+                      <div className="text-xs text-gray-500 mt-2 space-y-0.5">
+                        {nodeMetrics[card.id].applier && (
+                          <>
+                            <div>Applied: {nodeMetrics[card.id].applier.applied_count || 0}</div>
+                            <div>Skipped: {nodeMetrics[card.id].applier.skipped_count || 0}</div>
+                          </>
+                        )}
+                        {nodeMetrics[card.id].replicator && (
+                          <div>Replicated: {nodeMetrics[card.id].replicator.total_replicated || 0}</div>
+                        )}
+                      </div>
+                    )}
+                    {nodeMetrics[card.id]?.error && (
+                      <div className="text-xs text-red-500 mt-1">
+                        Error: {nodeMetrics[card.id].error}
+                      </div>
+                    )}
                   </div>
                   <div className={`w-2 h-2 rounded-full ${getStatusColor(card.status)} animate-pulse`} />
                 </div>

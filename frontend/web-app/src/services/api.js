@@ -101,6 +101,37 @@ export const fetchReplicationStatus = async () => {
   return fetchAPI('/status/replication');
 };
 
+/**
+ * Fetch detailed metrics from all nodes
+ * @returns {Promise<Object>} Metrics from each node with applier and replicator stats
+ */
+export const fetchAllNodeMetrics = async () => {
+  const nodeUrls = {
+    node0: 'http://ccscloud.dlsu.edu.ph:60232/api',
+    node1: 'http://10.2.14.133:8001',
+    node2: 'http://10.2.14.134:8002',
+  };
+
+  const results = {};
+  
+  await Promise.all(
+    Object.entries(nodeUrls).map(async ([nodeId, baseUrl]) => {
+      try {
+        const response = await fetch(`${baseUrl}/status/replication`);
+        if (response.ok) {
+          results[nodeId] = await response.json();
+        } else {
+          results[nodeId] = { error: `HTTP ${response.status}` };
+        }
+      } catch (error) {
+        results[nodeId] = { error: error.message };
+      }
+    })
+  );
+
+  return results;
+};
+
 // ==================== HEALTH CHECK ====================
 
 /**
