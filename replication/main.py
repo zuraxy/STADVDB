@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import crud
 from .config import get_settings
@@ -20,6 +21,16 @@ LOGGER = logging.getLogger(__name__)
 
 settings = get_settings()
 app = FastAPI(title="Distributed Replicator", version="0.1.0")
+
+# Configure CORS
+app.add_middleware(
+	CORSMiddleware,
+	allow_origins=["*"],  # In production, specify exact origins
+	allow_credentials=True,
+	allow_methods=["*"],
+	allow_headers=["*"],
+)
+
 app.state.promoted = settings.promoted
 app.include_router(admin.router)
 app.include_router(orders.router)
