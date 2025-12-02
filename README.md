@@ -65,6 +65,10 @@ to make a new user:
 `\c node2db`
 `GRANT USAGE ON SCHEMA public TO app_user; GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.orders TO app_user; GRANT SELECT, INSERT, UPDATE ON TABLE public.op_log TO app_user; GRANT SELECT, INSERT ON TABLE public.log_acknowledgements TO app_user; GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO app_user;`
 
+sudo systemctl restart postgres
+sudo system status postgres
+sudo journalctl -u replication -f
+
 env node0:
 export DATABASE_DSN="postgresql://app_user:password@localhost:3306/node0db"
 export NODE_NAME="node0"
@@ -90,6 +94,28 @@ export POLL_INTERVAL="5"
 export DEFAULT_MASTER="node0"
 export PROMOTED="false"
 export PARTITION_RULE="5"
+
+Service
+Type=simple
+User=root
+WorkingDirectory=/root/STADVDB
+Environment="PYTHONPATH=/root/STADVDB"
+Environment="DATABASE_DSN=postgresql://postgres:postgres@localhost:3306/node0db"
+Environment="NODE_NAME=node0"
+Environment="DEFAULT_MASTER=node0"
+Environment="DEFAULT_MASTER_URL=http://10.2.14.132:8000"
+Environment="PEER_NODES=[{\"name\":\"node0\",\"url\":\"http://localhost:8000\"},{\"name\":\"node1\",\"url\":\"http://10.2.14.133:8001\"},{\"name\":\"node2\",\"url\":\"http://10.2.14.134:8002\"}]"
+Environment="POLL_INTERVAL=5"
+Environment="APPLIER_INTERVAL=2"
+Environment="PROMOTED=false"
+Environment="PARTITION_RULE=5"
+Environment="LOG_LEVEL=INFO"
+ExecStart=/root/STADVDB/replication/.venv/bin/python -m uvicorn replication.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
 
 start from root:
 # Node0 shell (on VM0)
