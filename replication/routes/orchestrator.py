@@ -6,7 +6,7 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field, root_validator
+from pydantic import BaseModel, Field, model_validator
 
 from ..orchestrator import (
     IsolationLevel,
@@ -40,12 +40,12 @@ class RunOrchestrationRequest(BaseModel):
     order_id: Optional[UUID] = None
     actors: List[TransactionActorModel]
 
-    @root_validator
-    def validate_actors(cls, values):
-        scenario: ScenarioType = values.get("scenario")
-        actors: List[TransactionActorModel] = values.get("actors") or []
+    @model_validator(mode='after')
+    def validate_actors(self):
+        scenario = self.scenario
+        actors = self.actors or []
         if scenario is None:
-            return values
+            return self
         expected = scenario.roles
         if len(actors) != len(expected):
             raise ValueError(
@@ -56,7 +56,7 @@ class RunOrchestrationRequest(BaseModel):
                 raise ValueError(
                     f"Actor '{actor.name}' must include new_quantity for write operations"
                 )
-        return values
+        return self
 
     def to_input(self) -> OrchestrationInput:
         return OrchestrationInput(
