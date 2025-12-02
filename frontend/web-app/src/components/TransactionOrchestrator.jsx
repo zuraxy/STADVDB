@@ -1,39 +1,34 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, FileText, Play, RefreshCw, Shield, StopCircle } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Textarea } from './ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import {
   abortOrchestratorRun,
   getOrchestratorLogs,
   getOrchestratorStatus,
   runOrchestratorScenario,
+  subscribeToOrchestratorStream,
 } from '../services/api';
 
 const scenarioOptions = [
   {
-    id: 'Case1_readers_only',
-    label: 'Case 1 · Readers Only',
-    description: 'Baseline scenario showing snapshot consistency with concurrent readers.',
+    id: 'read_read',
+    label: 'Readers vs Readers',
+    description: 'Two+ readers issue BEGIN/SELECT/pg_sleep/SELECT to visualize snapshot semantics.',
   },
   {
-    id: 'Case2_writer_readers',
-    label: 'Case 2 · Writer vs Readers',
-    description: 'One writer competes with readers to highlight non-repeatable reads.',
+    id: 'read_write',
+    label: 'Writer vs Readers',
+    description: 'A writer updates Node X while readers on Node Y observe visibility differences.',
   },
   {
-    id: 'Case3_concurrent_writers',
-    label: 'Case 3 · Concurrent Writers',
-    description: 'Multiple writers contend for the same row to surface serialization anomalies.',
-  },
-  {
-    id: 'custom',
-    label: 'Custom JSON Script',
-    description: 'Bring your own transactions and nodes (advanced).',
+    id: 'write_write',
+    label: 'Writer vs Writer',
+    description: 'Two writers concurrently update the same row to provoke serialization conflicts.',
   },
 ];
 
@@ -44,14 +39,7 @@ const isolationLevels = [
   { id: 'SERIALIZABLE', label: 'Serializable' },
 ];
 
-const defaultCustomScript = `[
-  {
-    "node": "node0",
-    "statements": [
-      { "sql": "SELECT pg_sleep(0.5)", "description": "custom delay" }
-    ]
-  }
-]`;
+const nodeOptions = ['node0', 'node1', 'node2'];
 
 const statusTone = {
   running: 'bg-blue-100 text-blue-800 border-blue-200',
@@ -69,30 +57,41 @@ const clientTone = {
 };
 
 export function TransactionOrchestrator() {
-  const [scenario, setScenario] = useState('Case1_readers_only');
+  const [scenario, setScenario] = useState('read_read');
   const [isolation, setIsolation] = useState('READ_COMMITTED');
   const [parallelClients, setParallelClients] = useState(2);
-  const [customJson, setCustomJson] = useState(defaultCustomScript);
+  const [orderId, setOrderId] = useState('');
+  const [nodeX, setNodeX] = useState('node0');
+  const [nodeY, setNodeY] = useState('node1');
+  const [newValue1, setNewValue1] = useState('');
+  const [newValue2, setNewValue2] = useState('');
   const [runId, setRunId] = useState(null);
   const [statusSnapshot, setStatusSnapshot] = useState(null);
   const [logs, setLogs] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [autoRefresh, setAutoRefresh] = useState(false);
+  const [streamError, setStreamError] = useState(null);
+  const streamRef = useRef(null);
 
   const activeScenario = useMemo(() => scenarioOptions.find((opt) => opt.id === scenario), [scenario]);
+  const requiresWriter = scenario !== 'read_read';
+  const requiresSecondWriter = scenario === 'write_write';
 
   const fetchRunData = useCallback(
     async (targetRunId) => {
       const effectiveRunId = targetRunId || runId;
       if (!effectiveRunId) return;
       try {
+        const hasLiveStream = Boolean(streamRef.current);
         const [statusPayload, logPayload] = await Promise.all([
           getOrchestratorStatus(effectiveRunId),
-          getOrchestratorLogs(effectiveRunId),
+          hasLiveStream ? Promise.resolve({ logs: [] }) : getOrchestratorLogs(effectiveRunId),
         ]);
         setStatusSnapshot(statusPayload);
-        setLogs(logPayload.logs || []);
+        if (!hasLiveStream) {
+          setLogs(logPayload.logs || []);
+        }
         if (statusPayload.status !== 'running') {
           setAutoRefresh(false);
         }
@@ -104,10 +103,46 @@ export function TransactionOrchestrator() {
     [runId],
   );
 
+  const attachStream = useCallback(
+    (targetRunId) => {
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
+      const source = subscribeToOrchestratorStream(targetRunId, {
+        onMessage: (entry) => {
+          setLogs((prev) => [...prev.slice(-199), entry]);
+        },
+        onError: () => {
+          setStreamError('Live stream interrupted. Falling back to polling.');
+          if (streamRef.current) {
+            streamRef.current.close();
+            streamRef.current = null;
+          }
+        },
+      });
+      if (source) {
+        streamRef.current = source;
+        setStreamError(null);
+      } else {
+        setStreamError('Live stream unavailable in this browser.');
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     if (!runId) return;
     fetchRunData(runId);
   }, [runId, fetchRunData]);
+
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.close();
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!runId || !autoRefresh) {
@@ -117,27 +152,46 @@ export function TransactionOrchestrator() {
     return () => clearInterval(interval);
   }, [autoRefresh, fetchRunData, runId]);
 
+  useEffect(() => {
+    if (statusSnapshot?.status && statusSnapshot.status !== 'running' && streamRef.current) {
+      streamRef.current.close();
+      streamRef.current = null;
+    }
+  }, [statusSnapshot]);
+
   const handleRun = async () => {
     setError(null);
     setIsSubmitting(true);
     try {
+      const normalizedClients = Math.min(16, Math.max(2, Number(parallelClients) || 2));
       const payload = {
         scenario,
         isolation_level: isolation,
-        parallel_clients: Math.min(16, Math.max(1, Number(parallelClients) || 1)),
+        parallel_clients: normalizedClients,
+        order_id: orderId.trim() || undefined,
+        node_x: nodeX,
+        node_y: nodeY,
       };
-      if (scenario === 'custom') {
-        const parsed = JSON.parse(customJson);
-        if (!Array.isArray(parsed) || parsed.length === 0) {
-          throw new Error('Custom transactions must be a non-empty array');
+      if (scenario !== 'read_read') {
+        const parsedValue1 = newValue1 === '' ? undefined : Number(newValue1);
+        if (Number.isNaN(parsedValue1)) {
+          throw new Error('New Value 1 must be numeric when provided');
         }
-        payload.custom_transactions = parsed;
+        payload.new_value_1 = parsedValue1;
+      }
+      if (scenario === 'write_write') {
+        const parsedValue2 = newValue2 === '' ? undefined : Number(newValue2);
+        if (Number.isNaN(parsedValue2)) {
+          throw new Error('New Value 2 must be numeric when provided');
+        }
+        payload.new_value_2 = parsedValue2;
       }
       const response = await runOrchestratorScenario(payload);
       setRunId(response.run_id);
       setStatusSnapshot(null);
       setLogs([]);
       setAutoRefresh(true);
+      attachStream(response.run_id);
       await fetchRunData(response.run_id);
     } catch (err) {
       setError(err.message || 'Failed to start orchestrator run');
@@ -150,6 +204,10 @@ export function TransactionOrchestrator() {
     if (!runId) return;
     try {
       await abortOrchestratorRun(runId);
+      if (streamRef.current) {
+        streamRef.current.close();
+        streamRef.current = null;
+      }
       setAutoRefresh(true);
       await fetchRunData(runId);
     } catch (err) {
@@ -185,6 +243,13 @@ export function TransactionOrchestrator() {
     if (!details || Object.keys(details).length === 0) {
       return '—';
     }
+    if (details.client_id && details.action) {
+      const base = `${details.client_id} · ${details.action}`;
+      if (details.error) {
+        return `${base} · ${details.error}`;
+      }
+      return base;
+    }
     if (details.description) {
       return details.description;
     }
@@ -194,6 +259,23 @@ export function TransactionOrchestrator() {
         return `${key}: ${text}`;
       })
       .join(' · ');
+  };
+
+  const summarizeStep = (step) => {
+    if (!step) return '';
+    if (step.error) {
+      return `${step.action}: ${step.error}`;
+    }
+    if (Array.isArray(step.result) && step.result.length > 0) {
+      const first = step.result[0];
+      if (first?.quantity !== undefined) {
+        return `${step.action}: qty ${first.quantity}`;
+      }
+    }
+    if (typeof step.result === 'string') {
+      return `${step.action}: ${step.result}`;
+    }
+    return step.action;
   };
 
   return (
@@ -268,15 +350,94 @@ export function TransactionOrchestrator() {
             <Input
               id="parallelClients"
               type="number"
-              min={1}
+              min={2}
               max={16}
               value={parallelClients}
-              onChange={(e) => setParallelClients(Math.max(1, Math.min(16, Number(e.target.value) || 1)))}
+              onChange={(e) => setParallelClients(Math.max(2, Math.min(16, Number(e.target.value) || 2)))}
               className="bg-white border-slate-300"
             />
-            <p className="text-xs text-muted-foreground">1-16 parallel client scripts per scenario.</p>
+            <p className="text-xs text-muted-foreground">2-16 concurrent scripts (writer included).</p>
           </div>
         </div>
+
+        <div className="grid gap-4 md:grid-cols-3">
+          <div className="space-y-2">
+            <Label htmlFor="orderId" className="text-slate-700 font-medium">Order ID (optional)</Label>
+            <Input
+              id="orderId"
+              value={orderId}
+              onChange={(e) => setOrderId(e.target.value)}
+              placeholder="Leave blank to auto-provision"
+              className="bg-white border-slate-300"
+            />
+            <p className="text-xs text-muted-foreground">Provide a UUID to target a specific order.</p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="nodeX" className="text-slate-700 font-medium">Node X (Writer / Primary)</Label>
+            <Select value={nodeX} onValueChange={setNodeX}>
+              <SelectTrigger id="nodeX" className="bg-white border-slate-300">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                {nodeOptions.map((node) => (
+                  <SelectItem key={node} value={node}>
+                    {node.toUpperCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="nodeY" className="text-slate-700 font-medium">Node Y (Readers / Secondary)</Label>
+            <Select value={nodeY} onValueChange={setNodeY}>
+              <SelectTrigger id="nodeY" className="bg-white border-slate-300">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="bg-white">
+                {nodeOptions.map((node) => (
+                  <SelectItem key={node} value={node}>
+                    {node.toUpperCase()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        {requiresWriter && (
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="newValue1" className="text-slate-700 font-medium">
+                {scenario === 'read_write' ? 'Writer target quantity' : 'Writer A increment'}
+              </Label>
+              <Input
+                id="newValue1"
+                type="number"
+                value={newValue1}
+                onChange={(e) => setNewValue1(e.target.value)}
+                placeholder={scenario === 'read_write' ? 'e.g., 42' : 'e.g., 1'}
+                className="bg-white border-slate-300"
+              />
+              <p className="text-xs text-muted-foreground">
+                Applies to Node X client ({scenario === 'read_write' ? 'absolute set' : 'increment'}).
+              </p>
+            </div>
+            {requiresSecondWriter && (
+              <div className="space-y-2">
+                <Label htmlFor="newValue2" className="text-slate-700 font-medium">Writer B increment</Label>
+                <Input
+                  id="newValue2"
+                  type="number"
+                  value={newValue2}
+                  onChange={(e) => setNewValue2(e.target.value)}
+                  placeholder="e.g., 1"
+                  className="bg-white border-slate-300"
+                />
+                <p className="text-xs text-muted-foreground">Applied to Node Y writer.</p>
+              </div>
+            )}
+          </div>
+        )}
 
         {activeScenario?.description && (
           <div className="rounded-md border border-cyan-100 bg-cyan-50 px-4 py-3 text-sm text-cyan-800 flex items-start gap-3">
@@ -288,26 +449,17 @@ export function TransactionOrchestrator() {
           </div>
         )}
 
-        {scenario === 'custom' && (
-          <div className="space-y-2">
-            <Label htmlFor="customJson" className="text-slate-700 font-medium">Custom Transactions (JSON array)</Label>
-            <Textarea
-              id="customJson"
-              rows={8}
-              value={customJson}
-              onChange={(e) => setCustomJson(e.target.value)}
-              className="bg-white border-slate-300 font-mono text-sm"
-            />
-            <p className="text-xs text-muted-foreground">
-              Provide a list of clients: each entry needs a <code>node</code> and <code>statements</code> with SQL, params, optional delays.
-            </p>
-          </div>
-        )}
-
         {error && (
           <div className="rounded-md border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700 flex items-start gap-2">
             <AlertTriangle className="w-4 h-4 mt-0.5" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {streamError && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 flex items-start gap-2">
+            <Shield className="w-4 h-4 mt-0.5" />
+            <span>{streamError}</span>
           </div>
         )}
 
@@ -389,6 +541,12 @@ export function TransactionOrchestrator() {
                       <p className="text-xs uppercase text-slate-500">Final Qty</p>
                       <p className="text-sm font-semibold">{statusSnapshot.result_summary.final_quantity ?? '—'}</p>
                     </div>
+                    {statusSnapshot.result_summary.verdict && (
+                      <div className="md:col-span-2 p-3 border rounded-md bg-white">
+                        <p className="text-xs uppercase text-slate-500">Verdict</p>
+                        <p className="text-sm text-slate-700">{statusSnapshot.result_summary.verdict}</p>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <p className="text-sm text-slate-500">Waiting for summary...</p>
@@ -437,17 +595,28 @@ export function TransactionOrchestrator() {
                   {clientEntries.map(([clientId, info]) => (
                     <div
                       key={clientId}
-                      className={`flex items-center justify-between border rounded-md px-3 py-2 ${
+                      className={`border rounded-md px-3 py-2 ${
                         clientTone[info.status] || 'bg-slate-50 text-slate-700 border-slate-200'
                       }`}
                     >
-                      <div>
-                        <p className="text-sm font-semibold">{clientId}</p>
-                        <p className="text-xs capitalize">{info.role} · {info.node}</p>
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-semibold">{clientId}</p>
+                          <p className="text-xs capitalize">{info.role} · {info.node}</p>
+                          {info.steps?.length > 0 && (
+                            <div className="mt-2 space-y-1 text-xs text-slate-600 max-h-24 overflow-y-auto">
+                              {info.steps.slice(-4).map((step, idx) => (
+                                <p key={`${clientId}-step-${idx}`} className="font-mono">
+                                  {summarizeStep(step)}
+                                </p>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                        <Badge variant="outline" className="bg-white/70 text-slate-700">
+                          {info.status}
+                        </Badge>
                       </div>
-                      <Badge variant="outline" className="bg-white/70 text-slate-700">
-                        {info.status}
-                      </Badge>
                     </div>
                   ))}
                 </div>

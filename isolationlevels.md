@@ -1,53 +1,55 @@
 
 ## Transaction Orchestrator (Concurrency Harness)
 
-The FastAPI service now exposes a transaction orchestrator that can launch canned concurrency scenarios (and custom scripts) against the nodes. Use it to demonstrate isolation anomalies directly from the React UI (Concurrency tab → "Transaction Orchestrator") or by calling the REST endpoints below.
+The FastAPI service now exposes a **parameterized** transaction orchestrator that launches real `BEGIN … SELECT … pg_sleep … UPDATE … COMMIT` scripts against any pair of nodes. Use it to demonstrate isolation anomalies directly from the React UI (Concurrency tab → "Transaction Orchestrator") or by calling the REST endpoints below.
 
 ### REST endpoints
 
-- `POST /orchestrator/run` — body requires `scenario` (`Case1_readers_only`, `Case2_writer_readers`, `Case3_concurrent_writers`, or `custom`), `isolation_level` (`READ_UNCOMMITTED`, `READ_COMMITTED`, `REPEATABLE_READ`, `SERIALIZABLE`), `parallel_clients` (1-16), and optional `custom_transactions` (list of client scripts when `scenario=custom`). Returns `{ "run_id": "..." }`.
-- `GET /orchestrator/status/{run_id}` — returns run metadata, per-client state, and a result summary (including node snapshots and detected serialization conflicts).
-- `GET /orchestrator/logs/{run_id}` — streaming-friendly log feed for UI polling.
-- `POST /orchestrator/abort/{run_id}` — cancels an in-flight run.
+- `POST /orchestrator/run` — body accepts:
+  - `scenario`: `read_read`, `read_write`, or `write_write`.
+  - `isolation_level`: `READ_UNCOMMITTED`, `READ_COMMITTED`, `REPEATABLE_READ`, `SERIALIZABLE`.
+  - `parallel_clients`: 2–16 (writer counts toward the total).
+  - `order_id` (optional UUID) — blank values auto-provision a fresh order.
+  - `node_x` / `node_y`: logical node labels (`node0`/`node1`/`node2`).
+  - `new_value_1` & `new_value_2`: writer target quantity (read-write) or increments (write-write).
+  Returns `{ "run_id": "...", "status": "started" }`.
+- `GET /orchestrator/status/{run_id}` — run metadata, per-client step logs, and a verdict with per-node snapshots.
+- `GET /orchestrator/stream/{run_id}` — Server-Sent Events (SSE) stream emitting every log entry in real time (UI uses this for the live feed). `GET /orchestrator/logs/{run_id}` remains available for polling fallbacks.
+- `POST /orchestrator/abort/{run_id}` — cancels an in-flight run and rolls back open transactions.
 
-> ℹ️ PostgreSQL folds `READ_UNCOMMITTED` into `READ COMMITTED`; the orchestrator surfaces this note in both the API and UI so readers understand why dirty reads cannot be demonstrated directly.
+> ℹ️ PostgreSQL folds `READ_UNCOMMITTED` into `READ COMMITTED`; the orchestrator surfaces this note (and the frontend shows a shield banner) so readers understand why dirty reads cannot be demonstrated directly.
 
-#### Sample payload
+#### Sample payloads
 
 ```json
 {
-  "scenario": "Case3_concurrent_writers",
-  "isolation_level": "SERIALIZABLE",
-  "parallel_clients": 3
+  "scenario": "read_write",
+  "isolation_level": "READ_COMMITTED",
+  "parallel_clients": 3,
+  "node_x": "node0",
+  "node_y": "node1",
+  "new_value_1": 42
 }
 ```
 
-#### Custom scripts
-
-Provide your own clients when `scenario` is `custom`:
-
 ```json
 {
-  "scenario": "custom",
-  "isolation_level": "REPEATABLE_READ",
-  "parallel_clients": 1,
-  "custom_transactions": [
-    {
-      "node": "node0",
-      "statements": [
-        {"sql": "SELECT quantity FROM orders WHERE order_id = $1", "params": ["<uuid>"]},
-        {"sql": "UPDATE orders SET quantity = quantity + 2 WHERE order_id = $1", "params": ["<uuid>"]}
-      ]
-    }
-  ]
+  "scenario": "write_write",
+  "isolation_level": "SERIALIZABLE",
+  "parallel_clients": 2,
+  "node_x": "node0",
+  "node_y": "node2",
+  "new_value_1": 1,
+  "new_value_2": 2
 }
 ```
 
 ### Frontend usage
 
 - Navigate to **Concurrency Testing → Transaction Orchestrator**.
-- Pick a scenario, isolation level, and client count, then click **Run Scenario**.
-- Status, per-client outcomes, node snapshots, and recent logs refresh automatically; you can also click **Abort Run** to simulate cancellations.
+- Choose a scenario + isolation level, assign Node X / Node Y, and (optionally) supply the exact `order_id` + writer values.
+- Click **Run Scenario** to spawn the asyncio workers; live logs appear instantly via SSE, while the status card polls for verdict/snapshots until the run finishes.
+- Use **Abort Run** to simulate cancellations / rollbacks and watch the per-client step timeline update in place.
 
 ### Tests
 

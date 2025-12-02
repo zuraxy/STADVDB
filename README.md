@@ -110,6 +110,13 @@ curl http://localhost:8000/health
 source replication/.venv/bin/activate
 uvicorn replication.main:app --host 0.0.0.0 --port 8000
 
+## Transaction Orchestrator (Concurrency Harness)
+
+- `POST /orchestrator/run` now takes fully parameterized payloads (`scenario` = `read_read`/`read_write`/`write_write`, isolation level, node selections, writer values, optional `order_id`).
+- `GET /orchestrator/stream/{run_id}` exposes a Server-Sent Events feed with every `BEGIN/SELECT/pg_sleep/UPDATE/COMMIT` log so the React UI can render live timelines per client.
+- `GET /orchestrator/status/{run_id}` returns run metadata, per-client steps, and cross-node snapshots + verdict; `POST /orchestrator/abort/{run_id}` safely cancels in-flight work.
+- Frontend controls (Concurrency → Transaction Orchestrator) mirror the API inputs—pick nodes, values, and isolation level, then watch the stream update in real time; see `isolationlevels.md` for sample payloads/tests.
+
 ==========================================================================================
 UUID TABLE SCHEMA FOR ALL NODES
 =========================================================================================

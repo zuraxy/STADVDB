@@ -1,62 +1,53 @@
-"""HTTP endpoints for the transaction orchestrator."""
+"""HTTP endpoints for the parameterized transaction orchestrator."""
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Optional
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, validator
 
-from ..orchestrator import CustomClientScript, IsolationLevel, OrchestrationInput, StatementPlan
+from ..orchestrator import IsolationLevel, OrchestrationParameters, ScenarioKind
 
 router = APIRouter(prefix="/orchestrator", tags=["orchestrator"])
 
 
-class CustomStatementModel(BaseModel):
-    sql: str
-    params: List[Any] = Field(default_factory=list)
-    delay_after: Optional[float] = Field(default=None, ge=0)
-    description: Optional[str] = None
-
-    def to_plan(self) -> StatementPlan:
-        return StatementPlan(
-            sql=self.sql,
-            params=tuple(self.params),
-            delay_after=self.delay_after or 0.0,
-            description=self.description,
-        )
-
-
-class CustomClientModel(BaseModel):
-    node: str = Field(default="node0")
-    statements: List[CustomStatementModel]
-
-    def to_script(self) -> CustomClientScript:
-        return CustomClientScript(
-            node=self.node.lower(),
-            statements=[stmt.to_plan() for stmt in self.statements],
-        )
-
-
 class RunOrchestrationRequest(BaseModel):
-    scenario: str = Field(
-        pattern="^(Case1_readers_only|Case2_writer_readers|Case3_concurrent_writers|custom)$"
-    )
-    isolation_level: IsolationLevel = IsolationLevel.READ_COMMITTED
-    parallel_clients: int = Field(default=2, ge=1, le=16)
-    custom_transactions: Optional[List[CustomClientModel]] = None
+    """Request payload used to launch a new orchestration run."""
 
-    def to_input(self) -> OrchestrationInput:
-        custom = None
-        if self.scenario == "custom":
-            if not self.custom_transactions:
-                raise ValueError("Custom scenario requires custom_transactions payload")
-            custom = [client.to_script() for client in self.custom_transactions]
-        return OrchestrationInput(
+    scenario: ScenarioKind = ScenarioKind.READ_READ
+    isolation_level: IsolationLevel = IsolationLevel.READ_COMMITTED
+    parallel_clients: int = Field(default=2, ge=2, le=16)
+    order_id: Optional[str] = Field(default=None)
+    new_value_1: Optional[int] = Field(default=None)
+    new_value_2: Optional[int] = Field(default=None)
+    node_x: str = Field(default="node0", regex=r"^node[0-2]$")
+    node_y: str = Field(default="node1", regex=r"^node[0-2]$")
+
+    @validator("order_id")
+    def _blank_to_none(cls, value: Optional[str]) -> Optional[str]:  # noqa: N805
+        if value and not value.strip():
+            return None
+        return value
+
+    def to_parameters(self) -> OrchestrationParameters:
+        order_uuid = None
+        if self.order_id:
+            try:
+                order_uuid = UUID(self.order_id)
+            except ValueError as exc:  # pragma: no cover - validation guard
+                raise ValueError("order_id must be a valid UUID") from exc
+        return OrchestrationParameters(
             scenario=self.scenario,
             isolation_level=self.isolation_level,
             parallel_clients=self.parallel_clients,
-            custom_transactions=custom,
+            order_id=order_uuid,
+            node_x=self.node_x.lower(),
+            node_y=self.node_y.lower(),
+            new_value_1=self.new_value_1,
+            new_value_2=self.new_value_2,
         )
 
 
@@ -66,7 +57,7 @@ async def run_orchestration(request: Request, payload: RunOrchestrationRequest) 
     if orchestrator is None:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Orchestrator not configured")
     try:
-        state = await orchestrator.start_run(payload.to_input())
+        state = await orchestrator.start_run(payload.to_parameters())
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return {"run_id": state.id, "status": "started"}
@@ -92,6 +83,17 @@ async def orchestration_logs(request: Request, run_id: str) -> dict:
     if logs is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Run not found")
     return logs
+
+
+@router.get("/stream/{run_id}")
+async def orchestration_stream(request: Request, run_id: str) -> StreamingResponse:
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Orchestrator not configured")
+    generator = await orchestrator.stream_logs(run_id)
+    if generator is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return StreamingResponse(generator, media_type="text/event-stream")
 
 
 @router.post("/abort/{run_id}")

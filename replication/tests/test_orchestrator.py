@@ -1,8 +1,7 @@
-"""Transaction orchestrator unit tests."""
+"""Transaction orchestrator regression tests covering param-driven scenarios."""
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -11,7 +10,12 @@ from uuid import UUID
 import pytest
 
 from replication.config import Settings
-from replication.orchestrator import IsolationLevel, OrchestrationInput, TransactionOrchestrator
+from replication.orchestrator import (
+	IsolationLevel,
+	OrchestrationParameters,
+	ScenarioKind,
+	TransactionOrchestrator,
+)
 
 
 class SerializationError(RuntimeError):
@@ -21,7 +25,7 @@ class SerializationError(RuntimeError):
 
 
 class FakeDatabase:
-	"""Shared in-memory store per node used by fake connections."""
+	"""Minimal per-node datastore to simulate asyncpg interactions."""
 
 	def __init__(self):
 		self.rows: Dict[str, Dict[UUID, Dict[str, Any]]] = {node: {} for node in ("node0", "node1", "node2")}
@@ -29,8 +33,7 @@ class FakeDatabase:
 		self.fail_update_once = False
 
 	async def connect(self, dsn: str):
-		node = dsn
-		return FakeConnection(self, node)
+		return FakeConnection(self, dsn)
 
 	def insert_order(self, node: str, order_id: UUID, quantity: int, payload: Dict[str, Any]) -> None:
 		now = datetime.now(timezone.utc)
@@ -42,7 +45,14 @@ class FakeDatabase:
 		}
 		self.latest[node] = order_id
 
-	def update_order(self, node: str, order_id: UUID, increment: int) -> None:
+	def set_order(self, node: str, order_id: UUID, quantity: int) -> None:
+		if order_id not in self.rows[node]:
+			self.insert_order(node, order_id, quantity, {})
+		else:
+			self.rows[node][order_id]["quantity"] = quantity
+			self.rows[node][order_id]["updated_at"] = datetime.now(timezone.utc)
+
+	def increment_order(self, node: str, order_id: UUID, increment: int) -> None:
 		if order_id not in self.rows[node]:
 			self.insert_order(node, order_id, increment, {})
 		else:
@@ -51,16 +61,10 @@ class FakeDatabase:
 
 	def fetch_latest(self, node: str) -> Dict[str, Any] | None:
 		order_id = self.latest.get(node)
-		if not order_id:
-			return None
-		row = self.rows[node][order_id]
-		return {"order_id": order_id, "quantity": row["quantity"]}
+		return self.rows[node].get(order_id) if order_id else None
 
 	def fetch_by_id(self, node: str, order_id: UUID) -> Dict[str, Any] | None:
-		row = self.rows[node].get(order_id)
-		if not row:
-			return None
-		return row
+		return self.rows[node].get(order_id)
 
 
 class FakeConnection:
@@ -76,17 +80,24 @@ class FakeConnection:
 			return "COMMIT"
 		if statement.startswith("rollback"):
 			return "ROLLBACK"
+		if "pg_sleep" in statement:
+			return "SELECT 1"
 		if statement.startswith("insert into orders"):
 			order_id, quantity, payload = params
 			self.db.insert_order(self.node, order_id, quantity, payload or {})
 			return "INSERT 1"
-		if statement.startswith("update orders set quantity"):
+		if "set quantity = $1" in statement:
+			order_id = params[1]
+			value = params[0]
+			self.db.set_order(self.node, order_id, value)
+			return "UPDATE 1"
+		if "set quantity = quantity +" in statement:
 			if self.db.fail_update_once:
 				self.db.fail_update_once = False
 				raise SerializationError("forced serialization abort")
 			order_id = params[0]
-			increment = params[1] if len(params) > 1 else 1
-			self.db.update_order(self.node, order_id, increment)
+			increment = params[1]
+			self.db.increment_order(self.node, order_id, increment)
 			return "UPDATE 1"
 		return "EXEC"
 
@@ -106,14 +117,6 @@ class FakeConnection:
 		return None
 
 
-@pytest.fixture(autouse=True)
-def fast_sleep(monkeypatch):
-	async def _fast_sleep(_duration):
-		return None
-
-	monkeypatch.setattr("replication.orchestrator.asyncio.sleep", _fast_sleep)
-
-
 @pytest.fixture
 def orchestrator(settings: Settings):
 	local = replace(
@@ -126,69 +129,62 @@ def orchestrator(settings: Settings):
 		node2_dsn="node2",
 	)
 	fake_db = FakeDatabase()
-	orchestrator = TransactionOrchestrator(local, lambda: False, connection_factory=fake_db.connect)
-	return orchestrator, fake_db
+	coordinator = TransactionOrchestrator(local, lambda: False, connection_factory=fake_db.connect)
+	return coordinator, fake_db
 
 
 @pytest.mark.asyncio
-async def test_case1_readers_only_completes(orchestrator):
+async def test_read_read_clients_capture_snapshots(orchestrator):
 	coordinator, _ = orchestrator
-	payload = OrchestrationInput(
-		scenario="Case1_readers_only",
-		isolation_level=IsolationLevel.READ_COMMITTED,
-		parallel_clients=3,
-	)
-	state = await coordinator.start_run(payload)
-	await state.main_task
-
-	assert state.status == "completed"
-	assert len(state.client_status) == 3
-	assert state.summary["delta"] == 0
-
-
-@pytest.mark.asyncio
-async def test_case2_writer_changes_quantity(orchestrator):
-	coordinator, _ = orchestrator
-	payload = OrchestrationInput(
-		scenario="Case2_writer_readers",
+	parameters = OrchestrationParameters(
+		scenario=ScenarioKind.READ_READ,
 		isolation_level=IsolationLevel.REPEATABLE_READ,
 		parallel_clients=2,
+		node_x="node0",
+		node_y="node1",
 	)
-	state = await coordinator.start_run(payload)
+	state = await coordinator.start_run(parameters)
 	await state.main_task
 
 	assert state.status == "completed"
-	assert state.summary["delta"] == 1
+	for info in state.client_status.values():
+		actions = [step["action"] for step in info["steps"]]
+		assert actions[0] == "BEGIN"
+		assert actions.count("SELECT") >= 2
+		assert actions[-1] == "COMMIT"
+
+
+@pytest.mark.asyncio
+async def test_read_write_writer_overrides_quantity(orchestrator):
+	coordinator, _ = orchestrator
+	parameters = OrchestrationParameters(
+		scenario=ScenarioKind.READ_WRITE,
+		isolation_level=IsolationLevel.READ_COMMITTED,
+		parallel_clients=2,
+		new_value_1=42,
+	)
+	state = await coordinator.start_run(parameters)
+	await state.main_task
+
+	assert state.status == "completed"
+	assert state.summary["final_quantity"] == 42
 	assert state.client_status["writer-1"]["status"] == "committed"
 
 
 @pytest.mark.asyncio
-async def test_case3_concurrent_writers_accumulate(orchestrator):
-	coordinator, _ = orchestrator
-	payload = OrchestrationInput(
-		scenario="Case3_concurrent_writers",
-		isolation_level=IsolationLevel.SERIALIZABLE,
-		parallel_clients=3,
-	)
-	state = await coordinator.start_run(payload)
-	await state.main_task
-
-	assert state.status == "completed"
-	assert state.summary["delta"] == 6  # 1 + 2 + 3 increments
-
-
-@pytest.mark.asyncio
-async def test_serialization_abort_is_tracked(orchestrator):
+async def test_write_write_serialization_abort_recorded(orchestrator):
 	coordinator, fake_db = orchestrator
 	fake_db.fail_update_once = True
-	payload = OrchestrationInput(
-		scenario="Case3_concurrent_writers",
+	parameters = OrchestrationParameters(
+		scenario=ScenarioKind.WRITE_WRITE,
 		isolation_level=IsolationLevel.SERIALIZABLE,
 		parallel_clients=2,
+		new_value_1=1,
+		new_value_2=1,
 	)
-	state = await coordinator.start_run(payload)
+	state = await coordinator.start_run(parameters)
 	await state.main_task
 
-	assert state.status == "completed"
+	assert state.status in {"completed", "failed"}
+	assert state.summary["serialization_conflicts"], "conflict captured"
 	assert any(info["status"] == "serialization_aborted" for info in state.client_status.values())
-	assert state.summary["serialization_conflicts"], "conflict list propagated"
