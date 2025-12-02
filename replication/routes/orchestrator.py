@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from ..orchestrator import (
@@ -178,3 +180,54 @@ async def orchestration_abort(request: Request, run_id: str) -> dict:
     if not success:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Run not found")
     return {"run_id": run_id, "status": "aborted"}
+
+
+@router.get("/stream/{run_id}")
+async def orchestration_stream(request: Request, run_id: str):
+    """Server-Sent Events stream for real-time orchestration updates."""
+    orchestrator = getattr(request.app.state, "orchestrator", None)
+    if orchestrator is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Orchestrator not configured")
+    
+    status_payload = orchestrator.get_status(run_id)
+    if status_payload is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Run not found")
+
+    async def event_generator():
+        last_log_count = 0
+        while True:
+            try:
+                # Get current logs
+                logs_payload = orchestrator.get_logs(run_id)
+                if logs_payload and "logs" in logs_payload:
+                    current_logs = logs_payload["logs"]
+                    # Send only new logs
+                    if len(current_logs) > last_log_count:
+                        for log_entry in current_logs[last_log_count:]:
+                            import json
+                            yield f"data: {json.dumps(log_entry)}\n\n"
+                        last_log_count = len(current_logs)
+                
+                # Check if run is still active
+                current_status = orchestrator.get_status(run_id)
+                if current_status and current_status.get("status") not in ("running", "started"):
+                    # Send final status and close
+                    import json
+                    yield f"data: {json.dumps({'event': 'finished', 'status': current_status.get('status')})}\n\n"
+                    break
+                
+                await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                break
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
