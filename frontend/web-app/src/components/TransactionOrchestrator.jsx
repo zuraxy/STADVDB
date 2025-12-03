@@ -263,10 +263,10 @@ export function TransactionOrchestrator() {
     }
     if (scenario === 'WRITE_WRITE') {
       if (isolation === 'READ_COMMITTED') {
-        return 'With FOR UPDATE locking, second writer waits for first. Both increments should succeed.';
+        return 'With FOR UPDATE locking, second writer waits for first. Both increments succeed (delta +2).';
       }
       if (isolation === 'REPEATABLE_READ' || isolation === 'SERIALIZABLE') {
-        return 'Expect one writer to abort with a serialization conflict. Only one increment succeeds.';
+        return 'Second writer may get serialization conflict and abort. If both commit, delta is +2. If one aborts, delta is +1. No lost updates.';
       }
     }
     return null;

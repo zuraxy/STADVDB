@@ -78,21 +78,21 @@ class RunOrchestrationRequest(BaseModel):
         # Build actors from frontend simplified fields
         scenario = self.scenario
         isolation = self.isolation_level or IsolationLevel.READ_COMMITTED
+        num_clients = self.parallel_clients or 2
         
         if scenario == ScenarioType.READ_READ:
-            # Two readers on different nodes
-            self.actors = [
-                TransactionActorModel(
-                    name="reader_a",
-                    node=self.node_x or "node0",
-                    isolation_level=isolation,
-                ),
-                TransactionActorModel(
-                    name="reader_b",
-                    node=self.node_y or "node1",
-                    isolation_level=isolation,
-                ),
-            ]
+            # N readers distributed across nodes
+            self.actors = []
+            nodes = [self.node_x or "node0", self.node_y or "node1", "node2"]
+            for i in range(num_clients):
+                self.actors.append(
+                    TransactionActorModel(
+                        name=f"reader_{chr(97 + i)}",  # reader_a, reader_b, etc.
+                        node=nodes[i % len(nodes)],  # Distribute across available nodes
+                        isolation_level=isolation,
+                        delay_seconds=2.0,  # Add delay for READ_READ scenario
+                    )
+                )
         elif scenario == ScenarioType.READ_WRITE:
             # Writer on node_x (Master), Reader on node_y (Slave)
             # This matches the frontend labels
@@ -111,20 +111,53 @@ class RunOrchestrationRequest(BaseModel):
                 ),
             ]
         elif scenario == ScenarioType.WRITE_WRITE:
-            # Two writers with auto-increment (each adds 1 to current quantity)
-            # This demonstrates lost update scenarios
+            # N writers with auto-increment (each adds 1 to current quantity)
+            # This demonstrates lost update scenarios and serialization conflicts
+            self.actors = []
+            nodes = [self.node_x or "node0", self.node_y or "node1", "node2"]
+            for i in range(num_clients):
+                self.actors.append(
+                    TransactionActorModel(
+                        name=f"writer_{chr(97 + i)}",  # writer_a, writer_b, etc.
+                        node=nodes[i % len(nodes)],  # Distribute across available nodes
+                        isolation_level=isolation,
+                        auto_increment=True,
+                    )
+                )
+        elif scenario == ScenarioType.NON_REPEATABLE_READ:
+            # Reader on node_x, Writer on node_y
+            # Reader performs SELECT, sleeps, SELECT again
+            # Writer updates during reader's sleep
             self.actors = [
                 TransactionActorModel(
-                    name="writer_a",
+                    name="reader",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    auto_increment=True,
+                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writer to modify
                 ),
                 TransactionActorModel(
-                    name="writer_b",
+                    name="writer",
                     node=self.node_y or "node1",
                     isolation_level=isolation,
-                    auto_increment=True,
+                    auto_increment=True,  # Increment the quantity
+                ),
+            ]
+        elif scenario == ScenarioType.PHANTOM_READ:
+            # Reader on node_x, Writer on node_y
+            # Reader performs range queries, sleeps, queries again
+            # Writer modifies data during reader's sleep
+            self.actors = [
+                TransactionActorModel(
+                    name="reader",
+                    node=self.node_x or "node0",
+                    isolation_level=isolation,
+                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writer to modify
+                ),
+                TransactionActorModel(
+                    name="writer",
+                    node=self.node_y or "node1",
+                    isolation_level=isolation,
+                    auto_increment=True,  # Modify the data (ideally INSERT, but using UPDATE)
                 ),
             ]
         

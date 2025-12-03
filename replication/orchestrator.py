@@ -263,11 +263,18 @@ class TransactionOrchestrator:
                 reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
                 
                 results = await asyncio.gather(writer_task, reader_task, return_exceptions=True)
-            elif state.payload.scenario == ScenarioType.WRITE_WRITE and len(plans) == 2:
-                # WRITE_WRITE: Both writers start simultaneously to create contention
+            elif state.payload.scenario == ScenarioType.WRITE_WRITE:
+                # WRITE_WRITE: All writers start simultaneously to create contention
                 # This tests FOR UPDATE locking behavior and serialization conflicts
                 await state.log("write_write_concurrent_start", 
-                    message="Both writers starting simultaneously for maximum contention")
+                    message=f"{len(plans)} writers starting simultaneously for maximum contention")
+                
+                tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.READ_READ:
+                # READ_READ: All readers start simultaneously
+                await state.log("read_read_concurrent_start",
+                    message=f"{len(plans)} readers starting simultaneously to test snapshot isolation")
                 
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -370,12 +377,31 @@ class TransactionOrchestrator:
     def _prepare_plans(self, state: RunState) -> List[ActorPlan]:
         roles = state.payload.scenario.roles
         actors = state.payload.actors
-        if len(actors) != len(roles):
-            raise ValueError("Scenario requires exactly two actors")
+        
+        # For READ_READ and WRITE_WRITE, allow N actors (all same role)
+        if state.payload.scenario in (ScenarioType.READ_READ, ScenarioType.WRITE_WRITE):
+            expected_role = roles[0]  # All actors have same role
+            # Validate all actors have the expected role
+            # (in this case, we'll assign the role based on scenario)
+        else:
+            # For other scenarios, enforce exact count
+            if len(actors) != len(roles):
+                raise ValueError(f"Scenario {state.payload.scenario.value} requires exactly {len(roles)} actors")
+        
         seen: set[str] = set()
         plans: List[ActorPlan] = []
-        for actor, role in zip(actors, roles):
-            actor_id = actor.name.strip() or role
+        
+        for i, actor in enumerate(actors):
+            # Determine role based on scenario
+            if state.payload.scenario == ScenarioType.READ_READ:
+                role = "read"
+            elif state.payload.scenario == ScenarioType.WRITE_WRITE:
+                role = "write"
+            else:
+                # For other scenarios, use roles from scenario definition
+                role = roles[i] if i < len(roles) else roles[-1]
+            
+            actor_id = actor.name.strip() or f"{role}_{i}"
             if actor_id in seen:
                 raise ValueError("Actor names must be unique per run")
             seen.add(actor_id)
@@ -383,16 +409,25 @@ class TransactionOrchestrator:
             if node not in self._node_dsns:
                 raise ValueError(f"Unknown node '{actor.node}'")
             # For write role: need either new_quantity OR auto_increment
-            if role == "write" and actor.new_quantity is None and not actor.auto_increment:
-                raise ValueError(f"Actor {actor_id} must provide new_quantity or use auto_increment for write operations")
+            # For NON_REPEATABLE_READ and PHANTOM_READ, default to auto_increment if not specified
+            auto_increment_val = actor.auto_increment
+            new_quantity_val = actor.new_quantity
+            
+            if role == "write" and new_quantity_val is None and not auto_increment_val:
+                if state.payload.scenario in (ScenarioType.NON_REPEATABLE_READ, ScenarioType.PHANTOM_READ):
+                    # Default to auto_increment for these scenarios
+                    auto_increment_val = True
+                else:
+                    raise ValueError(f"Actor {actor_id} must provide new_quantity or use auto_increment for write operations")
+            
             plan = ActorPlan(
                 actor_id=actor_id,
                 node=node,
                 role=role,
                 isolation_level=actor.isolation_level,
                 delay_seconds=max(0.0, actor.delay_seconds),
-                new_quantity=actor.new_quantity,
-                auto_increment=actor.auto_increment,
+                new_quantity=new_quantity_val,
+                auto_increment=auto_increment_val,
             )
             state.actor_levels[actor_id] = actor.isolation_level
             plans.append(plan)
@@ -723,26 +758,28 @@ class TransactionOrchestrator:
         # Generate verdict based on scenario and results
         verdict = None
         if state.payload.scenario == ScenarioType.WRITE_WRITE:
-            # For WRITE_WRITE: analyze if both increments succeeded
+            # For WRITE_WRITE: analyze if increments succeeded
             committed_count = sum(
                 1 for info in state.client_status.values() 
                 if info.get("status") == "committed"
             )
             conflict_count = len(state.serialization_conflicts)
+            total_writers = sum(1 for info in state.client_status.values() if info.get("role") == "write")
             
-            if committed_count == 2 and conflict_count == 0:
-                if delta == 2:
-                    verdict = "✅ Both writers committed successfully. Quantity increased by 2 (no lost update). FOR UPDATE locking prevented conflicts."
-                elif delta == 1:
-                    verdict = "⚠️ Both writers committed but only +1 delta. Possible race condition or same value written."
+            if committed_count == total_writers and conflict_count == 0:
+                if delta == total_writers:
+                    verdict = f"✅ All {total_writers} writers committed successfully. Quantity increased by {delta} (no lost update). FOR UPDATE locking prevented conflicts."
                 else:
-                    verdict = f"Both writers committed. Delta: {delta}"
-            elif committed_count == 1 and conflict_count == 1:
-                verdict = "✅ One writer succeeded, one aborted (serialization conflict). This is expected behavior for REPEATABLE READ/SERIALIZABLE isolation."
+                    verdict = f"⚠️ All {total_writers} writers committed but delta is {delta}. Expected {total_writers}."
+            elif committed_count > 0 and conflict_count > 0:
+                if delta == committed_count:
+                    verdict = f"✅ {committed_count} writer(s) succeeded, {conflict_count} aborted (serialization conflict). Delta matches committed count. Expected behavior for REPEATABLE READ/SERIALIZABLE."
+                else:
+                    verdict = f"⚠️ {committed_count} writer(s) committed, {conflict_count} conflicts. Delta: {delta} (expected {committed_count})."
             elif conflict_count > 0:
                 verdict = f"⚠️ Serialization conflicts detected: {conflict_count}. {committed_count} writer(s) committed."
             else:
-                verdict = f"Writers status: {committed_count} committed, {conflict_count} conflicts."
+                verdict = f"Writers status: {committed_count}/{total_writers} committed, {conflict_count} conflicts. Delta: {delta}"
         
         # Calculate timing metrics
         timing_metrics = self._calculate_timing_metrics(state)
@@ -912,10 +949,12 @@ class TransactionOrchestrator:
         if state.payload.scenario == ScenarioType.WRITE_WRITE:
             writers = [(aid, r) for aid, r in state.actor_results.items() if r.get("role") == "write"]
             
-            # If both writers committed but delta is only 1 (expected 2), lost update occurred
+            # Count committed writers
             committed_writers = [w for w in writers if state.client_status.get(w[0], {}).get("status") == "committed"]
+            num_committed = len(committed_writers)
+            expected_delta = num_committed  # Each committed writer should add 1
             
-            if len(committed_writers) == 2:
+            if num_committed >= 2:
                 # Check the actual delta
                 delta = None
                 if state.summary:
@@ -929,13 +968,14 @@ class TransactionOrchestrator:
                                 delta = final_qty - state.initial_quantity
                                 break
                 
-                if delta == 1:
+                # Lost update if delta doesn't match number of committed writers
+                if delta is not None and delta < expected_delta:
                     occurred = True
                     evidence.append({
                         "writers": [w[0] for w in committed_writers],
-                        "expected_delta": 2,
+                        "expected_delta": expected_delta,
                         "actual_delta": delta,
-                        "note": "Both writers committed but only 1 increment applied"
+                        "note": f"{num_committed} writers committed but only {delta} increment(s) applied"
                     })
         
         return {
