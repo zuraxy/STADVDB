@@ -704,21 +704,24 @@ export function TransactionOrchestrator() {
                       <div className="md:col-span-2 p-3 border rounded-md bg-blue-50">
                         <p className="text-xs uppercase text-slate-500 mb-2 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
-                          Execution Times
+                          Execution Times (Average)
                         </p>
-                        <div className="space-y-2">
-                          {Object.entries(statusSnapshot.result_summary.execution_times).map(([actor, times]) => (
-                            <div key={actor} className="text-xs">
-                              <p className="font-semibold text-slate-700">{actor}:</p>
-                              <div className="ml-3 grid grid-cols-2 gap-x-4 gap-y-1 text-slate-600">
-                                <span>Total: {times.total_seconds?.toFixed(3)}s</span>
-                                <span>Transaction: {times.transaction_seconds?.toFixed(3)}s</span>
-                                <span>Delay: {times.delay_seconds?.toFixed(3)}s</span>
-                                <span className="font-medium text-blue-700">Net: {times.net_execution_seconds?.toFixed(3)}s</span>
-                              </div>
+                        {(() => {
+                          const times = Object.values(statusSnapshot.result_summary.execution_times);
+                          const avgTotal = times.reduce((sum, t) => sum + (t.total_seconds || 0), 0) / times.length;
+                          const avgTxn = times.reduce((sum, t) => sum + (t.transaction_seconds || 0), 0) / times.length;
+                          const avgDelay = times.reduce((sum, t) => sum + (t.delay_seconds || 0), 0) / times.length;
+                          const avgNet = times.reduce((sum, t) => sum + (t.net_execution_seconds || 0), 0) / times.length;
+                          
+                          return (
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
+                              <span>Avg Total: {avgTotal.toFixed(3)}s</span>
+                              <span>Avg Transaction: {avgTxn.toFixed(3)}s</span>
+                              <span>Avg Delay: {avgDelay.toFixed(3)}s</span>
+                              <span className="font-medium text-blue-700">Avg Net: {avgNet.toFixed(3)}s</span>
                             </div>
-                          ))}
-                        </div>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
