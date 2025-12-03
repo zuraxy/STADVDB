@@ -133,7 +133,7 @@ class RunOrchestrationRequest(BaseModel):
                     name="reader",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writers to modify
+                    delay_seconds=2.0,  # Sleep to allow writers to modify
                 ),
             ]
             # Add (N-1) writers distributed across nodes
@@ -157,7 +157,7 @@ class RunOrchestrationRequest(BaseModel):
                     name="reader",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writers to modify
+                    delay_seconds=2.0,  # Sleep to allow writers to modify
                 ),
             ]
             # Add (N-1) writers distributed across nodes
