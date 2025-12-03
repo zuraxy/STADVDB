@@ -579,6 +579,14 @@ export const getClusterEvents = async (limit = 100, eventType = null) => {
 };
 
 /**
+ * Clear all cluster events
+ * @returns {Promise<Object>} { status, message, cleared }
+ */
+export const clearClusterEvents = async () => {
+  return fetchAPI('/cluster/events/clear', { method: 'POST' });
+};
+
+/**
  * Get cluster timeline for visualization
  * @param {number} durationSeconds - How far back in time to look
  * @returns {Promise<Object>} { timeline: Array, current_time }

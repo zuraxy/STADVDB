@@ -248,6 +248,21 @@ async def get_cluster_events(
     }
 
 
+@router.post("/events/clear")
+async def clear_cluster_events(request: Request) -> Dict[str, Any]:
+    """Clear all stored cluster events."""
+    cluster_manager = getattr(request.app.state, "cluster_manager", None)
+    if not cluster_manager:
+        return {"status": "error", "message": "Cluster manager not initialized", "cleared": 0}
+    
+    cleared_count = cluster_manager.clear_events()
+    return {
+        "status": "success",
+        "message": f"Cleared {cleared_count} events",
+        "cleared": cleared_count,
+    }
+
+
 @router.get("/timeline")
 async def get_cluster_timeline(
     request: Request,
