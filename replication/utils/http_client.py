@@ -46,7 +46,18 @@ class HTTPClient:
         assert last_exc is not None
         raise last_exc
 
-    async def get_json(self, url: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    async def get_json(self, url: str, params: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None) -> Any:
+        """GET JSON with optional custom timeout override."""
+        if timeout is not None:
+            # Use a one-shot client for custom timeout to avoid modifying shared client
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                try:
+                    response = await client.get(url, params=params)
+                    response.raise_for_status()
+                    return response.json()
+                except Exception as exc:
+                    _LOGGER.warning("HTTP GET %s failed with custom timeout: %s", url, exc)
+                    raise
         response = await self._request_with_retries("GET", url, params=params)
         return response.json()
 

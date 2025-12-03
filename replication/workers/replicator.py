@@ -65,6 +65,22 @@ class ReplicatorWorker:
     async def _poll_peer(self, peer: PeerNode) -> None:
         since = self.last_seen.get(peer.base_url, -1)
         try:
+            # First check if peer is available (quick health check)
+            try:
+                health = await self.http_client.get_json(
+                    f"{peer.base_url}/health",
+                    timeout=3.0,
+                )
+                if health.get("status") != "ok":
+                    _LOGGER.debug("Peer %s health check failed: %s", peer.name, health)
+                    self.peer_errors[peer.base_url] = "Peer health check failed"
+                    return
+            except Exception as health_exc:
+                # Peer unreachable - mark error and skip
+                _LOGGER.debug("Peer %s unreachable: %s", peer.name, health_exc)
+                self.peer_errors[peer.base_url] = f"Peer unreachable: {str(health_exc)}"
+                return
+
             payload = await self.http_client.get_json(
                 f"{peer.base_url}/oplog",
                 params={"since_lamport": since},
@@ -72,6 +88,7 @@ class ReplicatorWorker:
             ops = [OpRecord(**item) for item in payload]
             if not ops:
                 self.last_error = None
+                self.peer_errors[peer.base_url] = None
                 return
             async with self.pool.acquire() as conn:
                 for op in ops:
@@ -83,6 +100,7 @@ class ReplicatorWorker:
                 await self.crud.upsert_replication_cursor(conn, peer.name, self.last_seen[peer.base_url])
             self.last_error = None
             self.peer_errors[peer.base_url] = None
+            _LOGGER.debug("Successfully replicated %d ops from %s", len(ops), peer.name)
         except Exception as exc:  # pragma: no cover - exercised by integration tests
             _LOGGER.exception("Failed to replicate from %s", peer.base_url)
             self.last_error = str(exc)

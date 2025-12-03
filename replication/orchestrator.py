@@ -188,6 +188,61 @@ class TransactionOrchestrator:
             mapping[peer_key] = peer.base_url
         return mapping
 
+    async def _check_node_available(self, node: str) -> bool:
+        """Check if a node is available (not disabled and reachable)."""
+        node_lower = node.lower()
+        
+        # For local node, check the disabled flag directly
+        if self._is_local_node(node_lower):
+            from .routes.admin import is_node_disabled
+            return not is_node_disabled()
+        
+        # For remote nodes, try to reach their health endpoint
+        node_url = self._node_urls.get(node_lower)
+        if not node_url:
+            return False
+        
+        if not self._http_client:
+            return False
+        
+        try:
+            result = await self._http_client.get_json(f"{node_url}/health", timeout=3.0)
+            return result.get("status") == "ok"
+        except Exception:
+            return False
+
+    async def _get_available_nodes(self) -> List[str]:
+        """Get list of currently available nodes."""
+        available = []
+        for node in self._node_dsns.keys():
+            if await self._check_node_available(node):
+                available.append(node)
+        return available
+
+    async def _get_available_primary(self) -> str:
+        """Get an available primary node, falling back if default is unavailable."""
+        default_primary = self._primary_node().lower()
+        
+        # First try the default primary
+        if await self._check_node_available(default_primary):
+            return default_primary
+        
+        # If default primary is unavailable, try other nodes
+        # Prefer local node if it's not the default primary
+        local_node = self.settings.node_name.lower()
+        if local_node != default_primary and await self._check_node_available(local_node):
+            LOGGER.warning(f"Primary {default_primary} unavailable, falling back to local node {local_node}")
+            return local_node
+        
+        # Try any other available node
+        for node in self._node_dsns.keys():
+            if node != default_primary and await self._check_node_available(node):
+                LOGGER.warning(f"Primary {default_primary} unavailable, falling back to {node}")
+                return node
+        
+        # Last resort: return the default even if unavailable (will fail later with clear error)
+        return default_primary
+
     def _is_local_node(self, node: str) -> bool:
         """Check if the given node is the local node."""
         return node.lower() == self.settings.node_name.lower()
@@ -344,10 +399,27 @@ class TransactionOrchestrator:
                 state.mark_finished(state.status)
 
     async def _resolve_target_order(self, requested_id: Optional[UUID]) -> Tuple[UUID, int]:
-        node = self._primary_node().lower()
+        node = await self._get_available_primary()
         dsn = self._node_dsns.get(node)
         if not dsn:
             raise RuntimeError(f"Missing DSN for node {node}")
+        try:
+            conn = await self._connection_factory(dsn)
+        except Exception as e:
+            LOGGER.warning(f"Failed to connect to {node}: {e}, trying fallback")
+            # Try other nodes
+            for fallback_node in self._node_dsns.keys():
+                if fallback_node != node:
+                    fallback_dsn = self._node_dsns.get(fallback_node)
+                    if fallback_dsn:
+                        try:
+                            conn = await self._connection_factory(fallback_dsn)
+                            node = fallback_node
+                            break
+                        except Exception:
+                            continue
+            else:
+                raise RuntimeError(f"No available database nodes: {e}")
         conn = await self._connection_factory(dsn)
         try:
             if requested_id:
@@ -547,6 +619,18 @@ class TransactionOrchestrator:
             raise RuntimeError(f"No URL configured for remote node {plan.node}")
         if not self._http_client:
             raise RuntimeError("HTTP client not configured for remote node communication")
+
+        # Check node availability first
+        if not await self._check_node_available(plan.node):
+            await state.log(
+                "node_unavailable",
+                actor_id=plan.actor_id,
+                node=plan.node,
+                message=f"Node {plan.node} is unavailable or disabled",
+            )
+            state.client_status[plan.actor_id]["status"] = "node_unavailable"
+            state.client_status[plan.actor_id]["error"] = f"Node {plan.node} is unavailable"
+            raise RuntimeError(f"Node {plan.node} is unavailable or disabled")
 
         await state.log(
             "transaction_started",

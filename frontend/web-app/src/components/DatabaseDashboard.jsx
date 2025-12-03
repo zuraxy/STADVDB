@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Database, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Database, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw, ChevronLeft, ChevronRight, Power, PowerOff } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders } from '../services/api';
+import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders, toggleNodePower, getNodeDisabledStatus } from '../services/api';
 
 const DEFAULT_NODE_CARDS = [
   { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
@@ -13,11 +13,20 @@ const DEFAULT_NODE_CARDS = [
   { id: 'node2', title: 'Fragment Node 2', description: 'Horizontal partition segment 2' },
 ];
 
-const buildNodeState = (statusResponse) => {
+const buildNodeState = (statusResponse, nodeErrors = {}) => {
   const map = new Map(
     DEFAULT_NODE_CARDS.map((card) => [card.id, { ...card, status: 'checking', error: null }]),
   );
   const normalizeKey = (name) => (name || '').toLowerCase();
+
+  // Apply any known errors first
+  for (const [nodeId, error] of Object.entries(nodeErrors)) {
+    const key = normalizeKey(nodeId);
+    if (map.has(key)) {
+      const base = map.get(key);
+      map.set(key, { ...base, status: 'error', error: error });
+    }
+  }
 
   if (statusResponse?.nodes?.length) {
     statusResponse.nodes.forEach((node) => {
@@ -30,12 +39,20 @@ const buildNodeState = (statusResponse) => {
         title: node.name || key,
         description: node.role === 'peer' ? 'Replica node' : 'Cluster node',
       };
+      
+      // Determine status - check for disabled first
+      let nodeStatus = node.status || (node.error ? 'error' : 'online');
+      if (node.status === 'disabled' || statusResponse.disabled) {
+        nodeStatus = 'disabled';
+      }
+      
       map.set(key, {
         ...base,
-        status: node.status || (node.error ? 'error' : 'online'),
+        status: nodeStatus,
         error: node.error || null,
         promoted: Boolean(node.promoted),
         role: node.role || base.role,
+        disabled: node.status === 'disabled' || statusResponse.disabled,
       });
     });
   } else if (statusResponse?.node) {
@@ -45,7 +62,8 @@ const buildNodeState = (statusResponse) => {
       title: statusResponse.node,
       description: 'Cluster node',
     };
-    map.set(key, { ...base, status: 'online', promoted: Boolean(statusResponse.promoted) });
+    const nodeStatus = statusResponse.disabled ? 'disabled' : 'online';
+    map.set(key, { ...base, status: nodeStatus, promoted: Boolean(statusResponse.promoted), disabled: statusResponse.disabled });
   }
 
   const ordered = DEFAULT_NODE_CARDS.map((card) => map.get(card.id)).filter(Boolean);
@@ -68,44 +86,93 @@ export function DatabaseDashboard() {
   const [nodeMetrics, setNodeMetrics] = useState({}); // Store metrics per node
   const [node1Data, setNode1Data] = useState([]); // NEW: Store actual Node1 data
   const [node2Data, setNode2Data] = useState([]); // NEW: Store actual Node2 data
+  const [nodeErrors, setNodeErrors] = useState({}); // Track per-node errors
+  const [togglingNode, setTogglingNode] = useState(null); // Track which node is being toggled
   
   const itemsPerPage = 10;
 
   const applyReplicationStatus = useCallback((statusResponse, fallbackStatus = 'checking') => {
     if (statusResponse) {
-      setNodeCards(buildNodeState(statusResponse));
+      setNodeCards(buildNodeState(statusResponse, nodeErrors));
       setPartitionRule(statusResponse.partition_rule ?? null);
     } else {
-      setNodeCards(DEFAULT_NODE_CARDS.map((card) => ({ ...card, status: fallbackStatus })));
+      setNodeCards(DEFAULT_NODE_CARDS.map((card) => ({ 
+        ...card, 
+        status: nodeErrors[card.id] ? 'error' : fallbackStatus,
+        error: nodeErrors[card.id] || null,
+      })));
     }
-  }, [setNodeCards, setPartitionRule]);
+  }, [setNodeCards, setPartitionRule, nodeErrors]);
 
   const fetchData = async () => {
     setLoading(true);
     setError(null);
+    const errors = {};
 
     try {
       console.log('🔄 Fetching data from all nodes...');
-      const [statusResponse, ordersResponse, metricsResponse, node1Orders, node2Orders] = await Promise.all([
+      
+      // Fetch all data in parallel with individual error handling
+      const results = await Promise.allSettled([
         fetchReplicationStatus(),
         fetchAllOrders(),
         fetchAllNodeMetrics(),
-        fetchNodeOrders('node1').catch(err => { 
-          console.error('❌ Node1 fetch failed:', err); 
-          return []; 
-        }),
-        fetchNodeOrders('node2').catch(err => { 
-          console.error('❌ Node2 fetch failed:', err); 
-          return []; 
-        }),
+        fetchNodeOrders('node1'),
+        fetchNodeOrders('node2'),
       ]);
+
+      const [statusResult, ordersResult, metricsResult, node1Result, node2Result] = results;
+
+      // Process status response
+      let statusResponse = null;
+      if (statusResult.status === 'fulfilled') {
+        statusResponse = statusResult.value;
+      } else {
+        console.warn('⚠️ Failed to fetch replication status:', statusResult.reason);
+        errors.node0 = 'Status unavailable';
+      }
+
+      // Process orders response
+      let ordersResponse = [];
+      if (ordersResult.status === 'fulfilled') {
+        ordersResponse = ordersResult.value || [];
+      } else {
+        console.warn('⚠️ Failed to fetch orders:', ordersResult.reason);
+        errors.node0 = errors.node0 || 'Orders unavailable';
+      }
+
+      // Process metrics response
+      let metricsResponse = {};
+      if (metricsResult.status === 'fulfilled') {
+        metricsResponse = metricsResult.value || {};
+      }
+
+      // Process node1 orders
+      let node1Orders = [];
+      if (node1Result.status === 'fulfilled') {
+        node1Orders = node1Result.value || [];
+      } else {
+        console.warn('⚠️ Node1 fetch failed:', node1Result.reason);
+        errors.node1 = 'Unavailable';
+      }
+
+      // Process node2 orders
+      let node2Orders = [];
+      if (node2Result.status === 'fulfilled') {
+        node2Orders = node2Result.value || [];
+      } else {
+        console.warn('⚠️ Node2 fetch failed:', node2Result.reason);
+        errors.node2 = 'Unavailable';
+      }
 
       console.log('✅ Data fetched:', {
         node0Orders: ordersResponse?.length || 0,
         node1Orders: node1Orders?.length || 0,
         node2Orders: node2Orders?.length || 0,
+        errors: Object.keys(errors),
       });
 
+      setNodeErrors(errors);
       applyReplicationStatus(statusResponse);
       setNodeMetrics(metricsResponse);
       
@@ -122,12 +189,36 @@ export function DatabaseDashboard() {
       const startIndex = (currentPage - 1) * itemsPerPage;
       const endIndex = startIndex + itemsPerPage;
       setData(rows.slice(startIndex, endIndex));
+
+      // Only set error if ALL nodes failed
+      if (Object.keys(errors).length === 3) {
+        setError('All nodes are unavailable');
+      } else {
+        setError(null);
+      }
     } catch (err) {
-      console.error('❌ Failed to fetch data:', err);
+      console.error('❌ Critical failure fetching data:', err);
       setError(err.message || 'Failed to connect to database nodes');
       applyReplicationStatus(null, 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Handle node power toggle
+  const handleToggleNode = async (nodeId) => {
+    const currentCard = nodeCards.find(c => c.id === nodeId);
+    const isCurrentlyDisabled = currentCard?.disabled || currentCard?.status === 'disabled';
+    
+    setTogglingNode(nodeId);
+    try {
+      await toggleNodePower(nodeId, !isCurrentlyDisabled);
+      // Refresh data after toggle
+      await fetchData();
+    } catch (err) {
+      console.error(`Failed to toggle ${nodeId}:`, err);
+    } finally {
+      setTogglingNode(null);
     }
   };
 
@@ -162,6 +253,8 @@ export function DatabaseDashboard() {
         return 'bg-yellow-500';
       case 'error':
         return 'bg-red-500';
+      case 'disabled':
+        return 'bg-gray-500';
       default:
         return 'bg-gray-400';
     }
@@ -175,6 +268,8 @@ export function DatabaseDashboard() {
         return <Loader2 className="w-4 h-4 animate-spin text-gray-600" />;
       case 'error':
         return <AlertCircle className="w-4 h-4 text-red-600" />;
+      case 'disabled':
+        return <PowerOff className="w-4 h-4 text-gray-600" />;
       default:
         return <Loader2 className="w-4 h-4 animate-spin text-gray-600" />;
     }
@@ -191,6 +286,9 @@ export function DatabaseDashboard() {
     if (status === 'error') {
       return 'bg-red-50 text-red-700 border-red-300';
     }
+    if (status === 'disabled') {
+      return 'bg-gray-50 text-gray-700 border-gray-300';
+    }
     return 'bg-yellow-50 text-yellow-700 border-yellow-300';
   };
 
@@ -200,6 +298,9 @@ export function DatabaseDashboard() {
     }
     if (status === 'error') {
       return 'Offline';
+    }
+    if (status === 'disabled') {
+      return 'Disabled';
     }
     return 'Checking';
   };
@@ -263,31 +364,62 @@ export function DatabaseDashboard() {
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.1 }}
           >
-            <Card>
+            <Card className={card.status === 'disabled' ? 'opacity-60' : ''}>
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Database className="w-5 h-5 text-cyan-600" />
+                    <Database className={`w-5 h-5 ${card.status === 'disabled' ? 'text-gray-400' : 'text-cyan-600'}`} />
                     <CardTitle className="text-sm font-medium">
                       {card.title}
                     </CardTitle>
                   </div>
-                  {getStatusIcon(card.status)}
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(card.status)}
+                    {/* Power Toggle Button */}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleToggleNode(card.id)}
+                      disabled={togglingNode === card.id}
+                      className={`p-1 h-7 w-7 ${
+                        card.status === 'disabled' || card.disabled
+                          ? 'text-gray-400 hover:text-green-600 hover:bg-green-50'
+                          : 'text-green-600 hover:text-red-600 hover:bg-red-50'
+                      }`}
+                      title={card.status === 'disabled' || card.disabled ? 'Enable Node' : 'Disable Node'}
+                    >
+                      {togglingNode === card.id ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : card.status === 'disabled' || card.disabled ? (
+                        <Power className="w-4 h-4" />
+                      ) : (
+                        <PowerOff className="w-4 h-4" />
+                      )}
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center justify-between">
                   <div className="space-y-1">
-                    <p className="text-2xl font-bold text-cyan-700">
-                      {card.id === 'node1' ? node1Data.length : 
-                       card.id === 'node2' ? node2Data.length :
-                       card.isPrimary ? totalRecords : 0}
+                    <p className={`text-2xl font-bold ${card.status === 'disabled' ? 'text-gray-400' : 'text-cyan-700'}`}>
+                      {card.status === 'disabled' || card.status === 'error' 
+                        ? '—' 
+                        : card.id === 'node1' ? node1Data.length 
+                        : card.id === 'node2' ? node2Data.length 
+                        : card.isPrimary ? totalRecords : 0}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      {describeNode(card)}
+                      {card.status === 'disabled' ? 'Node Disabled' : describeNode(card)}
                     </p>
+                    {/* Display error message if any */}
+                    {card.error && card.status !== 'disabled' && (
+                      <div className="text-xs text-red-500 mt-1">
+                        {card.error}
+                      </div>
+                    )}
                     {/* NEW: Display applier and replicator metrics */}
-                    {nodeMetrics[card.id] && !nodeMetrics[card.id].error && (
+                    {card.status !== 'disabled' && nodeMetrics[card.id] && !nodeMetrics[card.id].error && (
                       <div className="text-xs text-gray-500 mt-2 space-y-0.5">
                         {nodeMetrics[card.id].applier && (
                           <>
@@ -306,7 +438,7 @@ export function DatabaseDashboard() {
                       </div>
                     )}
                   </div>
-                  <div className={`w-2 h-2 rounded-full ${getStatusColor(card.status)} animate-pulse`} />
+                  <div className={`w-2 h-2 rounded-full ${getStatusColor(card.status)} ${card.status === 'online' ? 'animate-pulse' : ''}`} />
                 </div>
               </CardContent>
             </Card>

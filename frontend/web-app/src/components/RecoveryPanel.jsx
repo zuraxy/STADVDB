@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Play, Square, Download, AlertTriangle, CheckCircle, XCircle, Loader2, Database } from 'lucide-react';
+import { RefreshCw, Play, Square, Download, AlertTriangle, CheckCircle, XCircle, Loader2, Database, Power, PowerOff } from 'lucide-react';
+import { toggleNodePower } from '../services/api';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
@@ -15,6 +16,21 @@ export function RecoveryPanel() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [pollingActive, setPollingActive] = useState(false);
+  const [togglingNode, setTogglingNode] = useState(null);
+
+  // Handle node power toggle
+  const handleToggleNode = async (nodeName, currentDisabled) => {
+    setTogglingNode(nodeName);
+    try {
+      await toggleNodePower(nodeName, !currentDisabled);
+      // Refresh status after toggle
+      await fetchReplicationStatus();
+    } catch (err) {
+      setError(`Failed to toggle ${nodeName}: ${err.message}`);
+    } finally {
+      setTogglingNode(null);
+    }
+  };
 
   // Fetch replication status
   const fetchReplicationStatus = useCallback(async () => {
@@ -220,8 +236,26 @@ export function RecoveryPanel() {
       case 'degraded':
       case 'gating':
         return <AlertTriangle className="w-4 h-4 text-yellow-500" />;
+      case 'disabled':
+        return <PowerOff className="w-4 h-4 text-gray-500" />;
       default:
         return <Database className="w-4 h-4 text-gray-400" />;
+    }
+  };
+
+  // Get border color based on node state
+  const getNodeBorderClass = (node) => {
+    if (node.status === 'disabled' || node.disabled) {
+      return 'border-gray-300 bg-gray-100';
+    }
+    switch (node.status?.toLowerCase()) {
+      case 'online':
+        return 'border-green-200 bg-green-50';
+      case 'error':
+      case 'failed':
+        return 'border-red-200 bg-red-50';
+      default:
+        return 'border-yellow-200 bg-yellow-50';
     }
   };
 
@@ -277,26 +311,45 @@ export function RecoveryPanel() {
           {replicationStatus?.nodes?.map((node) => (
             <div
               key={node.name}
-              className={`p-4 rounded-lg border-2 ${
-                node.status === 'online' 
-                  ? 'border-green-200 bg-green-50' 
-                  : node.status === 'error'
-                  ? 'border-red-200 bg-red-50'
-                  : 'border-yellow-200 bg-yellow-50'
-              }`}
+              className={`p-4 rounded-lg border-2 ${getNodeBorderClass(node)}`}
             >
               <div className="flex items-center justify-between mb-2">
                 <span className="font-medium text-gray-800">{node.name}</span>
-                {getStatusIcon(node.status)}
+                <div className="flex items-center gap-2">
+                  {getStatusIcon(node.disabled ? 'disabled' : node.status)}
+                  <button
+                    onClick={() => handleToggleNode(node.name, node.disabled)}
+                    disabled={togglingNode === node.name || node.unreachable}
+                    className={`p-1.5 rounded-full transition-colors ${
+                      node.disabled
+                        ? 'bg-gray-200 hover:bg-green-200 text-gray-600 hover:text-green-600'
+                        : 'bg-green-100 hover:bg-red-200 text-green-600 hover:text-red-600'
+                    } ${togglingNode === node.name ? 'animate-pulse' : ''}`}
+                    title={node.disabled ? 'Enable node' : 'Disable node'}
+                  >
+                    {node.disabled ? (
+                      <Power className="w-4 h-4" />
+                    ) : (
+                      <PowerOff className="w-4 h-4" />
+                    )}
+                  </button>
+                </div>
               </div>
               <div className="text-sm text-gray-600 space-y-1">
                 <p>Role: <span className="font-medium">{node.role}</span></p>
-                <p>Status: <span className="font-medium">{node.status}</span></p>
-                {node.promoted && (
+                <p>Status: <span className={`font-medium ${node.disabled ? 'text-gray-500' : ''}`}>
+                  {node.disabled ? 'disabled' : node.status}
+                </span></p>
+                {node.promoted && !node.disabled && (
                   <p className="text-orange-600 font-medium">⚡ Promoted</p>
                 )}
-                {node.last_seen_lamport !== undefined && (
+                {node.last_seen_lamport !== undefined && !node.disabled && (
                   <p>Last Lamport: <span className="font-mono">{node.last_seen_lamport}</span></p>
+                )}
+                {node.error && !node.disabled && (
+                  <p className="text-red-500 text-xs truncate" title={node.error}>
+                    Error: {node.error}
+                  </p>
                 )}
               </div>
             </div>

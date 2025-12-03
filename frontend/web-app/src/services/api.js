@@ -1,18 +1,42 @@
 // API Service - Centralized data fetching functions
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
+// Node-specific base URLs for direct communication
+const NODE_URLS = {
+  node0: import.meta.env.VITE_NODE0_URL || API_BASE_URL,
+  node1: import.meta.env.VITE_NODE1_URL || '',
+  node2: import.meta.env.VITE_NODE2_URL || '',
+};
+
+// Default timeout for API requests (ms)
+const DEFAULT_TIMEOUT = 5000;
+
 /**
- * Generic fetch wrapper with error handling
+ * Create an AbortController with timeout
+ */
+const createTimeoutController = (timeoutMs = DEFAULT_TIMEOUT) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  return { controller, timeoutId };
+};
+
+/**
+ * Generic fetch wrapper with error handling and timeout
  */
 const fetchAPI = async (endpoint, options = {}) => {
+  const { controller, timeoutId } = createTimeoutController(options.timeout || DEFAULT_TIMEOUT);
+  
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
       headers: {
         'Content-Type': 'application/json',
         ...options.headers,
       },
+      signal: controller.signal,
       ...options,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -21,8 +45,51 @@ const fetchAPI = async (endpoint, options = {}) => {
     const data = await response.json();
     return data;
   } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.error(`API Timeout (${endpoint}): Request timed out`);
+      throw new Error(`Request timeout: ${endpoint}`);
+    }
     console.error(`API Error (${endpoint}):`, error);
     throw error;
+  }
+};
+
+/**
+ * Fetch from a specific node with graceful error handling
+ * Returns { success: boolean, data?: any, error?: string }
+ */
+const fetchFromNode = async (nodeUrl, endpoint, options = {}) => {
+  if (!nodeUrl) {
+    return { success: false, error: 'Node URL not configured' };
+  }
+  
+  const { controller, timeoutId } = createTimeoutController(options.timeout || DEFAULT_TIMEOUT);
+  
+  try {
+    const response = await fetch(`${nodeUrl}${endpoint}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      signal: controller.signal,
+      ...options,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      return { success: false, error: `HTTP ${response.status}` };
+    }
+
+    const data = await response.json();
+    return { success: true, data };
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      return { success: false, error: 'Request timeout' };
+    }
+    return { success: false, error: error.message || 'Network error' };
   }
 };
 
@@ -33,28 +100,53 @@ const fetchAPI = async (endpoint, options = {}) => {
  * @returns {Promise<Array>} Array of all orders
  */
 export const fetchAllOrders = async () => {
-  return fetchAPI('/orders');
+  try {
+    return await fetchAPI('/orders', { timeout: 8000 });
+  } catch (error) {
+    console.warn('Failed to fetch orders from primary node:', error);
+    return [];
+  }
 };
 
 /**
- * Fetch orders from a specific node's local database
+ * Fetch orders from a specific node's local database with graceful fallback
  * @param {string} nodeName - Name of the node (e.g., 'node1', 'node2')
- * @returns {Promise<Array>} Array of orders from that node
+ * @returns {Promise<Array>} Array of orders from that node (empty on failure)
  */
 export const fetchNodeOrders = async (nodeName) => {
   console.log(`📡 Fetching orders from ${nodeName}...`);
-  if (nodeName === 'node0') {
-    // Node0 is the master, fetch normally
-    return fetchAPI('/orders');
+  
+  // Try direct node connection first if URL is configured
+  const directUrl = NODE_URLS[nodeName];
+  if (directUrl) {
+    const directResult = await fetchFromNode(directUrl, '/orders/local/all', { timeout: 5000 });
+    if (directResult.success) {
+      console.log(`✅ ${nodeName} (direct) returned ${directResult.data?.length || 0} orders`);
+      return directResult.data || [];
+    }
+    console.warn(`⚠️ Direct connection to ${nodeName} failed:`, directResult.error);
   }
-  // Proxy through node0 to get local data from other nodes
+  
+  // Fallback: proxy through API base URL
+  if (nodeName === 'node0') {
+    try {
+      const result = await fetchAPI('/orders', { timeout: 5000 });
+      console.log(`✅ ${nodeName} returned ${result?.length || 0} orders`);
+      return result || [];
+    } catch (error) {
+      console.error(`❌ Failed to fetch from ${nodeName}:`, error);
+      return [];
+    }
+  }
+  
+  // Proxy through primary node for other nodes
   try {
-    const result = await fetchAPI(`/proxy/node/${nodeName}/orders`);
-    console.log(`✅ ${nodeName} returned ${result?.length || 0} orders`);
-    return result;
+    const result = await fetchAPI(`/proxy/node/${nodeName}/orders`, { timeout: 5000 });
+    console.log(`✅ ${nodeName} (proxied) returned ${result?.length || 0} orders`);
+    return result || [];
   } catch (error) {
     console.error(`❌ Failed to fetch from ${nodeName}:`, error);
-    throw error;
+    return [];
   }
 };
 
@@ -116,11 +208,99 @@ export const deleteOrder = async (orderId) => {
 // ==================== NODE STATUS ====================
 
 /**
- * Fetch replication + peer node status metadata
+ * Fetch replication + peer node status metadata with graceful timeout
+ * Enhanced to include disabled status from peer nodes
  * @returns {Promise<Object>} Replication workers + node health snapshot
  */
 export const fetchReplicationStatus = async () => {
-  return fetchAPI('/status/replication');
+  try {
+    const status = await fetchAPI('/status/replication', { timeout: 5000 });
+    
+    // Enhance with disabled status from all nodes
+    // Try to fetch disabled status from peers in parallel
+    if (status.nodes && status.nodes.length > 0) {
+      const disabledChecks = await Promise.allSettled(
+        status.nodes.map(async (node) => {
+          try {
+            const disabledStatus = await getNodeDisabledStatus(node.name);
+            return { name: node.name, ...disabledStatus };
+          } catch {
+            return { name: node.name, disabled: false, unreachable: true };
+          }
+        })
+      );
+      
+      // Merge disabled status into nodes
+      for (let i = 0; i < status.nodes.length; i++) {
+        const check = disabledChecks[i];
+        if (check.status === 'fulfilled') {
+          const checkResult = check.value;
+          status.nodes[i].disabled = checkResult.disabled;
+          status.nodes[i].unreachable = checkResult.unreachable;
+          
+          // Update status to 'disabled' if node is disabled
+          if (checkResult.disabled) {
+            status.nodes[i].status = 'disabled';
+          }
+        }
+      }
+    }
+    
+    return status;
+  } catch (error) {
+    console.warn('Failed to fetch replication status:', error);
+    // Return minimal structure so UI doesn't crash
+    return {
+      node: 'unknown',
+      nodes: [],
+      error: error.message,
+    };
+  }
+};
+
+/**
+ * Check health of a specific node directly
+ * @param {string} nodeName - Name of the node
+ * @returns {Promise<Object>} { online: boolean, error?: string }
+ */
+export const checkNodeHealth = async (nodeName) => {
+  const nodeUrl = NODE_URLS[nodeName];
+  if (!nodeUrl) {
+    // Try via proxy
+    try {
+      const status = await fetchAPI('/status/replication', { timeout: 3000 });
+      const nodeInfo = status?.nodes?.find(n => n.name?.toLowerCase() === nodeName.toLowerCase());
+      return {
+        online: nodeInfo?.status === 'online',
+        status: nodeInfo?.status || 'unknown',
+        error: nodeInfo?.error,
+      };
+    } catch {
+      return { online: false, status: 'error', error: 'Cannot reach node' };
+    }
+  }
+  
+  const result = await fetchFromNode(nodeUrl, '/health', { timeout: 3000 });
+  return {
+    online: result.success,
+    status: result.success ? 'online' : 'error',
+    error: result.error,
+  };
+};
+
+/**
+ * Fetch health status from all nodes independently
+ * @returns {Promise<Object>} { node0: {...}, node1: {...}, node2: {...} }
+ */
+export const fetchAllNodeHealth = async () => {
+  const nodes = ['node0', 'node1', 'node2'];
+  const results = await Promise.all(
+    nodes.map(async (nodeName) => {
+      const health = await checkNodeHealth(nodeName);
+      return [nodeName, health];
+    })
+  );
+  return Object.fromEntries(results);
 };
 
 /**
@@ -131,7 +311,7 @@ export const fetchAllNodeMetrics = async () => {
   // Fetch from the current node's /status/replication endpoint
   // This endpoint already contains metrics for all nodes
   try {
-    const response = await fetchAPI('/status/replication');
+    const response = await fetchAPI('/status/replication', { timeout: 5000 });
     
     // Transform the response to match our expected format
     const metrics = {};
@@ -335,4 +515,101 @@ export const exportSnapshot = async (partition, format = 'json') => {
   if (partition) params.append('partition', partition);
   params.append('format', format);
   return fetchAPI(`/recovery/snapshot?${params.toString()}`);
+};
+
+// ==================== NODE POWER CONTROL ====================
+
+/**
+ * Toggle a node's disabled state (simulated power off/on)
+ * @param {string} nodeName - The node to toggle ('node0', 'node1', 'node2')
+ * @param {boolean} disable - True to disable (power off), false to enable (power on)
+ * @returns {Promise<Object>} { node, disabled, status }
+ */
+export const toggleNodePower = async (nodeName, disable) => {
+  // Try direct node connection first
+  const nodeUrl = NODE_URLS[nodeName];
+  if (nodeUrl) {
+    const result = await fetchFromNode(nodeUrl, '/admin/toggle-disabled', {
+      method: 'POST',
+      body: JSON.stringify({ disabled: disable }),
+      timeout: 5000,
+    });
+    if (result.success) {
+      return result.data;
+    }
+  }
+  
+  // Fallback to proxy via primary node
+  return fetchAPI(`/admin/node/${nodeName}/toggle`, {
+    method: 'POST',
+    body: JSON.stringify({ disabled: disable }),
+  });
+};
+
+/**
+ * Get the disabled status of a specific node
+ * @param {string} nodeName - The node to check
+ * @returns {Promise<Object>} { node, disabled }
+ */
+export const getNodeDisabledStatus = async (nodeName) => {
+  const nodeUrl = NODE_URLS[nodeName];
+  if (nodeUrl) {
+    const result = await fetchFromNode(nodeUrl, '/admin/disabled-status', { timeout: 3000 });
+    if (result.success) {
+      return result.data;
+    }
+    return { node: nodeName, disabled: false, unreachable: true, error: result.error };
+  }
+  
+  try {
+    return await fetchAPI(`/admin/node/${nodeName}/disabled-status`);
+  } catch {
+    return { node: nodeName, disabled: false, unreachable: true };
+  }
+};
+
+/**
+ * Get disabled status for all nodes
+ * @returns {Promise<Object>} { node0: {...}, node1: {...}, node2: {...} }
+ */
+export const getAllNodesDisabledStatus = async () => {
+  const nodes = ['node0', 'node1', 'node2'];
+  const results = await Promise.all(
+    nodes.map(async (nodeName) => {
+      const status = await getNodeDisabledStatus(nodeName);
+      return [nodeName, status];
+    })
+  );
+  return Object.fromEntries(results);
+};
+
+// ==================== AVAILABLE NODES FOR ORCHESTRATOR ====================
+
+/**
+ * Get list of available (online and enabled) nodes for orchestrator
+ * @returns {Promise<Array<string>>} List of available node names
+ */
+export const getAvailableNodes = async () => {
+  try {
+    const [health, disabled] = await Promise.all([
+      fetchAllNodeHealth(),
+      getAllNodesDisabledStatus(),
+    ]);
+    
+    const available = [];
+    for (const nodeName of ['node0', 'node1', 'node2']) {
+      const isOnline = health[nodeName]?.online;
+      const isDisabled = disabled[nodeName]?.disabled;
+      const isUnreachable = disabled[nodeName]?.unreachable;
+      
+      if (isOnline && !isDisabled && !isUnreachable) {
+        available.push(nodeName);
+      }
+    }
+    
+    return available;
+  } catch (error) {
+    console.error('Failed to get available nodes:', error);
+    return ['node0', 'node1', 'node2']; // Fallback to all nodes
+  }
 };
