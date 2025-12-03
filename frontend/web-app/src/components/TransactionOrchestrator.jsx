@@ -708,17 +708,17 @@ export function TransactionOrchestrator() {
                         </p>
                         {(() => {
                           const times = Object.values(statusSnapshot.result_summary.execution_times);
-                          const avgTotal = times.reduce((sum, t) => sum + (t.total_seconds || 0), 0) / times.length;
-                          const avgTxn = times.reduce((sum, t) => sum + (t.transaction_seconds || 0), 0) / times.length;
-                          const avgDelay = times.reduce((sum, t) => sum + (t.delay_seconds || 0), 0) / times.length;
-                          const avgNet = times.reduce((sum, t) => sum + (t.net_execution_seconds || 0), 0) / times.length;
+                          const avgTotal = times.reduce((sum, t) => sum + (t.total_seconds || 0), 0) / times.length * 1000;
+                          const avgTxn = times.reduce((sum, t) => sum + (t.transaction_seconds || 0), 0) / times.length * 1000;
+                          const avgDelay = times.reduce((sum, t) => sum + (t.delay_seconds || 0), 0) / times.length * 1000;
+                          const avgNet = times.reduce((sum, t) => sum + (t.net_execution_seconds || 0), 0) / times.length * 1000;
                           
                           return (
                             <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
-                              <span>Avg Total: {avgTotal.toFixed(3)}s</span>
-                              <span>Avg Transaction: {avgTxn.toFixed(3)}s</span>
-                              <span>Avg Delay: {avgDelay.toFixed(3)}s</span>
-                              <span className="font-medium text-blue-700">Avg Net: {avgNet.toFixed(3)}s</span>
+                              <span>Avg Total: {avgTotal.toFixed(2)}ms</span>
+                              <span>Avg Transaction: {avgTxn.toFixed(2)}ms</span>
+                              <span>Avg Delay: {avgDelay.toFixed(2)}ms</span>
+                              <span className="font-medium text-blue-700">Avg Net: {avgNet.toFixed(2)}ms</span>
                             </div>
                           );
                         })()}
