@@ -50,6 +50,8 @@ class ScenarioType(str, Enum):
     READ_READ = "READ_READ"
     READ_WRITE = "READ_WRITE"
     WRITE_WRITE = "WRITE_WRITE"
+    NON_REPEATABLE_READ = "NON_REPEATABLE_READ"
+    PHANTOM_READ = "PHANTOM_READ"
 
     @property
     def roles(self) -> Tuple[str, str]:
@@ -57,6 +59,8 @@ class ScenarioType(str, Enum):
             ScenarioType.READ_READ: ("read", "read"),
             ScenarioType.READ_WRITE: ("write", "read"),  # Writer first (on node_x), Reader second (on node_y)
             ScenarioType.WRITE_WRITE: ("write", "write"),
+            ScenarioType.NON_REPEATABLE_READ: ("read", "write"),  # Reader first, Writer updates during
+            ScenarioType.PHANTOM_READ: ("read", "write"),  # Reader with COUNT/SELECT_RANGE, Writer inserts
         }
         return mapping[self]
 
@@ -113,6 +117,10 @@ class RunState:
         self.serialization_conflicts: List[str] = []
         self.actor_results: Dict[str, Dict[str, Any]] = {}
         self.actor_levels: Dict[str, IsolationLevel] = {}
+        # Timing infrastructure
+        self.start_time: Optional[float] = None
+        self.end_time: Optional[float] = None
+        self.actor_timings: Dict[str, Dict[str, float]] = {}  # actor_id -> {total_duration_ms, sleep_time_ms, execution_time_ms}
 
     async def log(self, event: str, **details: Any) -> None:
         entry = {
@@ -354,6 +362,11 @@ class TransactionOrchestrator:
         return plans
 
     async def _execute_actor(self, state: RunState, plan: ActorPlan, order_id: UUID) -> None:
+        import time
+        
+        start_time = time.perf_counter()
+        sleep_time_ms = 0.0
+        
         state.client_status[plan.actor_id] = {
             "status": "running",
             "node": plan.node,
@@ -369,6 +382,17 @@ class TransactionOrchestrator:
         # Check if this is a remote node - use HTTP instead of direct DB connection
         if not self._is_local_node(plan.node):
             await self._execute_remote_actor(state, plan, order_id)
+            # For remote execution, calculate timing
+            end_time = time.perf_counter()
+            total_duration_ms = (end_time - start_time) * 1000
+            # Estimate sleep time based on delay_seconds
+            if plan.delay_seconds:
+                sleep_time_ms = plan.delay_seconds * 1000
+            state.actor_timings[plan.actor_id] = {
+                "total_duration_ms": total_duration_ms,
+                "sleep_time_ms": sleep_time_ms,
+                "execution_time_ms": total_duration_ms - sleep_time_ms,
+            }
             return
 
         # Local node - use direct database connection
@@ -389,6 +413,9 @@ class TransactionOrchestrator:
             )
             if plan.role == "read":
                 details = await self._perform_read(state, conn, plan, order_id)
+                # Track sleep time if delay was used
+                if plan.delay_seconds:
+                    sleep_time_ms = plan.delay_seconds * 1000
             else:
                 details = await self._perform_write(state, conn, plan, order_id)
                 # For READ_WRITE scenario: writer delays before commit to allow
@@ -396,6 +423,7 @@ class TransactionOrchestrator:
                 if state.payload.scenario == ScenarioType.READ_WRITE:
                     await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=1.0)
                     await asyncio.sleep(1.0)  # Hold transaction open for dirty read testing
+                    sleep_time_ms += 1000  # Add commit delay to sleep time
             await conn.execute("COMMIT")
             state.client_status[plan.actor_id]["status"] = "committed"
             state.actor_results[plan.actor_id] = {
@@ -405,6 +433,16 @@ class TransactionOrchestrator:
                 "delay_seconds": plan.delay_seconds,
                 "details": details,
             }
+            
+            # Calculate and store timing
+            end_time = time.perf_counter()
+            total_duration_ms = (end_time - start_time) * 1000
+            state.actor_timings[plan.actor_id] = {
+                "total_duration_ms": total_duration_ms,
+                "sleep_time_ms": sleep_time_ms,
+                "execution_time_ms": total_duration_ms - sleep_time_ms,
+            }
+            
         except asyncio.CancelledError:
             await conn.execute("ROLLBACK")
             state.client_status[plan.actor_id]["status"] = "cancelled"
@@ -659,6 +697,9 @@ class TransactionOrchestrator:
             else:
                 verdict = f"Writers status: {committed_count} committed, {conflict_count} conflicts."
         
+        # Calculate timing metrics
+        timing_metrics = self._calculate_timing_metrics(state)
+        
         return {
             "order_id": str(order_id),
             "initial_quantity": state.initial_quantity,
@@ -670,9 +711,40 @@ class TransactionOrchestrator:
             "read_uncommitted_note": note,
             "serialization_conflicts": state.serialization_conflicts,
             "verdict": verdict,
+            "timing_metrics": timing_metrics,
             "replication_note": "Node snapshots reflect latest pull at query time; minor lag is expected.",
         }
-
+    
+    def _calculate_timing_metrics(self, state: RunState) -> Dict[str, Any]:
+        """Calculate aggregate and per-actor timing metrics."""
+        if not state.actor_timings:
+            return {}
+        
+        # Calculate aggregate metrics
+        total_durations = [t["total_duration_ms"] for t in state.actor_timings.values()]
+        sleep_times = [t["sleep_time_ms"] for t in state.actor_timings.values()]
+        execution_times = [t["execution_time_ms"] for t in state.actor_timings.values()]
+        
+        avg_total = sum(total_durations) / len(total_durations) if total_durations else 0
+        avg_sleep = sum(sleep_times) / len(sleep_times) if sleep_times else 0
+        avg_exec = sum(execution_times) / len(execution_times) if execution_times else 0
+        
+        # Build per-actor breakdown
+        per_actor = {}
+        for actor_id, timing in state.actor_timings.items():
+            per_actor[actor_id] = {
+                "total_duration_ms": round(timing["total_duration_ms"], 2),
+                "sleep_time_ms": round(timing["sleep_time_ms"], 2),
+                "execution_time_ms": round(timing["execution_time_ms"], 2),
+            }
+        
+        return {
+            "avg_total_duration_ms": round(avg_total, 2),
+            "avg_sleep_time_ms": round(avg_sleep, 2),
+            "avg_execution_time_ms": round(avg_exec, 2),
+            "per_actor": per_actor,
+        }
+    
     async def _fetch_node_snapshot(self, dsn: str, order_id: UUID) -> Dict[str, Any]:
         conn = await self._connection_factory(dsn)
         try:

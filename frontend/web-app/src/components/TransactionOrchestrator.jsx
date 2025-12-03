@@ -30,6 +30,16 @@ const scenarioOptions = [
     label: 'Writer vs Writer',
     description: 'Two writers concurrently increment the same row. Each reads current value and adds 1. Tests for lost updates and serialization conflicts.',
   },
+  {
+    id: 'NON_REPEATABLE_READ',
+    label: 'Non-Repeatable Read Test',
+    description: 'Reader performs SELECT, sleeps, then SELECT again. Writer updates the row during sleep. Tests if isolation level prevents non-repeatable reads.',
+  },
+  {
+    id: 'PHANTOM_READ',
+    label: 'Phantom Read Test',
+    description: 'Reader performs COUNT and range SELECT, sleeps, then repeats. Writer inserts a new row during sleep. Tests if isolation level prevents phantom reads.',
+  },
 ];
 
 const isolationLevels = [
@@ -726,6 +736,64 @@ export function TransactionOrchestrator() {
                   </div>
                 )}
               </div>
+
+              {/* Timing Metrics Panel */}
+              {statusSnapshot.result_summary?.timing_metrics && (
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-slate-700">Performance Metrics</p>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <div className="border rounded-md p-3 bg-gradient-to-br from-blue-50 to-white">
+                      <p className="text-xs uppercase text-slate-500">Avg Total Duration</p>
+                      <p className="text-2xl font-semibold text-blue-600">
+                        {statusSnapshot.result_summary.timing_metrics.avg_total_duration_ms.toFixed(1)}
+                        <span className="text-sm text-slate-500 ml-1">ms</span>
+                      </p>
+                    </div>
+                    <div className="border rounded-md p-3 bg-gradient-to-br from-green-50 to-white">
+                      <p className="text-xs uppercase text-slate-500">Avg Execution Time</p>
+                      <p className="text-2xl font-semibold text-green-600">
+                        {statusSnapshot.result_summary.timing_metrics.avg_execution_time_ms.toFixed(1)}
+                        <span className="text-sm text-slate-500 ml-1">ms</span>
+                      </p>
+                    </div>
+                    <div className="border rounded-md p-3 bg-gradient-to-br from-amber-50 to-white">
+                      <p className="text-xs uppercase text-slate-500">Avg Sleep Time</p>
+                      <p className="text-2xl font-semibold text-amber-600">
+                        {statusSnapshot.result_summary.timing_metrics.avg_sleep_time_ms.toFixed(1)}
+                        <span className="text-sm text-slate-500 ml-1">ms</span>
+                      </p>
+                    </div>
+                  </div>
+                  
+                  {/* Per-Actor Breakdown */}
+                  {statusSnapshot.result_summary.timing_metrics.per_actor && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-xs uppercase text-slate-500">Per-Actor Breakdown</p>
+                      <div className="space-y-2">
+                        {Object.entries(statusSnapshot.result_summary.timing_metrics.per_actor).map(([actorId, timing]) => (
+                          <div key={actorId} className="border rounded-md p-3 bg-white">
+                            <p className="text-sm font-semibold mb-2">{actorId}</p>
+                            <div className="grid grid-cols-3 gap-3 text-xs">
+                              <div>
+                                <p className="text-slate-500">Total</p>
+                                <p className="font-mono font-semibold">{timing.total_duration_ms}ms</p>
+                              </div>
+                              <div>
+                                <p className="text-slate-500">Execution</p>
+                                <p className="font-mono font-semibold text-green-600">{timing.execution_time_ms}ms</p>
+                              </div>
+                              <div>
+                                <p className="text-slate-500">Sleep</p>
+                                <p className="font-mono font-semibold text-amber-600">{timing.sleep_time_ms}ms</p>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="space-y-2">
                 <p className="text-sm font-semibold text-slate-700">Client Status</p>
