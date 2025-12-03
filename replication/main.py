@@ -13,8 +13,10 @@ from .db import close_db, get_pool, init_db
 from .orchestrator import TransactionOrchestrator
 from .recovery import RecoveryManager
 from .recovery_tests import RecoveryTestRunner
+from .cluster_manager import ClusterManager
 from .routes import admin, orchestrator as orchestrator_routes, orders, replication, recovery as recovery_routes
 from .routes import recovery_tests as recovery_tests_routes
+from .routes import cluster as cluster_routes
 from .utils.http_client import HTTPClient
 from .workers.applier import ApplierWorker
 from .workers.replicator import ReplicatorWorker
@@ -41,6 +43,7 @@ app.include_router(replication.router)
 app.include_router(orchestrator_routes.router)
 app.include_router(recovery_routes.router)
 app.include_router(recovery_tests_routes.router)
+app.include_router(cluster_routes.router)
 
 
 @app.on_event("startup")
@@ -65,13 +68,24 @@ async def on_startup() -> None:  # pragma: no cover - exercised via integration 
 	app.state.recovery_test_runner = RecoveryTestRunner(
 		pool, settings, app.state.http_client
 	)
+	
+	# Initialize cluster manager for automatic failover and recovery
+	app.state.cluster_manager = ClusterManager(
+		pool, settings, app.state.http_client,
+		get_promoted_flag=lambda: bool(app.state.promoted),
+		set_promoted_flag=lambda v: setattr(app.state, 'promoted', v),
+	)
+	
 	await app.state.replicator.start()
 	await app.state.applier.start()
+	await app.state.cluster_manager.start()
 	LOGGER.info("Startup complete for node %s", settings.node_name)
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:  # pragma: no cover - exercised via integration tests
+	if hasattr(app.state, "cluster_manager"):
+		await app.state.cluster_manager.stop()
 	if hasattr(app.state, "replicator"):
 		await app.state.replicator.stop()
 	if hasattr(app.state, "applier"):

@@ -555,3 +555,107 @@ export const resetNodeAvailabilityTracking = () => {
  * Export node URLs for external use
  */
 export { NODE_URLS, getAvailableApiUrl };
+
+// ==================== CLUSTER MANAGEMENT (Unified Recovery) ====================
+
+/**
+ * Get cluster status including leader, online nodes, and health state
+ * @returns {Promise<Object>} { state, leader, nodes, health_summary }
+ */
+export const getClusterStatus = async () => {
+  return fetchAPI('/cluster/status');
+};
+
+/**
+ * Get cluster events (real activity logs)
+ * @param {number} limit - Max number of events to return
+ * @param {string} eventType - Optional filter by event type
+ * @returns {Promise<Object>} { events: Array }
+ */
+export const getClusterEvents = async (limit = 100, eventType = null) => {
+  const params = new URLSearchParams({ limit: limit.toString() });
+  if (eventType) params.append('event_type', eventType);
+  return fetchAPI(`/cluster/events?${params.toString()}`);
+};
+
+/**
+ * Get cluster timeline for visualization
+ * @param {number} durationSeconds - How far back in time to look
+ * @returns {Promise<Object>} { timeline: Array, current_time }
+ */
+export const getClusterTimeline = async (durationSeconds = 60) => {
+  return fetchAPI(`/cluster/timeline?duration_seconds=${durationSeconds}`);
+};
+
+/**
+ * Toggle a node's simulated state (up/down)
+ * @param {string} nodeName - Node name ('node0', 'node1', 'node2')
+ * @param {boolean} simulateDown - True to simulate node down, false to bring back up
+ * @returns {Promise<Object>} { node, simulated_down, message }
+ */
+export const toggleClusterNode = async (nodeName, simulateDown) => {
+  return fetchAPI(`/cluster/node/${nodeName}/toggle`, {
+    method: 'POST',
+    body: JSON.stringify({ simulate_down: simulateDown }),
+  });
+};
+
+/**
+ * Simulate a node failure (shorthand for toggle with simulateDown=true)
+ * @param {string} nodeName - Node name
+ * @returns {Promise<Object>} Failure simulation result
+ */
+export const simulateNodeFailure = async (nodeName) => {
+  return fetchAPI(`/cluster/node/${nodeName}/simulate-failure`, {
+    method: 'POST',
+  });
+};
+
+/**
+ * Simulate a node recovery (shorthand for toggle with simulateDown=false)
+ * @param {string} nodeName - Node name
+ * @returns {Promise<Object>} Recovery simulation result
+ */
+export const simulateNodeRecovery = async (nodeName) => {
+  return fetchAPI(`/cluster/node/${nodeName}/simulate-recovery`, {
+    method: 'POST',
+  });
+};
+
+/**
+ * Run a cluster recovery test
+ * @param {string} testId - Test ID ('follower_failure', 'leader_failure', 'network_partition', 'cascading_failure')
+ * @returns {Promise<Object>} { test_id, status, message }
+ */
+export const runClusterTest = async (testId) => {
+  return fetchAPI('/cluster/test/run', {
+    method: 'POST',
+    body: JSON.stringify({ test_id: testId }),
+  });
+};
+
+/**
+ * Get currently running cluster test
+ * @returns {Promise<Object>} { current_test: Object|null }
+ */
+export const getCurrentClusterTest = async () => {
+  return fetchAPI('/cluster/test/current');
+};
+
+/**
+ * Get cluster test history
+ * @returns {Promise<Object>} { history: Array }
+ */
+export const getClusterTestHistory = async () => {
+  return fetchAPI('/cluster/test/history');
+};
+
+/**
+ * Force trigger automatic recovery (manual override)
+ * @returns {Promise<Object>} Recovery trigger result
+ */
+export const triggerClusterRecovery = async () => {
+  return fetchAPI('/cluster/recovery/trigger', {
+    method: 'POST',
+  });
+};
