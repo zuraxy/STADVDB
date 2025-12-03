@@ -30,6 +30,16 @@ const scenarioOptions = [
     label: 'Writer vs Writer',
     description: 'Two writers concurrently update the same row to provoke serialization conflicts.',
   },
+  {
+    id: 'non_repeatable_read',
+    label: 'Non-Repeatable Read Test',
+    description: 'Reader reads → Writer updates → Reader reads again. Tests if same query returns different results.',
+  },
+  {
+    id: 'phantom_read',
+    label: 'Phantom Read Test',
+    description: 'Reader counts rows in range → Writer inserts new row → Reader counts again. Tests for phantom rows.',
+  },
 ];
 
 const isolationLevels = [
@@ -266,16 +276,22 @@ export function TransactionOrchestrator() {
     if (step.error) {
       return `${step.action}: ${step.error}`;
     }
+    
+    const duration = step.duration_ms ? ` (${step.duration_ms.toFixed(1)}ms)` : '';
+    
     if (Array.isArray(step.result) && step.result.length > 0) {
       const first = step.result[0];
       if (first?.quantity !== undefined) {
-        return `${step.action}: qty ${first.quantity}`;
+        return `${step.action}: qty ${first.quantity}${duration}`;
+      }
+      if (first?.count !== undefined) {
+        return `${step.action}: count ${first.count}${duration}`;
       }
     }
     if (typeof step.result === 'string') {
-      return `${step.action}: ${step.result}`;
+      return `${step.action}: ${step.result}${duration}`;
     }
-    return step.action;
+    return `${step.action}${duration}`;
   };
 
   return (
@@ -560,6 +576,63 @@ export function TransactionOrchestrator() {
                   <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-md px-3 py-2">
                     Serialization retries triggered for: {serializationConflicts.join(', ')}
                   </p>
+                )}
+                {statusSnapshot.result_summary?.timing_metrics && (
+                  <div className="space-y-3 border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
+                    <p className="text-sm font-semibold text-blue-900 flex items-center gap-2">
+                      <Activity className="w-4 h-4" />
+                      Performance Metrics
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <div className="p-3 border border-blue-200 rounded-md bg-white">
+                        <p className="text-xs uppercase text-slate-500">Avg Total Time</p>
+                        <p className="text-lg font-semibold text-blue-700">
+                          {statusSnapshot.result_summary.timing_metrics.aggregate?.avg_total_duration_ms?.toFixed(1) || 0} ms
+                        </p>
+                      </div>
+                      <div className="p-3 border border-blue-200 rounded-md bg-white">
+                        <p className="text-xs uppercase text-slate-500">Avg Execution Time</p>
+                        <p className="text-lg font-semibold text-green-700">
+                          {statusSnapshot.result_summary.timing_metrics.aggregate?.avg_execution_time_ms?.toFixed(1) || 0} ms
+                        </p>
+                        <p className="text-xs text-slate-500">(excluding sleep)</p>
+                      </div>
+                      <div className="p-3 border border-blue-200 rounded-md bg-white">
+                        <p className="text-xs uppercase text-slate-500">Avg Sleep Time</p>
+                        <p className="text-lg font-semibold text-amber-700">
+                          {statusSnapshot.result_summary.timing_metrics.aggregate?.avg_sleep_time_ms?.toFixed(1) || 0} ms
+                        </p>
+                        <p className="text-xs text-slate-500">(artificial delay)</p>
+                      </div>
+                    </div>
+                    {statusSnapshot.result_summary.timing_metrics.client_metrics && (
+                      <div className="space-y-2">
+                        <p className="text-xs uppercase text-slate-600 font-semibold">Per-Client Breakdown</p>
+                        <div className="grid gap-2">
+                          {Object.entries(statusSnapshot.result_summary.timing_metrics.client_metrics).map(([clientId, metrics]) => (
+                            <div key={clientId} className="border border-blue-200 rounded-md p-3 bg-white">
+                              <div className="flex items-center justify-between mb-2">
+                                <p className="text-sm font-semibold text-slate-700">{clientId}</p>
+                                <Badge variant="outline" className="bg-blue-50 text-blue-700">
+                                  {metrics.total_duration_ms?.toFixed(1)} ms
+                                </Badge>
+                              </div>
+                              <div className="grid grid-cols-2 gap-2 text-xs">
+                                <div>
+                                  <span className="text-slate-500">Execution: </span>
+                                  <span className="font-mono font-semibold text-green-700">{metrics.execution_time_ms?.toFixed(1)} ms</span>
+                                </div>
+                                <div>
+                                  <span className="text-slate-500">Sleep: </span>
+                                  <span className="font-mono font-semibold text-amber-700">{metrics.sleep_time_ms?.toFixed(1)} ms</span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
                 {finalStateEntries.length > 0 && (
                   <div className="space-y-2">

@@ -62,6 +62,8 @@ class ScenarioKind(str, Enum):
 	READ_READ = "read_read"
 	READ_WRITE = "read_write"
 	WRITE_WRITE = "write_write"
+	NON_REPEATABLE_READ = "non_repeatable_read"
+	PHANTOM_READ = "phantom_read"
 
 
 @dataclass
@@ -117,6 +119,10 @@ class RunState:
 		self.main_task: Optional[asyncio.Task] = None
 		self._log_lock = asyncio.Lock()
 		self._listeners: List[asyncio.Queue] = []
+		# Timing metrics
+		self.client_timings: Dict[str, Dict[str, float]] = {}
+		self.start_time: Optional[float] = None
+		self.end_time: Optional[float] = None
 
 	async def log(self, event: str, **details: Any) -> None:
 		"""Persist + broadcast a structured log entry."""
@@ -136,6 +142,8 @@ class RunState:
 			"role": script.role,
 			"node": script.node,
 			"status": "pending",
+			"start_time": None,
+			"end_time": None,
 			"steps": [],
 			"error": None,
 		}
@@ -147,6 +155,7 @@ class RunState:
 		sql: Optional[str] = None,
 		result: Any = None,
 		error: Optional[str] = None,
+		duration_ms: Optional[float] = None,
 	) -> None:
 		entry = {
 			"timestamp": datetime.now(timezone.utc).isoformat(),
@@ -154,6 +163,7 @@ class RunState:
 			"sql": sql,
 			"result": result,
 			"error": error,
+			"duration_ms": duration_ms,
 		}
 		self.client_status[client_id]["steps"].append(entry)
 		await self.log("client_step", client_id=client_id, action=action, error=error)
@@ -373,6 +383,10 @@ class TransactionOrchestrator:
 			return self._build_read_write(parameters, order_id)
 		if parameters.scenario is ScenarioKind.WRITE_WRITE:
 			return self._build_write_write(parameters, order_id)
+		if parameters.scenario is ScenarioKind.NON_REPEATABLE_READ:
+			return self._build_non_repeatable_read(parameters, order_id)
+		if parameters.scenario is ScenarioKind.PHANTOM_READ:
+			return self._build_phantom_read(parameters, order_id)
 		raise ValueError(f"Unsupported scenario {parameters.scenario}")
 
 	def _build_read_read(self, parameters: OrchestrationParameters, order_id: UUID) -> List[ClientScript]:
@@ -513,6 +527,134 @@ class TransactionOrchestrator:
 		]
 		return clients
 
+	def _build_non_repeatable_read(self, parameters: OrchestrationParameters, order_id: UUID) -> List[ClientScript]:
+		"""Test non-repeatable read: Reader reads, writer updates, reader reads again."""
+		reader_node = self._resolved_nodes([parameters.node_x])[0]
+		writer_node = self._resolved_nodes([parameters.node_y])[0]
+		writer_value = parameters.new_value_1 if parameters.new_value_1 is not None else DEFAULT_START_QUANTITY + 5
+		
+		# Reader: long-running transaction with two reads separated by sleep
+		reader_script = ClientScript(
+			client_id="reader-1",
+			role="reader",
+			node=reader_node,
+			instructions=[
+				TransactionInstruction(
+					action="SELECT_1",
+					sql="SELECT quantity FROM orders WHERE order_id = $1",
+					params=(order_id,),
+					capture_results=True,
+				),
+				TransactionInstruction(
+					action="SLEEP",
+					sql="SELECT pg_sleep($1)",
+					params=(self.sleep_seconds,),
+					capture_results=False,
+				),
+				TransactionInstruction(
+					action="SELECT_2",
+					sql="SELECT quantity FROM orders WHERE order_id = $1",
+					params=(order_id,),
+					capture_results=True,
+				),
+			],
+		)
+		
+		# Writer: updates the value during reader's sleep
+		writer_script = ClientScript(
+			client_id="writer-1",
+			role="writer",
+			node=writer_node,
+			instructions=[
+				TransactionInstruction(
+					action="SLEEP",
+					sql="SELECT pg_sleep($1)",
+					params=(self.sleep_seconds / 2,),  # Start halfway through reader's first sleep
+					capture_results=False,
+				),
+				TransactionInstruction(
+					action="UPDATE",
+					sql="UPDATE orders SET quantity = $1, updated_at = NOW() WHERE order_id = $2",
+					params=(writer_value, order_id),
+					capture_results=False,
+				),
+			],
+		)
+		
+		return [reader_script, writer_script]
+
+	def _build_phantom_read(self, parameters: OrchestrationParameters, order_id: UUID) -> List[ClientScript]:
+		"""Test phantom read: Reader counts rows, writer inserts, reader counts again."""
+		reader_node = self._resolved_nodes([parameters.node_x])[0]
+		writer_node = self._resolved_nodes([parameters.node_y])[0]
+		new_quantity = parameters.new_value_1 if parameters.new_value_1 is not None else 3
+		
+		# Reader: performs range query twice to detect phantoms
+		reader_script = ClientScript(
+			client_id="reader-1",
+			role="reader",
+			node=reader_node,
+			instructions=[
+				# First range query: count orders in quantity range
+				TransactionInstruction(
+					action="COUNT_1",
+					sql="SELECT COUNT(*) as count FROM orders WHERE quantity BETWEEN 1 AND 5",
+					params=(),
+					capture_results=True,
+				),
+				# List all matching orders
+				TransactionInstruction(
+					action="SELECT_RANGE_1",
+					sql="SELECT order_id, quantity FROM orders WHERE quantity BETWEEN 1 AND 5 ORDER BY quantity",
+					params=(),
+					capture_results=True,
+				),
+				TransactionInstruction(
+					action="SLEEP",
+					sql="SELECT pg_sleep($1)",
+					params=(self.sleep_seconds,),
+					capture_results=False,
+				),
+				# Second range query: same count after writer potentially inserted
+				TransactionInstruction(
+					action="COUNT_2",
+					sql="SELECT COUNT(*) as count FROM orders WHERE quantity BETWEEN 1 AND 5",
+					params=(),
+					capture_results=True,
+				),
+				TransactionInstruction(
+					action="SELECT_RANGE_2",
+					sql="SELECT order_id, quantity FROM orders WHERE quantity BETWEEN 1 AND 5 ORDER BY quantity",
+					params=(),
+					capture_results=True,
+				),
+			],
+		)
+		
+		# Writer: inserts new row in the range during reader's transaction
+		writer_script = ClientScript(
+			client_id="writer-1",
+			role="writer",
+			node=writer_node,
+			instructions=[
+				TransactionInstruction(
+					action="SLEEP",
+					sql="SELECT pg_sleep($1)",
+					params=(self.sleep_seconds / 2,),  # Insert halfway through reader's sleep
+					capture_results=False,
+				),
+				TransactionInstruction(
+					action="INSERT",
+					sql="INSERT INTO orders (order_id, quantity, payload, created_at, updated_at) VALUES (gen_random_uuid(), $1, '{}'::jsonb, NOW(), NOW())",
+					params=(new_quantity,),
+					capture_results=False,
+				),
+			],
+		)
+		
+		return [reader_script, writer_script]
+
+
 	def _resolved_nodes(self, requested: Sequence[str]) -> List[str]:
 		nodes: List[str] = []
 		for label in requested:
@@ -526,22 +668,35 @@ class TransactionOrchestrator:
 		return nodes
 
 	async def _execute_client(self, state: RunState, script: ClientScript) -> None:
+		import time
+		
 		state.client_status[script.client_id]["status"] = "running"
+		client_start = time.perf_counter()
+		state.client_status[script.client_id]["start_time"] = client_start
+		
 		dsn = self._node_dsns.get(script.node)
 		if not dsn:
 			raise RuntimeError(f"Missing DSN for node {script.node}")
 		conn = await self._connection_factory(dsn)
 		begin_sql = f"BEGIN TRANSACTION ISOLATION LEVEL {state.parameters.isolation_level.sql_clause}"
 		try:
+			step_start = time.perf_counter()
 			await conn.execute(begin_sql)
-			await state.append_step(script.client_id, "BEGIN", begin_sql)
+			step_duration = (time.perf_counter() - step_start) * 1000
+			await state.append_step(script.client_id, "BEGIN", begin_sql, duration_ms=step_duration)
+			
 			for instruction in script.instructions:
 				if state.cancel_event.is_set():
 					raise asyncio.CancelledError
+				step_start = time.perf_counter()
 				result = await self._run_instruction(conn, instruction)
-				await state.append_step(script.client_id, instruction.action, instruction.sql, result)
+				step_duration = (time.perf_counter() - step_start) * 1000
+				await state.append_step(script.client_id, instruction.action, instruction.sql, result, duration_ms=step_duration)
+			
+			step_start = time.perf_counter()
 			await conn.execute("COMMIT")
-			await state.append_step(script.client_id, "COMMIT", "COMMIT")
+			step_duration = (time.perf_counter() - step_start) * 1000
+			await state.append_step(script.client_id, "COMMIT", "COMMIT", duration_ms=step_duration)
 			state.client_status[script.client_id]["status"] = "committed"
 		except asyncio.CancelledError:
 			await conn.execute("ROLLBACK")
@@ -564,6 +719,14 @@ class TransactionOrchestrator:
 				await state.log("client_error", client_id=script.client_id, error=str(exc))
 				raise
 		finally:
+			client_end = time.perf_counter()
+			state.client_status[script.client_id]["end_time"] = client_end
+			total_duration = (client_end - client_start) * 1000
+			state.client_timings[script.client_id] = {
+				"total_duration_ms": total_duration,
+				"start_time": client_start,
+				"end_time": client_end,
+			}
 			await conn.close()
 
 	async def _run_instruction(self, conn: asyncpg.Connection, instruction: TransactionInstruction) -> Any:
@@ -587,6 +750,8 @@ class TransactionOrchestrator:
 		if final_quantity is not None and state.initial_quantity is not None:
 			delta = final_quantity - state.initial_quantity
 		verdict = self._derive_verdict(state, final_quantity)
+		timing_metrics = self._calculate_timing_metrics(state)
+		
 		return {
 			"order_id": str(state.order_id),
 			"initial_quantity": state.initial_quantity,
@@ -598,6 +763,7 @@ class TransactionOrchestrator:
 			"serialization_conflicts": state.serialization_conflicts,
 			"verdict": verdict,
 			"replication_note": "Node snapshots reflect current values per node at query time.",
+			"timing_metrics": timing_metrics,
 		}
 
 	def _derive_verdict(self, state: RunState, final_quantity: Optional[int]) -> str:
@@ -606,6 +772,73 @@ class TransactionOrchestrator:
 		statuses = ", ".join(f"{cid}:{info['status']}" for cid, info in state.client_status.items())
 		quantity_note = f" final={final_quantity}" if final_quantity is not None else ""
 		return f"{scenario} under {iso} → {statuses}.{quantity_note}"
+
+	def _calculate_timing_metrics(self, state: RunState) -> Dict[str, Any]:
+		"""Calculate comprehensive timing metrics for the orchestration run."""
+		client_metrics = {}
+		all_durations = []
+		sleep_durations = []
+		execution_durations = []
+		
+		for client_id, timing in state.client_timings.items():
+			total_duration = timing["total_duration_ms"]
+			all_durations.append(total_duration)
+			
+			# Calculate step-by-step breakdown
+			steps = state.client_status.get(client_id, {}).get("steps", [])
+			step_breakdown = {}
+			total_sleep_time = 0
+			total_execution_time = 0
+			
+			for step in steps:
+				action = step.get("action", "unknown")
+				duration = step.get("duration_ms", 0)
+				
+				if action not in step_breakdown:
+					step_breakdown[action] = {"count": 0, "total_ms": 0, "avg_ms": 0}
+				
+				step_breakdown[action]["count"] += 1
+				step_breakdown[action]["total_ms"] += duration
+				
+				if action == "SLEEP":
+					total_sleep_time += duration
+					sleep_durations.append(duration)
+				else:
+					total_execution_time += duration
+					execution_durations.append(duration)
+			
+			# Calculate averages
+			for action_data in step_breakdown.values():
+				if action_data["count"] > 0:
+					action_data["avg_ms"] = round(action_data["total_ms"] / action_data["count"], 2)
+			
+			client_metrics[client_id] = {
+				"total_duration_ms": round(total_duration, 2),
+				"sleep_time_ms": round(total_sleep_time, 2),
+				"execution_time_ms": round(total_execution_time, 2),
+				"step_breakdown": step_breakdown,
+			}
+		
+		# Aggregate metrics
+		avg_total = round(sum(all_durations) / len(all_durations), 2) if all_durations else 0
+		min_total = round(min(all_durations), 2) if all_durations else 0
+		max_total = round(max(all_durations), 2) if all_durations else 0
+		
+		avg_sleep = round(sum(sleep_durations) / len(sleep_durations), 2) if sleep_durations else 0
+		avg_execution = round(sum(execution_durations) / len(execution_durations), 2) if execution_durations else 0
+		
+		return {
+			"client_metrics": client_metrics,
+			"aggregate": {
+				"avg_total_duration_ms": avg_total,
+				"min_total_duration_ms": min_total,
+				"max_total_duration_ms": max_total,
+				"avg_sleep_time_ms": avg_sleep,
+				"avg_execution_time_ms": avg_execution,
+				"total_clients": len(client_metrics),
+			},
+		}
+
 
 	async def _fetch_node_snapshot(self, dsn: str, order_id: UUID) -> Dict[str, Any]:
 		conn = await self._connection_factory(dsn)
