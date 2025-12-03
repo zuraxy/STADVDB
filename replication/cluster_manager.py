@@ -210,9 +210,12 @@ class ClusterManager:
                     url=peer.base_url,
                 )
         
-        # Determine initial leader (node0 by default)
+        # Set initial leader to default_master for ALL nodes
+        # This ensures all nodes know who the leader is from the start
+        self._current_leader = self.settings.default_master
+        
+        # Set role based on whether this node is the initial leader
         if self.settings.node_name == self.settings.default_master:
-            self._current_leader = self.settings.node_name
             self._my_role = NodeRole.LEADER
 
     def _now(self) -> str:

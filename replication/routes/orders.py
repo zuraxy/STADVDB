@@ -194,8 +194,10 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 async def list_orders(request: Request):
 	settings = get_settings()
 	
-	# Check if this node is available
-	_check_node_available(settings)
+	# If this node is simulated as down, forward to the leader
+	if _cluster_manager and _cluster_manager.is_node_simulated_down(settings.node_name):
+		response = await _forward(request, "GET", "/orders")
+		return response
 	
 	pool = get_pool()
 	if _is_leader(settings):
@@ -222,8 +224,10 @@ async def list_local_orders(request: Request):
 async def read_order(order_id: UUID, request: Request, local: bool = False) -> Optional[OrderRead]:
 	settings = get_settings()
 	
-	# Check if this node is available
-	_check_node_available(settings)
+	# If this node is simulated as down and not local-only, forward to the leader
+	if not local and _cluster_manager and _cluster_manager.is_node_simulated_down(settings.node_name):
+		response = await _forward(request, "GET", f"/orders/{order_id}")
+		return OrderRead(**response) if response else None
 	
 	pool = get_pool()
 	if _is_leader(settings) or local:
