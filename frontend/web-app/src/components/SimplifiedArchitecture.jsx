@@ -141,7 +141,7 @@ export function SimplifiedArchitecture({ activeScenario, isRunning }) {
             <div className="flex items-center gap-4 text-sm">
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-yellow-500" />
-                <span className="text-gray-700">Node 2: Even Order IDs</span>
+                <span className="text-gray-700">Node 1: Qty greater less than or equal to 5 </span>
               </div>
               <div className="w-px h-4 bg-gray-300" />
               <div className="flex items-center gap-2">
@@ -149,7 +149,7 @@ export function SimplifiedArchitecture({ activeScenario, isRunning }) {
                 <span className="text-gray-700">Node 3: Odd Order IDs</span>
               </div>
               <div className="w-px h-4 bg-gray-300" />
-              <span className="text-cyan-700 font-semibold">= Node 1 Complete Data</span>
+              <span className="text-cyan-700 font-semibold">= Node 2 greater than 5</span>
             </div>
           </div>
         </motion.div>
