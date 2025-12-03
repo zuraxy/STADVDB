@@ -33,23 +33,23 @@ export function SimplifiedArchitecture({ activeScenario, isRunning }) {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {[
             { 
-              id: 1, 
+              id: 0, 
               title: 'Central Node',
               subtitle: 'All Orders',
               color: 'from-green-400 to-emerald-500',
               data: 'Complete Dataset'
             },
             { 
-              id: 2, 
+              id: 1, 
               title: 'Fragment Node',
-              subtitle: 'Even Orders',
+              subtitle: 'Qty<=5',
               color: 'from-yellow-400 to-orange-500',
               data: 'Fragment 1'
             },
             { 
-              id: 3, 
+              id: 2, 
               title: 'Fragment Node',
-              subtitle: 'Odd Orders',
+              subtitle: 'Qty>5',
               color: 'from-blue-400 to-indigo-500',
               data: 'Fragment 2'
             }

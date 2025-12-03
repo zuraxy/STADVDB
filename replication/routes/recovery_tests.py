@@ -123,7 +123,7 @@ async def list_test_cases() -> Dict[str, Any]:
         "cases": [
             {
                 "id": "case_1",
-                "name": "Replication fails from Node2/3 → Node0",
+                "name": "Replication fails from Node1/2 → Node0",
                 "description": "Tests error logging and queued retry when Node0 cannot receive replication from partition nodes.",
             },
             {
@@ -133,12 +133,12 @@ async def list_test_cases() -> Dict[str, Any]:
             },
             {
                 "id": "case_3",
-                "name": "Replication fails from Node0 → Node2/3",
+                "name": "Replication fails from Node0 → Node1/2",
                 "description": "Tests logged failure and queued retry when partition nodes reject writes from Node0.",
             },
             {
                 "id": "case_4",
-                "name": "Node2/3 recovers after missing writes",
+                "name": "Node1/2 recovers after missing writes",
                 "description": "Tests that partition nodes pull missing entries in correct order with no duplication.",
             },
         ]
