@@ -577,6 +577,142 @@ export function TransactionOrchestrator() {
                     Serialization retries triggered for: {serializationConflicts.join(', ')}
                   </p>
                 )}
+                {statusSnapshot.result_summary?.anomalies && (
+                  <div className="space-y-3 border-2 border-purple-200 rounded-lg p-4 bg-purple-50">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-semibold text-purple-900 flex items-center gap-2">
+                        <Shield className="w-4 h-4" />
+                        Anomaly Detection
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
+                          {statusSnapshot.result_summary.anomalies.summary?.detected_count || 0} Detected
+                        </Badge>
+                        <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                          {statusSnapshot.result_summary.anomalies.summary?.prevented_count || 0} Prevented
+                        </Badge>
+                      </div>
+                    </div>
+                    
+                    <div className="grid gap-2">
+                      {/* Dirty Read */}
+                      {statusSnapshot.result_summary.anomalies.details?.dirty_read && (
+                        <div className={`border rounded-md p-3 ${
+                          statusSnapshot.result_summary.anomalies.details.dirty_read.occurred
+                            ? 'bg-red-50 border-red-300'
+                            : 'bg-green-50 border-green-300'
+                        }`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1">
+                              <p className="text-sm font-semibold flex items-center gap-2">
+                                {statusSnapshot.result_summary.anomalies.details.dirty_read.occurred ? (
+                                  <span className="text-red-700">❌ Dirty Read Occurred</span>
+                                ) : (
+                                  <span className="text-green-700">✅ Dirty Read Prevented</span>
+                                )}
+                              </p>
+                              <p className="text-xs mt-1 text-slate-600">
+                                {statusSnapshot.result_summary.anomalies.details.dirty_read.evidence}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Non-Repeatable Read */}
+                      {statusSnapshot.result_summary.anomalies.details?.non_repeatable_read && (
+                        <div className={`border rounded-md p-3 ${
+                          statusSnapshot.result_summary.anomalies.details.non_repeatable_read.occurred
+                            ? 'bg-red-50 border-red-300'
+                            : 'bg-green-50 border-green-300'
+                        }`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1">
+                              <p className="text-sm font-semibold flex items-center gap-2">
+                                {statusSnapshot.result_summary.anomalies.details.non_repeatable_read.occurred ? (
+                                  <span className="text-red-700">❌ Non-Repeatable Read Occurred</span>
+                                ) : (
+                                  <span className="text-green-700">✅ Non-Repeatable Read Prevented</span>
+                                )}
+                              </p>
+                              <p className="text-xs mt-1 text-slate-600">
+                                {statusSnapshot.result_summary.anomalies.details.non_repeatable_read.evidence}
+                              </p>
+                              {statusSnapshot.result_summary.anomalies.details.non_repeatable_read.details && (
+                                <div className="mt-2 text-xs font-mono bg-white border rounded px-2 py-1">
+                                  First: {statusSnapshot.result_summary.anomalies.details.non_repeatable_read.details.first_read} → 
+                                  Second: {statusSnapshot.result_summary.anomalies.details.non_repeatable_read.details.second_read} 
+                                  (Δ {statusSnapshot.result_summary.anomalies.details.non_repeatable_read.details.difference})
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Phantom Read */}
+                      {statusSnapshot.result_summary.anomalies.details?.phantom_read && (
+                        <div className={`border rounded-md p-3 ${
+                          statusSnapshot.result_summary.anomalies.details.phantom_read.occurred
+                            ? 'bg-red-50 border-red-300'
+                            : 'bg-green-50 border-green-300'
+                        }`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1">
+                              <p className="text-sm font-semibold flex items-center gap-2">
+                                {statusSnapshot.result_summary.anomalies.details.phantom_read.occurred ? (
+                                  <span className="text-red-700">❌ Phantom Read Occurred</span>
+                                ) : (
+                                  <span className="text-green-700">✅ Phantom Read Prevented</span>
+                                )}
+                              </p>
+                              <p className="text-xs mt-1 text-slate-600">
+                                {statusSnapshot.result_summary.anomalies.details.phantom_read.evidence}
+                              </p>
+                              {statusSnapshot.result_summary.anomalies.details.phantom_read.details && (
+                                <div className="mt-2 text-xs font-mono bg-white border rounded px-2 py-1">
+                                  Count changed: {statusSnapshot.result_summary.anomalies.details.phantom_read.details.first_count} → {statusSnapshot.result_summary.anomalies.details.phantom_read.details.second_count} 
+                                  ({statusSnapshot.result_summary.anomalies.details.phantom_read.details.phantom_rows > 0 ? '+' : ''}{statusSnapshot.result_summary.anomalies.details.phantom_read.details.phantom_rows} phantom rows)
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Lost Update */}
+                      {statusSnapshot.result_summary.anomalies.details?.lost_update && (
+                        <div className={`border rounded-md p-3 ${
+                          statusSnapshot.result_summary.anomalies.details.lost_update.occurred
+                            ? 'bg-red-50 border-red-300'
+                            : 'bg-green-50 border-green-300'
+                        }`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1">
+                              <p className="text-sm font-semibold flex items-center gap-2">
+                                {statusSnapshot.result_summary.anomalies.details.lost_update.occurred ? (
+                                  <span className="text-red-700">❌ Lost Update Occurred</span>
+                                ) : (
+                                  <span className="text-green-700">✅ Lost Update Prevented</span>
+                                )}
+                              </p>
+                              <p className="text-xs mt-1 text-slate-600">
+                                {statusSnapshot.result_summary.anomalies.details.lost_update.evidence}
+                              </p>
+                              {statusSnapshot.result_summary.anomalies.details.lost_update.details && (
+                                <div className="mt-2 text-xs font-mono bg-white border rounded px-2 py-1">
+                                  {statusSnapshot.result_summary.anomalies.details.lost_update.details.expected && (
+                                    <>Expected: {statusSnapshot.result_summary.anomalies.details.lost_update.details.expected} → Actual: {statusSnapshot.result_summary.anomalies.details.lost_update.details.actual}</>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {statusSnapshot.result_summary?.timing_metrics && (
                   <div className="space-y-3 border-2 border-blue-200 rounded-lg p-4 bg-blue-50">
                     <p className="text-sm font-semibold text-blue-900 flex items-center gap-2">

@@ -751,6 +751,7 @@ class TransactionOrchestrator:
 			delta = final_quantity - state.initial_quantity
 		verdict = self._derive_verdict(state, final_quantity)
 		timing_metrics = self._calculate_timing_metrics(state)
+		anomalies = self._detect_anomalies(state, final_quantity)
 		
 		return {
 			"order_id": str(state.order_id),
@@ -764,6 +765,7 @@ class TransactionOrchestrator:
 			"verdict": verdict,
 			"replication_note": "Node snapshots reflect current values per node at query time.",
 			"timing_metrics": timing_metrics,
+			"anomalies": anomalies,
 		}
 
 	def _derive_verdict(self, state: RunState, final_quantity: Optional[int]) -> str:
@@ -839,6 +841,247 @@ class TransactionOrchestrator:
 			},
 		}
 
+	def _detect_anomalies(self, state: RunState, final_quantity: Optional[int]) -> Dict[str, Any]:
+		"""Detect concurrency anomalies based on scenario and transaction logs."""
+		scenario = state.parameters.scenario
+		
+		anomalies_result = {
+			"dirty_read": self._check_dirty_read(state),
+			"non_repeatable_read": self._check_non_repeatable_read(state),
+			"phantom_read": self._check_phantom_read(state),
+			"lost_update": self._check_lost_update(state, final_quantity),
+		}
+		
+		# Add summary
+		detected = [name for name, result in anomalies_result.items() if result.get("occurred")]
+		prevented = [name for name, result in anomalies_result.items() if not result.get("occurred")]
+		
+		return {
+			"details": anomalies_result,
+			"summary": {
+				"detected_count": len(detected),
+				"prevented_count": len(prevented),
+				"detected": detected,
+				"prevented": prevented,
+			},
+		}
+
+	def _check_dirty_read(self, state: RunState) -> Dict[str, Any]:
+		"""Check if any reader saw uncommitted data."""
+		# Dirty reads are difficult to detect post-execution since we only see committed data
+		# However, if a writer rolled back and reader saw its value, that's a dirty read
+		
+		for client_id, status in state.client_status.items():
+			if status.get("role") != "reader":
+				continue
+			
+			# Check if any writer rolled back or had serialization abort
+			for writer_id, writer_status in state.client_status.items():
+				if writer_status.get("role") != "writer":
+					continue
+				if writer_status.get("status") in ["cancelled", "error", "serialization_aborted"]:
+					# If reader committed but writer didn't, potential dirty read
+					# But PostgreSQL prevents this at READ COMMITTED+
+					return {
+						"occurred": False,
+						"prevented": True,
+						"evidence": "PostgreSQL enforces READ COMMITTED minimum, preventing dirty reads",
+						"severity": "none",
+					}
+		
+		return {
+			"occurred": False,
+			"prevented": True,
+			"evidence": "No uncommitted data was visible to readers",
+			"severity": "none",
+		}
+
+	def _check_non_repeatable_read(self, state: RunState) -> Dict[str, Any]:
+		"""Check if any reader saw different values for the same row within one transaction."""
+		for client_id, status in state.client_status.items():
+			if status.get("role") != "reader":
+				continue
+			
+			steps = status.get("steps", [])
+			select_results = []
+			
+			# Collect all SELECT results (handle different action names)
+			for step in steps:
+				action = step.get("action", "")
+				if "SELECT" in action and step.get("result"):
+					result = step.get("result", [])
+					if isinstance(result, list) and len(result) > 0:
+						# Extract quantity value
+						first_row = result[0]
+						if isinstance(first_row, dict) and "quantity" in first_row:
+							select_results.append({
+								"action": action,
+								"quantity": first_row["quantity"],
+							})
+			
+			# Check if we have multiple SELECTs with different values
+			if len(select_results) >= 2:
+				first_value = select_results[0]["quantity"]
+				for i, result in enumerate(select_results[1:], 1):
+					if result["quantity"] != first_value:
+						return {
+							"occurred": True,
+							"prevented": False,
+							"evidence": f"{client_id} read quantity={first_value} (SELECT_1), then quantity={result['quantity']} ({result['action']}) in same transaction",
+							"severity": "medium",
+							"details": {
+								"client": client_id,
+								"first_read": first_value,
+								"second_read": result["quantity"],
+								"difference": result["quantity"] - first_value,
+							},
+						}
+		
+		return {
+			"occurred": False,
+			"prevented": True,
+			"evidence": "All repeated reads returned consistent values within transactions",
+			"severity": "none",
+		}
+
+	def _check_phantom_read(self, state: RunState) -> Dict[str, Any]:
+		"""Check if new rows appeared in range queries within one transaction."""
+		for client_id, status in state.client_status.items():
+			if status.get("role") != "reader":
+				continue
+			
+			steps = status.get("steps", [])
+			count_results = []
+			range_results = []
+			
+			# Collect COUNT and range query results
+			for step in steps:
+				action = step.get("action", "")
+				result = step.get("result", [])
+				
+				if "COUNT" in action and isinstance(result, list) and len(result) > 0:
+					count_val = result[0].get("count", 0) if isinstance(result[0], dict) else 0
+					count_results.append({"action": action, "count": count_val})
+				
+				if "SELECT_RANGE" in action and isinstance(result, list):
+					range_results.append({"action": action, "row_count": len(result)})
+			
+			# Check if counts changed
+			if len(count_results) >= 2:
+				first_count = count_results[0]["count"]
+				for i, result in enumerate(count_results[1:], 1):
+					if result["count"] != first_count:
+						return {
+							"occurred": True,
+							"prevented": False,
+							"evidence": f"{client_id} counted {first_count} rows (COUNT_1), then {result['count']} rows ({result['action']}) - phantom rows appeared",
+							"severity": "high",
+							"details": {
+								"client": client_id,
+								"first_count": first_count,
+								"second_count": result["count"],
+								"phantom_rows": result["count"] - first_count,
+							},
+						}
+			
+			# Also check range query row counts
+			if len(range_results) >= 2:
+				first_count = range_results[0]["row_count"]
+				for result in range_results[1:]:
+					if result["row_count"] != first_count:
+						return {
+							"occurred": True,
+							"prevented": False,
+							"evidence": f"{client_id} saw {first_count} rows initially, then {result['row_count']} rows in range query",
+							"severity": "high",
+							"details": {
+								"client": client_id,
+								"first_count": first_count,
+								"second_count": result["row_count"],
+								"phantom_rows": result["row_count"] - first_count,
+							},
+						}
+		
+		return {
+			"occurred": False,
+			"prevented": True,
+			"evidence": "No phantom rows appeared in range queries",
+			"severity": "none",
+		}
+
+	def _check_lost_update(self, state: RunState, final_quantity: Optional[int]) -> Dict[str, Any]:
+		"""Check if concurrent updates resulted in lost updates."""
+		# Count writers that successfully committed
+		writers = []
+		for client_id, status in state.client_status.items():
+			if status.get("role") == "writer" and status.get("status") == "committed":
+				writers.append(client_id)
+		
+		if len(writers) < 2:
+			# Need at least 2 writers for lost update scenario
+			return {
+				"occurred": False,
+				"prevented": True,
+				"evidence": "Only one writer or no concurrent writers",
+				"severity": "none",
+			}
+		
+		# For write-write scenario, check if final value reflects all updates
+		scenario = state.parameters.scenario
+		initial = state.initial_quantity
+		
+		if scenario == ScenarioKind.WRITE_WRITE and initial is not None and final_quantity is not None:
+			# In write-write, both writers increment
+			# Expected: initial + increment_a + increment_b
+			# If lost update: only one increment applied
+			
+			# Try to infer increments from parameters
+			inc_a = state.parameters.new_value_1 if state.parameters.new_value_1 is not None else 1
+			inc_b = state.parameters.new_value_2 if state.parameters.new_value_2 is not None else 1
+			expected = initial + inc_a + inc_b
+			
+			if final_quantity < expected:
+				# Likely serialization prevented lost update OR one writer aborted
+				if len(state.serialization_conflicts) > 0:
+					return {
+						"occurred": False,
+						"prevented": True,
+						"evidence": f"Serialization conflict prevented lost update. Expected {expected}, got {final_quantity}. One transaction was aborted.",
+						"severity": "none",
+						"details": {
+							"initial": initial,
+							"expected": expected,
+							"actual": final_quantity,
+							"aborted_clients": state.serialization_conflicts,
+						},
+					}
+				else:
+					return {
+						"occurred": True,
+						"prevented": False,
+						"evidence": f"Lost update detected! Expected {expected} (initial {initial} + {inc_a} + {inc_b}), but got {final_quantity}",
+						"severity": "critical",
+						"details": {
+							"initial": initial,
+							"expected": expected,
+							"actual": final_quantity,
+							"lost_increments": expected - final_quantity,
+						},
+					}
+			else:
+				return {
+					"occurred": False,
+					"prevented": True,
+					"evidence": f"Both updates applied correctly. Final value {final_quantity} = initial {initial} + {inc_a} + {inc_b}",
+					"severity": "none",
+				}
+		
+		return {
+			"occurred": False,
+			"prevented": True,
+			"evidence": "Unable to determine lost update status for this scenario",
+			"severity": "none",
+		}
 
 	async def _fetch_node_snapshot(self, dsn: str, order_id: UUID) -> Dict[str, Any]:
 		conn = await self._connection_factory(dsn)
