@@ -436,29 +436,34 @@ class TransactionOrchestrator:
             )
             if plan.role == "read" or plan.role == "read_range":
                 details = await self._perform_read(state, conn, plan, order_id)
+                scenario_delay = 0.0
             elif plan.role == "insert":
                 details = await self._perform_insert(state, conn, plan, order_id)
+                scenario_delay = 0.0
             else:
-                details = await self._perform_write(state, conn, plan, order_id)
+                details, scenario_delay = await self._perform_write(state, conn, plan, order_id)
                 # For READ_WRITE scenario: writer delays before commit to allow
                 # reader to attempt reading uncommitted data (dirty read test)
                 if state.payload.scenario == ScenarioType.READ_WRITE:
-                    await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=1.0)
-                    await asyncio.sleep(1.0)  # Hold transaction open for dirty read testing
+                    read_write_delay = 1.0
+                    scenario_delay += read_write_delay
+                    await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=read_write_delay)
+                    await asyncio.sleep(read_write_delay)  # Hold transaction open for dirty read testing
             await conn.execute("COMMIT")
             txn_end = datetime.now(timezone.utc)  # Track transaction end (after COMMIT)
             
             # Calculate execution times
             total_time = (txn_end - start_time).total_seconds()
             txn_time = (txn_end - txn_start).total_seconds()
+            total_delays = plan.delay_seconds + scenario_delay
             
             state.client_status[plan.actor_id]["status"] = "committed"
             state.client_status[plan.actor_id]["end_time"] = txn_end.isoformat()
             state.execution_times[plan.actor_id] = {
                 "total_seconds": total_time,
                 "transaction_seconds": txn_time,
-                "delay_seconds": plan.delay_seconds,
-                "net_execution_seconds": txn_time - plan.delay_seconds,
+                "delay_seconds": total_delays,
+                "net_execution_seconds": txn_time - total_delays,
             }
             state.actor_results[plan.actor_id] = {
                 "node": plan.node,
@@ -735,7 +740,7 @@ class TransactionOrchestrator:
         conn: asyncpg.Connection,
         plan: ActorPlan,
         order_id: UUID,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], float]:
         row = await conn.fetchrow(
             "SELECT quantity, payload FROM orders WHERE order_id = $1 FOR UPDATE",
             order_id,
@@ -744,10 +749,16 @@ class TransactionOrchestrator:
         current_payload = row["payload"] if row else None
         await state.log("write_locked", actor_id=plan.actor_id, quantity=current_qty)
         
+        # Track scenario-specific delays
+        scenario_delay = 0.0
+        
         # For WRITE_WRITE: add delay after getting lock to let other writer queue up
         # This creates contention and demonstrates serialization behavior
         if state.payload.scenario == ScenarioType.WRITE_WRITE:
-            await asyncio.sleep(0.5)  # Hold lock to create contention
+            lock_delay = 0.5
+            scenario_delay += lock_delay
+            await asyncio.sleep(lock_delay)  # Hold lock to create contention
+            await state.log("write_contention_delay", actor_id=plan.actor_id, seconds=lock_delay)
         
         if plan.delay_seconds:
             await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
@@ -794,10 +805,13 @@ class TransactionOrchestrator:
             previous_quantity=current_qty,
             committed_quantity=final_quantity,
         )
-        return {
-            "locked_quantity": current_qty,
-            "committed_quantity": final_quantity,
-        }
+        return (
+            {
+                "locked_quantity": current_qty,
+                "committed_quantity": final_quantity,
+            },
+            scenario_delay,
+        )
 
     async def _collect_summary(self, state: RunState) -> Dict[str, Any]:
         order_id = state.order_id
