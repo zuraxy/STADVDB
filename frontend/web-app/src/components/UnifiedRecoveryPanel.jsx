@@ -51,9 +51,12 @@ const eventStyles = {
   replication_retry: { color: 'text-amber-600', bg: 'bg-amber-100' },
   replication_failed: { color: 'text-red-600', bg: 'bg-red-100' },
   replication_success: { color: 'text-emerald-600', bg: 'bg-emerald-100' },
+  replication_pending: { color: 'text-amber-600', bg: 'bg-amber-100' },
   writes_gated: { color: 'text-amber-600', bg: 'bg-amber-100' },
   writes_enabled: { color: 'text-emerald-600', bg: 'bg-emerald-100' },
   write_rejected: { color: 'text-red-600', bg: 'bg-red-100' },
+  write_accepted: { color: 'text-emerald-600', bg: 'bg-emerald-100' },
+  write_failed: { color: 'text-red-600', bg: 'bg-red-100' },
 };
 
 const getEventIcon = (eventType) => {
@@ -78,35 +81,49 @@ const getEventIcon = (eventType) => {
     writes_gated: <AlertTriangle className="w-3.5 h-3.5" />,
     writes_enabled: <CheckCircle className="w-3.5 h-3.5" />,
     write_rejected: <XCircle className="w-3.5 h-3.5" />,
+    write_accepted: <CheckCircle className="w-3.5 h-3.5" />,
+    write_failed: <XCircle className="w-3.5 h-3.5" />,
+    replication_pending: <Clock className="w-3.5 h-3.5" />,
   };
   return iconMap[eventType] || <Activity className="w-3.5 h-3.5" />;
 };
 
-// Test scenarios for automated recovery tests
+/**
+ * Correct 4 Test Cases for Recovery Testing:
+ * 
+ * Case #1: Write from follower fails to replicate to downed leader
+ * Case #2: Leader comes back and pulls missed oplogs to catch up
+ * Case #3: Write from leader fails to replicate to downed followers
+ * Case #4: Followers come back and catch up via oplog sync
+ */
 const testScenarios = [
   {
-    id: 'leader_failure',
-    name: 'Leader Failure & Election',
-    description: 'Simulate leader node going down, triggering automatic election and failover.',
-    expectedEvents: ['node_down', 'election_started', 'leader_elected', 'node_up', 'recovery_started'],
+    id: 'case_1',
+    name: 'Case #1: Follower → Downed Leader',
+    description: 'Write from Node2/Node3 (follower) fails to replicate to Node0 (leader) because the leader is down.',
+    expectedEvents: ['node_down', 'write_failed', 'replication_pending'],
+    outcome: 'Demonstrates that writes from followers fail (503) when leader is unavailable.',
   },
   {
-    id: 'follower_failure',
-    name: 'Follower Failure & Rejoin',
-    description: 'Simulate a follower node failing and rejoining with automatic catch-up.',
-    expectedEvents: ['node_down', 'node_up', 'recovery_started', 'recovery_completed'],
+    id: 'case_2',
+    name: 'Case #2: Leader Catches Up',
+    description: 'Node0 (leader) comes back online and pulls missed oplogs from peers to catch up.',
+    expectedEvents: ['node_up', 'recovery_started', 'recovery_fetching', 'recovery_completed'],
+    outcome: 'Leader syncs any writes that happened during downtime via oplog pull.',
   },
   {
-    id: 'network_partition',
-    name: 'Network Partition',
-    description: 'Simulate both partition nodes (node1 & node2) failing and recovering.',
-    expectedEvents: ['node_down', 'node_down', 'node_up', 'node_up', 'recovery_completed'],
+    id: 'case_3',
+    name: 'Case #3: Leader → Downed Followers',
+    description: 'Write from Node0 (leader) fails to replicate to Node2/Node3 (followers) because they are down.',
+    expectedEvents: ['node_down', 'write_accepted', 'replication_pending'],
+    outcome: 'Writes accepted locally on leader, oplogs queued for later replication.',
   },
   {
-    id: 'cascading_failure',
-    name: 'Cascading Failure',
-    description: 'Test cascading failure where nodes fail one by one and then recover.',
-    expectedEvents: ['node_down', 'election_started', 'recovery_started', 'recovery_completed'],
+    id: 'case_4',
+    name: 'Case #4: Followers Catch Up',
+    description: 'Node2/Node3 (followers) come back online and catch up with queued oplogs from leader.',
+    expectedEvents: ['node_up', 'recovery_started', 'recovery_fetching', 'recovery_completed'],
+    outcome: 'Followers pull all queued oplogs from leader and become fully synced.',
   },
 ];
 
@@ -547,6 +564,13 @@ export function UnifiedRecoveryPanel() {
                   </div>
                 </div>
                 
+                {/* Expected outcome */}
+                {scenario.outcome && (
+                  <p className="text-xs text-cyan-700 bg-cyan-50 p-2 rounded mt-2 mb-2">
+                    <span className="font-medium">Expected: </span>{scenario.outcome}
+                  </p>
+                )}
+                
                 <div className="flex flex-wrap gap-1 mt-2 mb-3">
                   {scenario.expectedEvents.slice(0, 4).map((evt, idx) => (
                     <span
@@ -578,7 +602,7 @@ export function UnifiedRecoveryPanel() {
           {scenarioResult && (
             <div className="mt-4 p-4 bg-slate-50 rounded-lg border border-slate-200">
               <div className="flex items-center justify-between mb-2">
-                <h4 className="font-semibold text-slate-800">Test Result</h4>
+                <h4 className="font-semibold text-slate-800">Test Result: {scenarioResult.test_id}</h4>
                 <Badge variant="outline" className={
                   scenarioResult.status === 'completed'
                     ? 'bg-emerald-100 text-emerald-700'
@@ -587,9 +611,17 @@ export function UnifiedRecoveryPanel() {
                   {scenarioResult.status}
                 </Badge>
               </div>
-              <p className="text-sm text-slate-600">
-                Scenario: {scenarioResult.scenario} | Events generated: {scenarioResult.events?.length || 0}
-              </p>
+              {scenarioResult.message && (
+                <p className="text-sm text-slate-600">{scenarioResult.message}</p>
+              )}
+              {scenarioResult.outcome && (
+                <p className="text-sm text-cyan-700 mt-1">
+                  <span className="font-medium">Outcome: </span>{scenarioResult.outcome}
+                </p>
+              )}
+              {scenarioResult.description && (
+                <p className="text-sm text-slate-500 mt-1">{scenarioResult.description}</p>
+              )}
               {scenarioResult.error && (
                 <p className="text-sm text-red-600 mt-1">Error: {scenarioResult.error}</p>
               )}
@@ -727,24 +759,24 @@ export function UnifiedRecoveryPanel() {
         <CardContent className="p-4">
           <h4 className="font-semibold text-slate-800 mb-2 flex items-center gap-2">
             <Shield className="w-4 h-4 text-slate-600" />
-            Automatic Recovery Features
+            Recovery Test Cases Overview
           </h4>
           <div className="grid grid-cols-2 gap-4 text-sm text-slate-600">
             <div>
-              <p className="font-medium text-slate-700">Leader Election</p>
-              <p>When the leader goes down, remaining nodes automatically elect a new leader.</p>
+              <p className="font-medium text-slate-700">Case #1 & #2: Leader Recovery</p>
+              <p>Tests write failure when leader is down, then leader catching up via oplog sync when it returns.</p>
             </div>
             <div>
-              <p className="font-medium text-slate-700">Replica Catch-up</p>
-              <p>When a failed node returns, it automatically pulls missed operations and resyncs.</p>
+              <p className="font-medium text-slate-700">Case #3 & #4: Follower Recovery</p>
+              <p>Tests write queueing when followers are down, then followers catching up via oplog pull when they return.</p>
             </div>
             <div>
-              <p className="font-medium text-slate-700">Write Gating</p>
-              <p>Writes are automatically blocked during elections and recovery to ensure consistency.</p>
+              <p className="font-medium text-slate-700">Leader-Aware Routing</p>
+              <p>All writes are routed to the current leader. Requests to downed nodes return 503.</p>
             </div>
             <div>
-              <p className="font-medium text-slate-700">Heartbeat Monitoring</p>
-              <p>Nodes exchange heartbeats every 2s. After 6s timeout, a node is marked as DOWN.</p>
+              <p className="font-medium text-slate-700">Automatic Oplog Sync</p>
+              <p>When nodes come back, they automatically pull missed oplogs from peers to catch up.</p>
             </div>
           </div>
         </CardContent>

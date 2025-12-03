@@ -76,10 +76,14 @@ async def on_startup() -> None:  # pragma: no cover - exercised via integration 
 		set_promoted_flag=lambda v: setattr(app.state, 'promoted', v),
 	)
 	
+	# Inject cluster manager into orders routes for leader-aware routing
+	from .routes.orders import set_cluster_manager
+	set_cluster_manager(app.state.cluster_manager)
+	
 	await app.state.replicator.start()
 	await app.state.applier.start()
 	await app.state.cluster_manager.start()
-	LOGGER.info("Startup complete for node %s", settings.node_name)
+	LOGGER.info("Startup complete for node %s (cluster manager injected)", settings.node_name)
 
 
 @app.on_event("shutdown")

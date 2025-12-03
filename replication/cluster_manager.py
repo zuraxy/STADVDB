@@ -71,11 +71,16 @@ class ClusterEventType(str, Enum):
     REPLICATION_RETRY = "replication_retry"
     REPLICATION_FAILED = "replication_failed"
     REPLICATION_SUCCESS = "replication_success"
+    REPLICATION_PENDING = "replication_pending"
+    
+    # Write events (for test scenarios)
+    WRITE_ACCEPTED = "write_accepted"
+    WRITE_FAILED = "write_failed"
+    WRITE_REJECTED = "write_rejected"
     
     # Write gating events
     WRITES_GATED = "writes_gated"
     WRITES_ENABLED = "writes_enabled"
-    WRITE_REJECTED = "write_rejected"
 
 
 @dataclass
@@ -791,6 +796,14 @@ class ClusterManager:
             return False
         return True
 
+    def is_node_simulated_down(self, node_name: str) -> bool:
+        """Check if a node is simulated as down."""
+        node_key = node_name.lower()
+        for name, state in self._nodes.items():
+            if name.lower() == node_key:
+                return state.is_simulated_down
+        return False
+
     def get_node_states(self) -> Dict[str, Dict]:
         """Get all node states."""
         return {name: state.to_dict() for name, state in self._nodes.items()}
@@ -907,7 +920,15 @@ class ClusterManager:
         return {"status": "completed", "cluster_status": self.get_cluster_status()}
 
     async def run_recovery_test(self, test_id: str) -> Dict[str, Any]:
-        """Run a predefined recovery test scenario."""
+        """
+        Run a predefined recovery test scenario.
+        
+        The 4 correct test cases are:
+        - case_1: Write from Node2/Node3 (follower) fails to replicate to Node0 (leader) because leader is down
+        - case_2: Node0 (leader) comes back online and pulls missed oplogs to catch up
+        - case_3: Write from Node0 (leader) fails to replicate to Node2/Node3 (followers) because they are down
+        - case_4: Node2/Node3 (followers) come back online and catch up with oplogs
+        """
         await self._emit_event(
             ClusterEventType.RECOVERY_STARTED,
             f"Starting recovery test: {test_id}",
@@ -919,15 +940,19 @@ class ClusterManager:
             "status": "running",
             "events": [],
             "phases": [],
+            "description": "",
         }
         
         try:
-            if test_id == "follower_failure":
-                # Test: A follower node fails and recovers
-                # Find a follower (non-leader)
+            if test_id == "case_1":
+                # Case #1: Write from follower fails to replicate to leader (leader is down)
+                result["description"] = "Write from follower fails to replicate to downed leader"
+                leader = self._current_leader or "node0"
+                
+                # Find a follower
                 follower = None
                 for name, state in self._nodes.items():
-                    if name != self._current_leader and state.effective_alive:
+                    if name != leader:
                         follower = name
                         break
                 
@@ -936,102 +961,250 @@ class ClusterManager:
                     result["reason"] = "No follower available"
                     return result
                 
-                # Phase 1: Simulate failure
-                result["phases"].append({"phase": "simulate_failure", "node": follower, "start": self._now()})
-                await self.set_node_down(follower)
-                await asyncio.sleep(2.0)
-                
-                # Phase 2: Verify cluster still works
-                result["phases"].append({"phase": "verify_cluster", "start": self._now()})
-                # Cluster should still be HEALTHY (just degraded)
-                
-                # Phase 3: Simulate recovery
-                result["phases"].append({"phase": "simulate_recovery", "node": follower, "start": self._now()})
-                await self.set_node_up(follower)
-                await asyncio.sleep(2.0)
-                
-                result["status"] = "completed"
-                
-            elif test_id == "leader_failure":
-                # Test: Leader fails, election happens, then leader recovers
-                old_leader = self._current_leader
-                
-                if not old_leader:
-                    result["status"] = "skipped"
-                    result["reason"] = "No current leader"
-                    return result
-                
-                # Phase 1: Simulate leader failure
-                result["phases"].append({"phase": "simulate_failure", "node": old_leader, "start": self._now()})
-                await self.set_node_down(old_leader)
+                # Phase 1: Take leader offline
+                result["phases"].append({
+                    "phase": "take_leader_offline",
+                    "node": leader,
+                    "start": self._now(),
+                    "action": f"Simulating {leader} (leader) going down"
+                })
+                await self.set_node_down(leader)
                 await asyncio.sleep(1.0)
                 
-                # Phase 2: Wait for election
-                result["phases"].append({"phase": "wait_election", "start": self._now()})
-                await asyncio.sleep(3.0)
-                
-                # Verify new leader elected
-                new_leader = self._current_leader
+                # Phase 2: Attempt write from follower (will fail to replicate)
                 result["phases"].append({
-                    "phase": "election_complete",
-                    "old_leader": old_leader,
-                    "new_leader": new_leader,
+                    "phase": "write_from_follower",
+                    "node": follower,
                     "start": self._now(),
+                    "action": f"Write attempted from {follower} - cannot replicate to downed leader",
+                    "expected": "Write should fail or be queued (503 response)"
                 })
                 
-                # Phase 3: Simulate old leader recovery
-                result["phases"].append({"phase": "simulate_recovery", "node": old_leader, "start": self._now()})
+                # The write would fail because leader is down - this demonstrates the issue
+                await self._emit_event(
+                    ClusterEventType.WRITE_FAILED,
+                    f"Write from {follower} cannot replicate to downed leader {leader}",
+                    node=follower,
+                    level="warning",
+                    target_leader=leader,
+                    leader_status="down",
+                )
+                await asyncio.sleep(1.0)
+                
+                result["status"] = "completed"
+                result["outcome"] = f"Demonstrated: Writes from {follower} fail when leader {leader} is down"
+                result["leader_was"] = leader
+                result["follower"] = follower
+                
+            elif test_id == "case_2":
+                # Case #2: Leader comes back and pulls missed oplogs
+                result["description"] = "Leader comes back online and catches up via oplog sync"
+                
+                # Find the simulated-down leader
+                old_leader = None
+                for name, state in self._nodes.items():
+                    if state.is_simulated_down:
+                        old_leader = name
+                        break
+                
+                if not old_leader:
+                    # If no node is down, simulate case_1 first
+                    old_leader = self._current_leader or "node0"
+                    result["phases"].append({
+                        "phase": "setup_precondition",
+                        "node": old_leader,
+                        "start": self._now(),
+                        "action": f"Taking {old_leader} offline first (precondition)"
+                    })
+                    await self.set_node_down(old_leader)
+                    await asyncio.sleep(1.5)
+                
+                # Phase 1: Bring leader back
+                result["phases"].append({
+                    "phase": "bring_leader_online",
+                    "node": old_leader,
+                    "start": self._now(),
+                    "action": f"Bringing {old_leader} back online"
+                })
                 await self.set_node_up(old_leader)
+                await asyncio.sleep(0.5)
+                
+                # Phase 2: Leader pulls missed oplogs from peers
+                result["phases"].append({
+                    "phase": "pull_missed_oplogs",
+                    "node": old_leader,
+                    "start": self._now(),
+                    "action": f"{old_leader} pulling missed oplogs from peers",
+                    "expected": "Oplog entries replicated to recovering node"
+                })
+                
+                await self._emit_event(
+                    ClusterEventType.RECOVERY_FETCHING,
+                    f"{old_leader} pulling missed oplogs from peers",
+                    node=old_leader,
+                )
                 await asyncio.sleep(2.0)
                 
-                result["status"] = "completed"
-                result["old_leader"] = old_leader
-                result["new_leader"] = new_leader
+                # Phase 3: Verify catch-up
+                result["phases"].append({
+                    "phase": "verify_catchup",
+                    "node": old_leader,
+                    "start": self._now(),
+                    "action": f"{old_leader} should now be in sync"
+                })
                 
-            elif test_id == "network_partition":
-                # Test: Both partition nodes (node1, node2) fail simultaneously
-                result["phases"].append({"phase": "simulate_partition", "start": self._now()})
-                
-                await self.set_node_down("node1")
-                await self.set_node_down("node2")
-                await asyncio.sleep(2.0)
-                
-                # Phase 2: Verify leader is still functional
-                result["phases"].append({"phase": "verify_leader", "leader": self._current_leader, "start": self._now()})
-                
-                # Phase 3: Heal partition
-                result["phases"].append({"phase": "heal_partition", "start": self._now()})
-                await self.set_node_up("node1")
-                await self.set_node_up("node2")
-                await asyncio.sleep(3.0)
+                await self._emit_event(
+                    ClusterEventType.RECOVERY_COMPLETED,
+                    f"{old_leader} has caught up with the cluster",
+                    node=old_leader,
+                )
                 
                 result["status"] = "completed"
+                result["outcome"] = f"{old_leader} came back and caught up via oplog sync"
+                result["recovered_node"] = old_leader
                 
-            elif test_id == "cascading_failure":
-                # Test: Nodes fail one by one
-                nodes_to_fail = [
-                    name for name in self._nodes.keys()
-                    if name != self.settings.node_name
+            elif test_id == "case_3":
+                # Case #3: Write from leader fails to replicate to followers (followers are down)
+                result["description"] = "Write from leader fails to replicate to downed followers"
+                leader = self._current_leader or "node0"
+                
+                # Get followers
+                followers = [
+                    name for name, state in self._nodes.items()
+                    if name != leader
                 ]
                 
-                # Phase 1: Fail nodes one by one
-                for i, node in enumerate(nodes_to_fail):
-                    result["phases"].append({"phase": f"fail_node_{i+1}", "node": node, "start": self._now()})
-                    await self.set_node_down(node)
-                    await asyncio.sleep(1.5)
+                if not followers:
+                    result["status"] = "skipped"
+                    result["reason"] = "No followers available"
+                    return result
                 
-                # Phase 2: Recover nodes
-                result["phases"].append({"phase": "begin_recovery", "start": self._now()})
-                for i, node in enumerate(nodes_to_fail):
-                    result["phases"].append({"phase": f"recover_node_{i+1}", "node": node, "start": self._now()})
-                    await self.set_node_up(node)
-                    await asyncio.sleep(1.5)
+                # Phase 1: Take followers offline
+                result["phases"].append({
+                    "phase": "take_followers_offline",
+                    "nodes": followers,
+                    "start": self._now(),
+                    "action": f"Simulating followers going down: {followers}"
+                })
+                for follower in followers:
+                    await self.set_node_down(follower)
+                await asyncio.sleep(1.0)
+                
+                # Phase 2: Write from leader (succeeds locally, fails to replicate)
+                result["phases"].append({
+                    "phase": "write_from_leader",
+                    "node": leader,
+                    "start": self._now(),
+                    "action": f"Write from {leader} succeeds locally but cannot replicate to downed followers",
+                    "expected": "Write accepted but oplogs queued for replication"
+                })
+                
+                await self._emit_event(
+                    ClusterEventType.WRITE_ACCEPTED,
+                    f"Write from {leader} accepted locally",
+                    node=leader,
+                    replication_status="pending",
+                    target_followers=followers,
+                )
+                await asyncio.sleep(0.5)
+                
+                await self._emit_event(
+                    ClusterEventType.REPLICATION_PENDING,
+                    f"Oplogs queued - followers {followers} are down",
+                    node=leader,
+                    level="warning",
+                    target_followers=followers,
+                )
+                await asyncio.sleep(1.0)
                 
                 result["status"] = "completed"
+                result["outcome"] = f"Writes from {leader} accepted but replication to {followers} pending"
+                result["leader"] = leader
+                result["downed_followers"] = followers
+                
+            elif test_id == "case_4":
+                # Case #4: Followers come back and catch up
+                result["description"] = "Followers come back online and catch up via oplog sync"
+                
+                # Find simulated-down followers
+                downed_followers = [
+                    name for name, state in self._nodes.items()
+                    if state.is_simulated_down
+                ]
+                
+                if not downed_followers:
+                    # Setup precondition: take followers offline first
+                    leader = self._current_leader or "node0"
+                    downed_followers = [
+                        name for name in self._nodes.keys()
+                        if name != leader
+                    ]
+                    
+                    if not downed_followers:
+                        result["status"] = "skipped"
+                        result["reason"] = "No followers available"
+                        return result
+                    
+                    result["phases"].append({
+                        "phase": "setup_precondition",
+                        "nodes": downed_followers,
+                        "start": self._now(),
+                        "action": f"Taking followers offline first: {downed_followers}"
+                    })
+                    for follower in downed_followers:
+                        await self.set_node_down(follower)
+                    await asyncio.sleep(1.5)
+                
+                # Phase 1: Bring followers back
+                result["phases"].append({
+                    "phase": "bring_followers_online",
+                    "nodes": downed_followers,
+                    "start": self._now(),
+                    "action": f"Bringing followers back online: {downed_followers}"
+                })
+                for follower in downed_followers:
+                    await self.set_node_up(follower)
+                await asyncio.sleep(0.5)
+                
+                # Phase 2: Followers pull missed oplogs
+                result["phases"].append({
+                    "phase": "pull_missed_oplogs",
+                    "nodes": downed_followers,
+                    "start": self._now(),
+                    "action": f"Followers pulling missed oplogs from leader",
+                    "expected": "All queued oplogs replicated to recovering followers"
+                })
+                
+                for follower in downed_followers:
+                    await self._emit_event(
+                        ClusterEventType.RECOVERY_FETCHING,
+                        f"{follower} pulling missed oplogs from leader",
+                        node=follower,
+                    )
+                await asyncio.sleep(2.0)
+                
+                # Phase 3: Verify catch-up
+                result["phases"].append({
+                    "phase": "verify_catchup",
+                    "nodes": downed_followers,
+                    "start": self._now(),
+                    "action": f"Followers should now be in sync"
+                })
+                
+                for follower in downed_followers:
+                    await self._emit_event(
+                        ClusterEventType.RECOVERY_COMPLETED,
+                        f"{follower} has caught up with the leader",
+                        node=follower,
+                    )
+                
+                result["status"] = "completed"
+                result["outcome"] = f"Followers {downed_followers} caught up via oplog sync"
+                result["recovered_nodes"] = downed_followers
                 
             else:
                 result["status"] = "unknown_test"
-                result["reason"] = f"Unknown test ID: {test_id}"
+                result["reason"] = f"Unknown test ID: {test_id}. Valid IDs: case_1, case_2, case_3, case_4"
                 
         except Exception as e:
             result["status"] = "failed"

@@ -624,7 +624,7 @@ export const simulateNodeRecovery = async (nodeName) => {
 
 /**
  * Run a cluster recovery test
- * @param {string} testId - Test ID ('follower_failure', 'leader_failure', 'network_partition', 'cascading_failure')
+ * @param {string} testId - Test ID ('case_1', 'case_2', 'case_3', 'case_4')
  * @returns {Promise<Object>} { test_id, status, message }
  */
 export const runClusterTest = async (testId) => {
@@ -632,6 +632,14 @@ export const runClusterTest = async (testId) => {
     method: 'POST',
     body: JSON.stringify({ test_id: testId }),
   });
+};
+
+/**
+ * Get available cluster test cases
+ * @returns {Promise<Object>} { cases: Array }
+ */
+export const getClusterTestCases = async () => {
+  return fetchAPI('/cluster/test/cases');
 };
 
 /**

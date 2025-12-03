@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders, resetNodeAvailabilityTracking } from '../services/api';
+import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders, resetNodeAvailabilityTracking, getClusterStatus } from '../services/api';
 
 const DEFAULT_NODE_CARDS = [
   { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
@@ -90,15 +90,16 @@ export function DatabaseDashboard() {
       console.log('🔄 Fetching data from all nodes...');
       
       // Fetch all data with individual error handling for resilience
+      // Use cluster status for authoritative node state
       const results = await Promise.allSettled([
-        fetchReplicationStatus(),
+        getClusterStatus(),  // Use cluster status for authoritative node state
         fetchAllOrders(),
         fetchAllNodeMetrics(),
         fetchNodeOrders('node1'),
         fetchNodeOrders('node2'),
       ]);
 
-      const statusResponse = results[0].status === 'fulfilled' ? results[0].value : null;
+      const clusterStatusResponse = results[0].status === 'fulfilled' ? results[0].value : null;
       const ordersResponse = results[1].status === 'fulfilled' ? results[1].value : null;
       const metricsResponse = results[2].status === 'fulfilled' ? results[2].value : {};
       const node1Orders = results[3].status === 'fulfilled' ? results[3].value : [];
@@ -114,25 +115,42 @@ export function DatabaseDashboard() {
       });
 
       console.log('✅ Data fetched:', {
+        clusterStatus: clusterStatusResponse ? 'ok' : 'failed',
         node0Orders: ordersResponse?.length || 0,
         node1Orders: node1Orders?.length || 0,
         node2Orders: node2Orders?.length || 0,
         partialFailure,
       });
 
-      // Build node status, marking node0 as error if its data fetch failed
-      if (statusResponse) {
-        // If we got status but node0 data failed, update node0 status manually
-        if (node0Failed && statusResponse.nodes) {
-          const n0 = statusResponse.nodes.find(n => n.name?.toLowerCase() === 'node0');
+      // Build node status from cluster status (authoritative source)
+      if (clusterStatusResponse && clusterStatusResponse.nodes) {
+        // Convert cluster status nodes to format expected by buildNodeState
+        const nodesArray = Object.entries(clusterStatusResponse.nodes).map(([name, state]) => ({
+          name,
+          status: state.is_simulated_down ? 'error' : (state.effective_alive ? 'online' : 'error'),
+          error: state.is_simulated_down ? 'Node is simulated as offline' : (state.effective_alive ? null : 'Node unreachable'),
+          promoted: state.promoted,
+          role: state.role,
+        }));
+        
+        const statusForBuild = {
+          nodes: nodesArray,
+          node: clusterStatusResponse.my_node,
+          promoted: clusterStatusResponse.nodes[clusterStatusResponse.my_node]?.promoted,
+        };
+        
+        // If we got status but node0 data fetch failed, update node0 status manually
+        if (node0Failed) {
+          const n0 = nodesArray.find(n => n.name?.toLowerCase() === 'node0');
           if (n0) {
             n0.status = 'error';
             n0.error = 'Failed to fetch data';
           }
         }
-        applyReplicationStatus(statusResponse);
+        applyReplicationStatus(statusForBuild);
+        setPartitionRule(clusterStatusResponse.partition_rule ?? null);
       } else {
-        // No status response - show what we know from data availability
+        // No cluster status - show what we know from data availability
         const fallbackStatus = {
           nodes: [
             { name: 'node0', status: node0Failed ? 'error' : 'online', error: node0Failed ? 'Connection failed' : null },

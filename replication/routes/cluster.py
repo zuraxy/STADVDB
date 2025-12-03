@@ -397,6 +397,39 @@ async def check_writes_allowed(request: Request) -> Dict[str, Any]:
 
 # ==================== Test Scenario Endpoints ====================
 
+# Define the 4 correct test cases
+TEST_CASES = {
+    "case_1": {
+        "id": "case_1",
+        "name": "Follower Write → Downed Leader",
+        "description": "Write from Node2/Node3 (follower) fails to replicate to Node0 (leader) because leader is down",
+        "scenario": "Demonstrates replication failure when the leader is unavailable",
+        "expected": "Writes from followers should fail with 503 (leader unreachable)",
+    },
+    "case_2": {
+        "id": "case_2",
+        "name": "Leader Catches Up",
+        "description": "Node0 (leader) comes back online and pulls missed oplogs to catch up",
+        "scenario": "Recovery after leader failure - leader syncs missed writes",
+        "expected": "Leader should recover and sync any writes that happened during downtime",
+    },
+    "case_3": {
+        "id": "case_3",
+        "name": "Leader Write → Downed Followers",
+        "description": "Write from Node0 (leader) fails to replicate to Node2/Node3 (followers) because they are down",
+        "scenario": "Demonstrates replication lag when followers are unavailable",
+        "expected": "Writes accepted locally on leader, oplogs queued for replication",
+    },
+    "case_4": {
+        "id": "case_4",
+        "name": "Followers Catch Up",
+        "description": "Node2/Node3 (followers) come back online and catch up with oplogs",
+        "scenario": "Recovery after follower failure - followers sync missed writes",
+        "expected": "Followers should recover and pull all queued oplogs from leader",
+    },
+}
+
+
 class RecoveryTestRequest(BaseModel):
     """Request to run a recovery test scenario."""
     scenario: str  # "leader_failure", "follower_failure", "partition_heal", "network_partition"
@@ -407,6 +440,15 @@ class RecoveryTestRequest(BaseModel):
 # Track running tests
 _current_test: Optional[Dict] = None
 _test_history: List[Dict] = []
+
+
+@router.get("/test/cases")
+async def get_test_cases(request: Request) -> Dict[str, Any]:
+    """Get list of available recovery test cases."""
+    return {
+        "cases": list(TEST_CASES.values()),
+        "description": "Recovery test cases demonstrating replication failure and catch-up scenarios"
+    }
 
 
 @router.post("/test/run")

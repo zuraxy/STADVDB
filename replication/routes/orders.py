@@ -1,4 +1,10 @@
-"""Order CRUD endpoints with master routing rules."""
+"""Order CRUD endpoints with leader-aware routing and node availability checks.
+
+This module now supports:
+1. Leader-aware routing: All writes go to current cluster leader (not hardcoded node0)
+2. Node availability checks: Requests rejected with 503 if node is simulated as down
+3. Full integration with ClusterManager for dynamic routing
+"""
 
 from __future__ import annotations
 
@@ -16,36 +22,167 @@ from ..utils.partition import can_accept_partition
 router = APIRouter(tags=["orders"])
 
 
+# ---------------------------------------------------------------------------
+# Cluster Manager Reference (injected from main.py)
+# ---------------------------------------------------------------------------
+_cluster_manager = None
+
+
+def set_cluster_manager(cm):
+	"""Inject cluster manager reference from main.py startup."""
+	global _cluster_manager
+	_cluster_manager = cm
+
+
+def get_cluster_manager():
+	"""Get the cluster manager reference."""
+	return _cluster_manager
+
+
+# ---------------------------------------------------------------------------
+# Helpers for Leader-Aware Routing
+# ---------------------------------------------------------------------------
+
+def _check_node_available(settings: Settings):
+	"""Check if this node is simulated as down. Raise 503 if so."""
+	if _cluster_manager is None:
+		return  # No cluster manager, allow all requests
+	
+	node_name = settings.node_name.lower()
+	if _cluster_manager.is_node_simulated_down(node_name):
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail=f"Node {node_name} is simulated as offline - request rejected"
+		)
+
+
+def _is_leader(settings: Settings) -> bool:
+	"""Return True if the current node is the cluster leader."""
+	if _cluster_manager is None:
+		# Fallback to config-based check (old behavior)
+		return settings.node_name.lower() == settings.default_master.lower()
+	
+	current_leader = _cluster_manager.current_leader
+	if current_leader:
+		return settings.node_name.lower() == current_leader.lower()
+	# Fallback if no leader elected
+	return settings.node_name.lower() == settings.default_master.lower()
+
+
+def _get_leader_url(settings: Settings) -> Optional[str]:
+	"""Get the URL of the current cluster leader dynamically."""
+	if _cluster_manager is None:
+		return settings.default_master_url
+	
+	current_leader = _cluster_manager.current_leader
+	if not current_leader:
+		return settings.default_master_url
+	
+	# If we are the leader, no URL needed (handled locally)
+	if current_leader.lower() == settings.node_name.lower():
+		return None
+	
+	# Get leader URL from peer nodes
+	for peer in settings.peer_nodes:
+		if peer.name.lower() == current_leader.lower():
+			return peer.base_url
+	
+	# Fallback to default master URL
+	return settings.default_master_url
+
+
+def _check_leader_available():
+	"""Check if the current leader is online. Raise 503 if leader is down."""
+	if _cluster_manager is None:
+		return
+	
+	current_leader = _cluster_manager.current_leader
+	if current_leader and _cluster_manager.is_node_simulated_down(current_leader):
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail=f"Leader {current_leader} is simulated as offline - writes unavailable"
+		)
+
+
+def _check_writes_allowed():
+	"""Check if writes are currently allowed (not gated for recovery)."""
+	if _cluster_manager is None:
+		return
+	
+	if not _cluster_manager.writes_allowed:
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail="Writes are currently gated - cluster recovery in progress"
+		)
+
+
+# Keep old name for backward compatibility but use new logic
 def _is_master(settings: Settings) -> bool:
-	return settings.node_name == settings.default_master
+	"""Return True if the current node is the authoritative master/leader."""
+	return _is_leader(settings)
 
 
 async def _forward(request: Request, method: str, path: str, payload: Optional[dict] = None):
+	"""Forward request to the current cluster leader (dynamic, not hardcoded)."""
 	settings = get_settings()
-	base_url = settings.default_master_url
+	
+	# Check if leader is available before forwarding
+	_check_leader_available()
+	
+	# Get leader URL dynamically from cluster manager
+	base_url = _get_leader_url(settings)
 	if not base_url:
-		raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "Master URL not configured")
+		raise HTTPException(
+			status.HTTP_503_SERVICE_UNAVAILABLE,
+			"Leader URL not available - cannot forward request"
+		)
+	
 	client = request.app.state.http_client
 	url = f"{base_url}{path}"
-	if method == "POST":
-		return await client.post_json(url, payload or {})
-	if method == "PUT":
-		return await client.put_json(url, payload or {})
-	if method == "GET":
-		return await client.get_json(url)
-	if method == "DELETE":
-		return await client.delete(url)
-	raise RuntimeError(f"Unsupported forward method {method}")
+	
+	try:
+		if method == "POST":
+			return await client.post_json(url, payload or {})
+		if method == "PUT":
+			return await client.put_json(url, payload or {})
+		if method == "GET":
+			return await client.get_json(url)
+		if method == "DELETE":
+			return await client.delete(url)
+		raise RuntimeError(f"Unsupported forward method {method}")
+	except Exception as e:
+		# Check if this is a connection error indicating leader is down
+		error_msg = str(e).lower()
+		if "connect" in error_msg or "timeout" in error_msg or "refused" in error_msg:
+			raise HTTPException(
+				status.HTTP_503_SERVICE_UNAVAILABLE,
+				f"Leader node unreachable at {base_url}: {e}"
+			)
+		raise
 
+
+# ---------------------------------------------------------------------------
+# CRUD Endpoints with Node Availability Checks
+# ---------------------------------------------------------------------------
 
 @router.post("/orders", response_model=OrderRead, status_code=status.HTTP_201_CREATED)
 async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 	settings = get_settings()
+	
+	# Check if this node is available (not simulated as down)
+	_check_node_available(settings)
+	
+	# Check if writes are allowed (not gated for recovery)
+	_check_writes_allowed()
+	
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
-	# TODO: Introduce a distributed transaction coordinator for cross-partition writes.
-	if _is_master(settings) or (promoted and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
+	
+	# If we're the leader, or we're promoted and can accept this partition, handle locally
+	if _is_leader(settings) or (promoted and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
 		return await crud.create_order(pool, order, settings.node_name)
+	
+	# Forward to the current leader
 	response = await _forward(request, "POST", "/orders", payload=order.model_dump())
 	return OrderRead(**response)
 
@@ -53,9 +190,13 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 @router.get("/orders", response_model=list[OrderRead])
 async def list_orders(request: Request):
 	settings = get_settings()
+	
+	# Check if this node is available
+	_check_node_available(settings)
+	
 	pool = get_pool()
-	if _is_master(settings):
-		orders, _ = await crud.list_orders(pool, page=1, limit=1000000)  # Increased limit
+	if _is_leader(settings):
+		orders, _ = await crud.list_orders(pool, page=1, limit=1000000)
 		return orders
 	response = await _forward(request, "GET", "/orders")
 	return response
@@ -63,17 +204,26 @@ async def list_orders(request: Request):
 
 @router.get("/orders/local/all", response_model=list[OrderRead])
 async def list_local_orders(request: Request):
-	"""Get orders from THIS node's local database only (no forwarding)"""
+	"""Get orders from THIS node's local database only (no forwarding)."""
+	settings = get_settings()
+	
+	# Check if this node is available
+	_check_node_available(settings)
+	
 	pool = get_pool()
-	orders, _ = await crud.list_orders(pool, page=1, limit=1000000)  # Increased limit to get all orders
+	orders, _ = await crud.list_orders(pool, page=1, limit=1000000)
 	return orders
 
 
 @router.get("/orders/{order_id}", response_model=Optional[OrderRead])
 async def read_order(order_id: UUID, request: Request, local: bool = False) -> Optional[OrderRead]:
 	settings = get_settings()
+	
+	# Check if this node is available
+	_check_node_available(settings)
+	
 	pool = get_pool()
-	if _is_master(settings) or local:
+	if _is_leader(settings) or local:
 		return await crud.get_order(pool, order_id)
 	response = await _forward(request, "GET", f"/orders/{order_id}")
 	return OrderRead(**response) if response else None
@@ -82,13 +232,22 @@ async def read_order(order_id: UUID, request: Request, local: bool = False) -> O
 @router.put("/orders/{order_id}", response_model=OrderRead)
 async def update_order(order_id: UUID, order: OrderUpdate, request: Request) -> OrderRead:
 	settings = get_settings()
+	
+	# Check if this node is available
+	_check_node_available(settings)
+	
+	# Check if writes are allowed
+	_check_writes_allowed()
+	
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
-	if _is_master(settings) or (promoted and order.quantity is not None and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
+	
+	if _is_leader(settings) or (promoted and order.quantity is not None and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
 		updated = await crud.update_order(pool, order_id, order, settings.node_name)
 		if not updated:
 			raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Order not found")
 		return updated
+	
 	response = await _forward(request, "PUT", f"/orders/{order_id}", payload=order.model_dump(exclude_none=True))
 	return OrderRead(**response)
 
@@ -96,11 +255,20 @@ async def update_order(order_id: UUID, order: OrderUpdate, request: Request) -> 
 @router.delete("/orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_order(order_id: UUID, request: Request) -> None:
 	settings = get_settings()
+	
+	# Check if this node is available
+	_check_node_available(settings)
+	
+	# Check if writes are allowed
+	_check_writes_allowed()
+	
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
-	if _is_master(settings) or promoted:
+	
+	if _is_leader(settings) or promoted:
 		deleted = await crud.delete_order(pool, order_id, settings.node_name)
 		if not deleted:
 			raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Order not found")
 		return
+	
 	await _forward(request, "DELETE", f"/orders/{order_id}")
