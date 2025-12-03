@@ -947,23 +947,37 @@ class ClusterManager:
         # Update node state
         if from_node in self._nodes:
             state = self._nodes[from_node]
+            was_dead = not state.is_alive or state.is_simulated_down
             state.is_alive = True
             state.last_heartbeat = datetime.now(timezone.utc)
             state.last_seen_lamport = received_lamport
             
-            # Check if we need to accept new leader
-            if payload.get("leader") and payload["leader"] != self._current_leader:
-                if not self._election_in_progress:
+            # IMPORTANT: If the default_master (node0) comes back alive via heartbeat,
+            # we must restore it as leader immediately. This handles the case where
+            # node0 was temporarily unreachable and we elected a different leader.
+            default_master = self.settings.default_master.lower()
+            if from_node.lower() == default_master and was_dead:
+                # Default master is back! Restore it as leader
+                _LOGGER.info("Default master %s is back alive via heartbeat - restoring as leader", from_node)
+                if self._current_leader and self._current_leader.lower() != default_master:
+                    # We had a different leader, need to restore default master
                     old_leader = self._current_leader
-                    self._current_leader = payload["leader"]
-                    
-                    if self._current_leader == self.settings.node_name:
-                        # This node is now the leader (learned via heartbeat)
-                        self._my_role = NodeRole.LEADER
-                        self._writes_gated = False  # Leader must enable writes
-                        _LOGGER.info("This node became leader via heartbeat (was: %s)", old_leader)
-                    else:
-                        self._my_role = NodeRole.FOLLOWER
+                    self._current_leader = from_node
+                    self._my_role = NodeRole.FOLLOWER
+                    await self._emit_event(
+                        ClusterEventType.LEADER_ELECTED,
+                        f"Default master {from_node} restored as leader (was {old_leader})",
+                        new_leader=from_node,
+                        old_leader=old_leader,
+                    )
+            
+            # Log disagreements for debugging (but don't change leader from heartbeat)
+            peer_leader = payload.get("leader")
+            if peer_leader and peer_leader != self._current_leader:
+                _LOGGER.debug(
+                    "Leader disagreement: peer %s thinks leader is %s, but this node thinks it's %s",
+                    from_node, peer_leader, self._current_leader
+                )
         
         my_lamport = await self._tick_lamport()
         return {
@@ -974,13 +988,31 @@ class ClusterManager:
         }
 
     async def handle_election_result(self, payload: Dict) -> Dict:
-        """Handle election result broadcast from another node."""
+        """Handle election result broadcast from another node.
+        
+        IMPORTANT: We validate the election result to prevent wrong leader scenarios.
+        If node0 (default_master) is alive, only accept node0 as leader.
+        """
         new_leader = payload.get("new_leader")
         received_lamport = payload.get("lamport", 0)
         
         await self._update_lamport(received_lamport)
         
         if new_leader:
+            # Validate: If default_master (node0) is alive, it should ALWAYS be leader
+            default_master = self.settings.default_master.lower()
+            default_master_state = self._nodes.get(default_master)
+            
+            if new_leader.lower() != default_master:
+                # Someone is trying to elect a non-default-master as leader
+                # Only accept if default_master is actually down
+                if default_master_state and default_master_state.effective_alive:
+                    _LOGGER.warning(
+                        "Rejecting election result: %s claims leader is %s, but default_master %s is alive",
+                        payload.get("from_node", "unknown"), new_leader, default_master
+                    )
+                    return {"status": "rejected", "reason": "default_master is alive", "leader": self._current_leader}
+            
             self._current_leader = new_leader
             self._election_in_progress = False  # Election is complete
             
