@@ -862,8 +862,19 @@ class ClusterManager:
         return False
 
     def get_node_states(self) -> Dict[str, Dict]:
-        """Get all node states."""
-        return {name: state.to_dict() for name, state in self._nodes.items()}
+        """Get all node states with accurate roles based on current leader."""
+        result = {}
+        for name, state in self._nodes.items():
+            node_dict = state.to_dict()
+            # Override role based on current leader and node status
+            if not state.effective_alive:
+                node_dict["role"] = NodeRole.OFFLINE.value
+            elif name == self._current_leader:
+                node_dict["role"] = NodeRole.LEADER.value
+            else:
+                node_dict["role"] = NodeRole.FOLLOWER.value
+            result[name] = node_dict
+        return result
 
     def get_events(self, limit: int = 100, since_lamport: int = 0) -> List[Dict]:
         """Get cluster events for timeline."""

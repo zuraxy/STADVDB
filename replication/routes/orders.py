@@ -169,11 +169,14 @@ async def _forward(request: Request, method: str, path: str, payload: Optional[d
 async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 	settings = get_settings()
 	
-	# Check if this node is available (not simulated as down)
-	_check_node_available(settings)
-	
 	# Check if writes are allowed (not gated for recovery)
 	_check_writes_allowed()
+	
+	# If this node is simulated as down, forward to the leader
+	if _cluster_manager and _cluster_manager.is_node_simulated_down(settings.node_name):
+		# This node is "down" - forward to leader instead of rejecting
+		response = await _forward(request, "POST", "/orders", payload=order.model_dump())
+		return OrderRead(**response)
 	
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
@@ -233,11 +236,13 @@ async def read_order(order_id: UUID, request: Request, local: bool = False) -> O
 async def update_order(order_id: UUID, order: OrderUpdate, request: Request) -> OrderRead:
 	settings = get_settings()
 	
-	# Check if this node is available
-	_check_node_available(settings)
-	
 	# Check if writes are allowed
 	_check_writes_allowed()
+	
+	# If this node is simulated as down, forward to the leader
+	if _cluster_manager and _cluster_manager.is_node_simulated_down(settings.node_name):
+		response = await _forward(request, "PUT", f"/orders/{order_id}", payload=order.model_dump(exclude_none=True))
+		return OrderRead(**response)
 	
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
@@ -256,11 +261,13 @@ async def update_order(order_id: UUID, order: OrderUpdate, request: Request) -> 
 async def delete_order(order_id: UUID, request: Request) -> None:
 	settings = get_settings()
 	
-	# Check if this node is available
-	_check_node_available(settings)
-	
 	# Check if writes are allowed
 	_check_writes_allowed()
+	
+	# If this node is simulated as down, forward to the leader
+	if _cluster_manager and _cluster_manager.is_node_simulated_down(settings.node_name):
+		await _forward(request, "DELETE", f"/orders/{order_id}")
+		return
 	
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
