@@ -174,10 +174,6 @@ export function UnifiedRecoveryPanel() {
       console.error('Failed to fetch cluster status:', err);
     }
   }, []);
-    } catch (err) {
-      console.error('Failed to fetch cluster status:', err);
-    }
-  }, []);
 
   // Fetch events (always fetch last 200, merge by event_id)
   const fetchEvents = useCallback(async () => {
