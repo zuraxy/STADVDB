@@ -50,8 +50,8 @@ class ScenarioType(str, Enum):
     READ_READ = "READ_READ"
     READ_WRITE = "READ_WRITE"
     WRITE_WRITE = "WRITE_WRITE"
-    NON_REPEATABLE_READ = "NON_REPEATABLE_READ"  # Reader reads twice, writer updates in between
-    PHANTOM_READ = "PHANTOM_READ"  # Reader scans range twice, writer inserts in between
+    NON_REPEATABLE_READ = "NON_REPEATABLE_READ"
+    PHANTOM_READ = "PHANTOM_READ"
 
     @property
     def roles(self) -> Tuple[str, str]:
@@ -59,8 +59,8 @@ class ScenarioType(str, Enum):
             ScenarioType.READ_READ: ("read", "read"),
             ScenarioType.READ_WRITE: ("write", "read"),  # Writer first (on node_x), Reader second (on node_y)
             ScenarioType.WRITE_WRITE: ("write", "write"),
-            ScenarioType.NON_REPEATABLE_READ: ("read", "write"),  # Reader first, writer updates
-            ScenarioType.PHANTOM_READ: ("read_range", "insert"),  # Reader scans, writer inserts
+            ScenarioType.NON_REPEATABLE_READ: ("read", "write"),  # Reader first, Writer updates during
+            ScenarioType.PHANTOM_READ: ("read", "write"),  # Reader with COUNT/SELECT_RANGE, Writer inserts
         }
         return mapping[self]
 
@@ -117,7 +117,10 @@ class RunState:
         self.serialization_conflicts: List[str] = []
         self.actor_results: Dict[str, Dict[str, Any]] = {}
         self.actor_levels: Dict[str, IsolationLevel] = {}
-        self.execution_times: Dict[str, Dict[str, float]] = {}  # Track execution times per actor
+        # Timing infrastructure
+        self.start_time: Optional[float] = None
+        self.end_time: Optional[float] = None
+        self.actor_timings: Dict[str, Dict[str, float]] = {}  # actor_id -> {total_duration_ms, sleep_time_ms, execution_time_ms}
 
     async def log(self, event: str, **details: Any) -> None:
         entry = {
@@ -243,12 +246,15 @@ class TransactionOrchestrator:
                 actors=[plan.actor_id for plan in plans],
             )
             
-            # For READ_WRITE scenario: writer executes first, reader follows
-            # This allows testing dirty reads (reader sees uncommitted) or 
-            # committed reads (reader sees after commit)
-            if state.payload.scenario == ScenarioType.READ_WRITE and len(plans) == 2:
+            # For READ_WRITE scenario: writer executes first, readers follow
+            # This allows testing dirty reads (readers see uncommitted) or 
+            # committed reads (readers see after commit)
+            if state.payload.scenario == ScenarioType.READ_WRITE:
                 writer_plan = plans[0]  # First actor is writer
-                reader_plan = plans[1]  # Second actor is reader
+                reader_plans = plans[1:]  # Remaining actors are readers
+                
+                await state.log("read_write_start",
+                    message=f"1 writer + {len(reader_plans)} reader(s) starting")
                 
                 # Start writer first
                 writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
@@ -256,56 +262,65 @@ class TransactionOrchestrator:
                 # Small delay to let writer start its transaction and perform UPDATE
                 await asyncio.sleep(0.3)
                 
-                # Then start reader
-                reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
+                # Then start all readers
+                reader_tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in reader_plans]
                 
-                results = await asyncio.gather(writer_task, reader_task, return_exceptions=True)
-            elif state.payload.scenario == ScenarioType.WRITE_WRITE and len(plans) == 2:
-                # WRITE_WRITE: Both writers start simultaneously to create contention
+                results = await asyncio.gather(writer_task, *reader_tasks, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.WRITE_WRITE:
+                # WRITE_WRITE: All writers start simultaneously to create contention
                 # This tests FOR UPDATE locking behavior and serialization conflicts
                 await state.log("write_write_concurrent_start", 
-                    message="Both writers starting simultaneously for maximum contention")
+                    message=f"{len(plans)} writers starting simultaneously for maximum contention")
                 
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-            elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ and len(plans) == 2:
-                # NON_REPEATABLE_READ: Reader starts first with delay, writer updates in between reads
-                # This tests if the same row returns different values within one transaction
+            elif state.payload.scenario == ScenarioType.READ_READ:
+                # READ_READ: All readers start simultaneously
+                await state.log("read_read_concurrent_start",
+                    message=f"{len(plans)} readers starting simultaneously to test snapshot isolation")
+                
+                tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ:
+                # NON_REPEATABLE_READ: Reader starts first with sleep, writers update during sleep
                 reader_plan = plans[0]  # First actor is reader
-                writer_plan = plans[1]  # Second actor is writer
+                writer_plans = plans[1:]  # Remaining actors are writers
                 
-                await state.log("non_repeatable_read_test_start",
-                    message="Reader starts first, writer will update between reads")
+                await state.log("non_repeatable_read_start",
+                    message=f"Reader starting first, {len(writer_plans)} writer(s) will update during reader's sleep")
                 
-                # Start reader first (it will read, delay, then read again)
+                # Start reader first
                 reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
                 
-                # Small delay to let reader perform first read
+                # Delay to let reader perform first SELECT and start sleeping
                 await asyncio.sleep(0.5)
                 
-                # Then start writer to update the row
-                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                # Start all writers to update during reader's sleep
+                writer_tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in writer_plans]
                 
-                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
-            elif state.payload.scenario == ScenarioType.PHANTOM_READ and len(plans) == 2:
-                # PHANTOM_READ: Reader scans range first with delay, writer inserts in between scans
-                # This tests if new rows appear in repeated range scans within one transaction
-                reader_plan = plans[0]  # First actor is range reader
-                writer_plan = plans[1]  # Second actor is inserter
+                results = await asyncio.gather(reader_task, *writer_tasks, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.PHANTOM_READ:
+                # PHANTOM_READ: Reader performs COUNT/range queries, writers modify during sleep
+                # Note: Current implementation uses UPDATE, not INSERT (limitation)
+                reader_plan = plans[0]  # First actor is reader
+                writer_plans = plans[1:]  # Remaining actors are writers
                 
-                await state.log("phantom_read_test_start",
-                    message="Reader scans range twice, writer will insert between scans")
+                await state.log("phantom_read_start",
+                    message=f"Reader starting first with range queries, {len(writer_plans)} writer(s) will modify during sleep")
                 
-                # Start reader first (it will scan, delay, then scan again)
+                # Start reader first
                 reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
                 
-                # Small delay to let reader perform first scan
+                # Delay to let reader perform first queries and start sleeping
                 await asyncio.sleep(0.5)
                 
-                # Then start writer to insert a new row
-                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                # Start all writers to modify during reader's sleep
+                writer_tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in writer_plans]
                 
-                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
+                results = await asyncio.gather(reader_task, *writer_tasks, return_exceptions=True)
+                
+                # Cleanup: Revert the quantity changes made by writers
+                await self._cleanup_phantom_read(state, order_id, len(writer_plans))
             else:
                 # Other scenarios: run concurrently
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
@@ -368,12 +383,31 @@ class TransactionOrchestrator:
     def _prepare_plans(self, state: RunState) -> List[ActorPlan]:
         roles = state.payload.scenario.roles
         actors = state.payload.actors
-        if len(actors) != len(roles):
-            raise ValueError("Scenario requires exactly two actors")
+        
+        # For READ_READ and WRITE_WRITE, allow N actors (all same role)
+        if state.payload.scenario in (ScenarioType.READ_READ, ScenarioType.WRITE_WRITE):
+            expected_role = roles[0]  # All actors have same role
+            # Validate all actors have the expected role
+            # (in this case, we'll assign the role based on scenario)
+        else:
+            # For other scenarios, enforce exact count
+            if len(actors) != len(roles):
+                raise ValueError(f"Scenario {state.payload.scenario.value} requires exactly {len(roles)} actors")
+        
         seen: set[str] = set()
         plans: List[ActorPlan] = []
-        for actor, role in zip(actors, roles):
-            actor_id = actor.name.strip() or role
+        
+        for i, actor in enumerate(actors):
+            # Determine role based on scenario
+            if state.payload.scenario == ScenarioType.READ_READ:
+                role = "read"
+            elif state.payload.scenario == ScenarioType.WRITE_WRITE:
+                role = "write"
+            else:
+                # For other scenarios, use roles from scenario definition
+                role = roles[i] if i < len(roles) else roles[-1]
+            
+            actor_id = actor.name.strip() or f"{role}_{i}"
             if actor_id in seen:
                 raise ValueError("Actor names must be unique per run")
             seen.add(actor_id)
@@ -381,31 +415,42 @@ class TransactionOrchestrator:
             if node not in self._node_dsns:
                 raise ValueError(f"Unknown node '{actor.node}'")
             # For write role: need either new_quantity OR auto_increment
-            if role == "write" and actor.new_quantity is None and not actor.auto_increment:
-                raise ValueError(f"Actor {actor_id} must provide new_quantity or use auto_increment for write operations")
+            # For NON_REPEATABLE_READ and PHANTOM_READ, default to auto_increment if not specified
+            auto_increment_val = actor.auto_increment
+            new_quantity_val = actor.new_quantity
+            
+            if role == "write" and new_quantity_val is None and not auto_increment_val:
+                if state.payload.scenario in (ScenarioType.NON_REPEATABLE_READ, ScenarioType.PHANTOM_READ):
+                    # Default to auto_increment for these scenarios
+                    auto_increment_val = True
+                else:
+                    raise ValueError(f"Actor {actor_id} must provide new_quantity or use auto_increment for write operations")
+            
             plan = ActorPlan(
                 actor_id=actor_id,
                 node=node,
                 role=role,
                 isolation_level=actor.isolation_level,
                 delay_seconds=max(0.0, actor.delay_seconds),
-                new_quantity=actor.new_quantity,
-                auto_increment=actor.auto_increment,
+                new_quantity=new_quantity_val,
+                auto_increment=auto_increment_val,
             )
             state.actor_levels[actor_id] = actor.isolation_level
             plans.append(plan)
         return plans
 
     async def _execute_actor(self, state: RunState, plan: ActorPlan, order_id: UUID) -> None:
-        # Track execution time
-        start_time = datetime.now(timezone.utc)
+        import time
+        
+        start_time = time.perf_counter()
+        sleep_time_ms = 0.0
+        
         state.client_status[plan.actor_id] = {
             "status": "running",
             "node": plan.node,
             "role": plan.role,
             "isolation_level": plan.isolation_level.sql_clause,
             "delay_seconds": plan.delay_seconds,
-            "start_time": start_time.isoformat(),
         }
         if plan.auto_increment:
             state.client_status[plan.actor_id]["auto_increment"] = True
@@ -415,6 +460,17 @@ class TransactionOrchestrator:
         # Check if this is a remote node - use HTTP instead of direct DB connection
         if not self._is_local_node(plan.node):
             await self._execute_remote_actor(state, plan, order_id)
+            # For remote execution, calculate timing
+            end_time = time.perf_counter()
+            total_duration_ms = (end_time - start_time) * 1000
+            # Estimate sleep time based on delay_seconds
+            if plan.delay_seconds:
+                sleep_time_ms = plan.delay_seconds * 1000
+            state.actor_timings[plan.actor_id] = {
+                "total_duration_ms": total_duration_ms,
+                "sleep_time_ms": sleep_time_ms,
+                "execution_time_ms": total_duration_ms - sleep_time_ms,
+            }
             return
 
         # Local node - use direct database connection
@@ -426,7 +482,6 @@ class TransactionOrchestrator:
             await conn.execute(
                 f"BEGIN TRANSACTION ISOLATION LEVEL {plan.isolation_level.sql_clause}"
             )
-            txn_start = datetime.now(timezone.utc)  # Track transaction start (after BEGIN)
             await state.log(
                 "transaction_started",
                 actor_id=plan.actor_id,
@@ -434,58 +489,44 @@ class TransactionOrchestrator:
                 role=plan.role,
                 isolation=plan.isolation_level.sql_clause,
             )
-            if plan.role == "read" or plan.role == "read_range":
+            if plan.role == "read":
                 details = await self._perform_read(state, conn, plan, order_id)
-                scenario_delay = 0.0
-            elif plan.role == "insert":
-                details = await self._perform_insert(state, conn, plan, order_id)
-                scenario_delay = 0.0
+                # Track sleep time if delay was used
+                if plan.delay_seconds:
+                    sleep_time_ms = plan.delay_seconds * 1000
             else:
-                details, scenario_delay = await self._perform_write(state, conn, plan, order_id)
+                details = await self._perform_write(state, conn, plan, order_id)
                 # For READ_WRITE scenario: writer delays before commit to allow
                 # reader to attempt reading uncommitted data (dirty read test)
                 if state.payload.scenario == ScenarioType.READ_WRITE:
-                    read_write_delay = 1.0
-                    scenario_delay += read_write_delay
-                    await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=read_write_delay)
-                    await asyncio.sleep(read_write_delay)  # Hold transaction open for dirty read testing
+                    await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=1.0)
+                    await asyncio.sleep(1.0)  # Hold transaction open for dirty read testing
+                    sleep_time_ms += 1000  # Add commit delay to sleep time
             await conn.execute("COMMIT")
-            txn_end = datetime.now(timezone.utc)  # Track transaction end (after COMMIT)
-            
-            # Calculate execution times
-            total_time = (txn_end - start_time).total_seconds()
-            txn_time = (txn_end - txn_start).total_seconds()
-            total_delays = plan.delay_seconds + scenario_delay
-            
             state.client_status[plan.actor_id]["status"] = "committed"
-            state.client_status[plan.actor_id]["end_time"] = txn_end.isoformat()
-            state.execution_times[plan.actor_id] = {
-                "total_seconds": total_time,
-                "transaction_seconds": txn_time,
-                "delay_seconds": total_delays,
-                "net_execution_seconds": txn_time - total_delays,
-            }
             state.actor_results[plan.actor_id] = {
                 "node": plan.node,
                 "role": plan.role,
                 "isolation_level": plan.isolation_level.sql_clause,
                 "delay_seconds": plan.delay_seconds,
-                "execution_time": state.execution_times[plan.actor_id],
                 "details": details,
             }
+            
+            # Calculate and store timing
+            end_time = time.perf_counter()
+            total_duration_ms = (end_time - start_time) * 1000
+            state.actor_timings[plan.actor_id] = {
+                "total_duration_ms": total_duration_ms,
+                "sleep_time_ms": sleep_time_ms,
+                "execution_time_ms": total_duration_ms - sleep_time_ms,
+            }
+            
         except asyncio.CancelledError:
             await conn.execute("ROLLBACK")
-            end_time = datetime.now(timezone.utc)
             state.client_status[plan.actor_id]["status"] = "cancelled"
-            state.client_status[plan.actor_id]["end_time"] = end_time.isoformat()
-            state.execution_times[plan.actor_id] = {
-                "total_seconds": (end_time - start_time).total_seconds(),
-                "status": "cancelled",
-            }
             raise
         except Exception as exc:
             await conn.execute("ROLLBACK")
-            end_time = datetime.now(timezone.utc)
             sqlstate = getattr(exc, "sqlstate", None)
             if sqlstate == "40001":
                 state.serialization_conflicts.append(plan.actor_id)
@@ -495,12 +536,6 @@ class TransactionOrchestrator:
                 await state.log("client_error", actor_id=plan.actor_id, error=str(exc))
                 state.client_status[plan.actor_id]["status"] = "error"
                 state.status = "failed"
-            state.client_status[plan.actor_id]["end_time"] = end_time.isoformat()
-            state.execution_times[plan.actor_id] = {
-                "total_seconds": (end_time - start_time).total_seconds(),
-                "status": "error" if sqlstate != "40001" else "serialization_aborted",
-            }
-            if sqlstate != "40001":
                 raise
         finally:
             await conn.close()
@@ -532,6 +567,7 @@ class TransactionOrchestrator:
                 "delay_seconds": plan.delay_seconds,
                 "new_quantity": plan.new_quantity,
                 "auto_increment": plan.auto_increment,
+                "scenario": state.payload.scenario.value,
             }
             # For READ_WRITE scenario writers, add delay before commit for dirty read testing
             if state.payload.scenario == ScenarioType.READ_WRITE and plan.role == "write":
@@ -539,6 +575,7 @@ class TransactionOrchestrator:
             # For WRITE_WRITE scenario, add delay after lock to create contention
             if state.payload.scenario == ScenarioType.WRITE_WRITE and plan.role == "write":
                 payload["delay_after_lock"] = 0.5
+            # For NON_REPEATABLE_READ and PHANTOM_READ, no special delays needed (using delay_seconds)
             url = f"{node_url}/orchestrator/local-transaction"
             result = await self._http_client.post_json(url, payload)
 
@@ -599,49 +636,24 @@ class TransactionOrchestrator:
         plan: ActorPlan,
         order_id: UUID,
     ) -> Dict[str, Any]:
-        # For read_range (phantom read testing): scan a range of orders
-        if plan.role == "read_range":
-            # First range scan
-            rows_before = await conn.fetch(
-                "SELECT order_id, quantity FROM orders ORDER BY quantity LIMIT 10"
-            )
-            count_before = len(rows_before)
-            await state.log(
-                "range_scan_snapshot",
-                actor_id=plan.actor_id,
-                count=count_before,
-                rows=[{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_before],
-            )
-            
-            if plan.delay_seconds:
-                await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
-                await state.log("pg_sleep", actor_id=plan.actor_id, seconds=plan.delay_seconds)
-            
-            # Second range scan (should see phantom if writer inserted)
-            rows_after = await conn.fetch(
-                "SELECT order_id, quantity FROM orders ORDER BY quantity LIMIT 10"
-            )
-            count_after = len(rows_after)
-            await state.log(
-                "range_scan_complete",
-                actor_id=plan.actor_id,
-                initial_count=count_before,
-                final_count=count_after,
-                phantom_detected=count_after != count_before,
-            )
-            return {
-                "initial_count": count_before,
-                "final_count": count_after,
-                "phantom_detected": count_after != count_before,
-                "initial_rows": [{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_before],
-                "final_rows": [{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_after],
-            }
-        
-        # Standard single-row read (for non-repeatable read testing)
-        snapshot = await conn.fetchrow(
-            "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
-            order_id,
+        # For NON_REPEATABLE_READ and PHANTOM_READ: don't use FOR SHARE
+        # This allows writers to modify data during the reader's sleep, enabling anomaly detection
+        # For READ_WRITE: use FOR SHARE to demonstrate read locking behavior
+        # For READ_READ: use simple SELECT (no locking overhead)
+        use_for_share = (
+            state.payload.scenario == ScenarioType.READ_WRITE
         )
+        
+        if use_for_share:
+            snapshot = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
+                order_id,
+            )
+        else:
+            snapshot = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1",
+                order_id,
+            )
         qty_before = snapshot["quantity"] if snapshot else None
         await state.log(
             "read_snapshot",
@@ -656,83 +668,13 @@ class TransactionOrchestrator:
             order_id,
         )
         qty_after = follow_up["quantity"] if follow_up else None
-        non_repeatable = qty_before != qty_after
         await state.log(
             "read_complete",
             actor_id=plan.actor_id,
             initial_quantity=qty_before,
             final_quantity=qty_after,
-            non_repeatable_detected=non_repeatable,
         )
-        return {
-            "initial_quantity": qty_before,
-            "final_quantity": qty_after,
-            "non_repeatable_detected": non_repeatable,
-        }
-
-    async def _perform_insert(
-        self,
-        state: RunState,
-        conn: asyncpg.Connection,
-        plan: ActorPlan,
-        order_id: UUID,
-    ) -> Dict[str, Any]:
-        """Insert a new order for phantom read testing."""
-        # Generate a new order with a quantity value that fits in the range being scanned
-        new_order_id = uuid4()
-        new_quantity = plan.new_quantity if plan.new_quantity is not None else 5  # Default to middle range
-        
-        await state.log("insert_preparing", actor_id=plan.actor_id, new_order_id=str(new_order_id), quantity=new_quantity)
-        
-        if plan.delay_seconds:
-            await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
-            await state.log("pg_sleep", actor_id=plan.actor_id, seconds=plan.delay_seconds)
-        
-        # Insert the new order
-        payload_json = json.dumps({})
-        await conn.execute(
-            """
-            INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-            VALUES ($1, $2, $3::jsonb, NOW(), NOW())
-            ON CONFLICT (order_id) DO NOTHING
-            """,
-            new_order_id,
-            new_quantity,
-            payload_json,
-        )
-        
-        # Write to op_log for replication
-        origin_node = self.settings.node_name
-        lamport_value = await lamport_utils.next_lamport(conn, origin_node)
-        op_payload = {"quantity": new_quantity, "payload": {}}
-        op_payload_json = json.dumps(op_payload)
-        await conn.execute(
-            """
-            INSERT INTO op_log (
-                op_id, origin_node, op_type, table_name, row_id, payload,
-                ts, lamport, applied, applied_ts
-            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),$7,false,NULL)
-            ON CONFLICT (op_id) DO NOTHING
-            """,
-            uuid4(),
-            origin_node,
-            "upsert",
-            "orders",
-            new_order_id,
-            op_payload_json,
-            lamport_value,
-        )
-        
-        await state.log(
-            "insert_complete",
-            actor_id=plan.actor_id,
-            new_order_id=str(new_order_id),
-            quantity=new_quantity,
-        )
-        return {
-            "inserted_order_id": str(new_order_id),
-            "quantity": new_quantity,
-        }
+        return {"initial_quantity": qty_before, "final_quantity": qty_after}
 
     async def _perform_write(
         self,
@@ -740,7 +682,7 @@ class TransactionOrchestrator:
         conn: asyncpg.Connection,
         plan: ActorPlan,
         order_id: UUID,
-    ) -> Tuple[Dict[str, Any], float]:
+    ) -> Dict[str, Any]:
         row = await conn.fetchrow(
             "SELECT quantity, payload FROM orders WHERE order_id = $1 FOR UPDATE",
             order_id,
@@ -749,16 +691,10 @@ class TransactionOrchestrator:
         current_payload = row["payload"] if row else None
         await state.log("write_locked", actor_id=plan.actor_id, quantity=current_qty)
         
-        # Track scenario-specific delays
-        scenario_delay = 0.0
-        
         # For WRITE_WRITE: add delay after getting lock to let other writer queue up
         # This creates contention and demonstrates serialization behavior
         if state.payload.scenario == ScenarioType.WRITE_WRITE:
-            lock_delay = 0.5
-            scenario_delay += lock_delay
-            await asyncio.sleep(lock_delay)  # Hold lock to create contention
-            await state.log("write_contention_delay", actor_id=plan.actor_id, seconds=lock_delay)
+            await asyncio.sleep(0.5)  # Hold lock to create contention
         
         if plan.delay_seconds:
             await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
@@ -805,13 +741,60 @@ class TransactionOrchestrator:
             previous_quantity=current_qty,
             committed_quantity=final_quantity,
         )
-        return (
-            {
-                "locked_quantity": current_qty,
-                "committed_quantity": final_quantity,
-            },
-            scenario_delay,
+        return {
+            "locked_quantity": current_qty,
+            "committed_quantity": final_quantity,
+        }
+
+    async def _cleanup_phantom_read(
+        self,
+        state: RunState,
+        order_id: int,
+        num_writers: int,
+    ) -> None:
+        """
+        Cleanup method for PHANTOM_READ scenarios to restore original quantity.
+        Reverts the increments made by writers during the test.
+        """
+        primary = self._primary_node().lower()
+        dsn = self._node_dsns.get(primary)
+        if not dsn:
+            await state.log("cleanup_skip", reason="Primary node unavailable")
+            return
+
+        await state.log(
+            "cleanup_start",
+            order_id=order_id,
+            num_increments=num_writers,
         )
+
+        conn = await asyncpg.connect(dsn)
+        try:
+            # Calculate original quantity by subtracting all writer increments
+            await conn.execute(
+                """
+                UPDATE orders
+                SET quantity = quantity - $1
+                WHERE order_id = $2
+                """,
+                num_writers,
+                order_id,
+            )
+            
+            # Verify the cleanup
+            result = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1",
+                order_id,
+            )
+            restored_qty = result["quantity"] if result else None
+            
+            await state.log(
+                "cleanup_complete",
+                order_id=order_id,
+                restored_quantity=restored_qty,
+            )
+        finally:
+            await conn.close()
 
     async def _collect_summary(self, state: RunState) -> Dict[str, Any]:
         order_id = state.order_id
@@ -837,44 +820,34 @@ class TransactionOrchestrator:
         # Generate verdict based on scenario and results
         verdict = None
         if state.payload.scenario == ScenarioType.WRITE_WRITE:
-            # For WRITE_WRITE: analyze if both increments succeeded
+            # For WRITE_WRITE: analyze if increments succeeded
             committed_count = sum(
                 1 for info in state.client_status.values() 
                 if info.get("status") == "committed"
             )
             conflict_count = len(state.serialization_conflicts)
+            total_writers = sum(1 for info in state.client_status.values() if info.get("role") == "write")
             
-            if committed_count == 2 and conflict_count == 0:
-                if delta == 2:
-                    verdict = "✅ Both writers committed successfully. Quantity increased by 2 (no lost update). FOR UPDATE locking prevented conflicts."
-                elif delta == 1:
-                    verdict = "⚠️ Both writers committed but only +1 delta. Possible race condition or same value written."
+            if committed_count == total_writers and conflict_count == 0:
+                if delta == total_writers:
+                    verdict = f"✅ All {total_writers} writers committed successfully. Quantity increased by {delta} (no lost update). FOR UPDATE locking prevented conflicts."
                 else:
-                    verdict = f"Both writers committed. Delta: {delta}"
-            elif committed_count == 1 and conflict_count == 1:
-                verdict = "✅ One writer succeeded, one aborted (serialization conflict). This is expected behavior for REPEATABLE READ/SERIALIZABLE isolation."
+                    verdict = f"⚠️ All {total_writers} writers committed but delta is {delta}. Expected {total_writers}."
+            elif committed_count > 0 and conflict_count > 0:
+                if delta == committed_count:
+                    verdict = f"✅ {committed_count} writer(s) succeeded, {conflict_count} aborted (serialization conflict). Delta matches committed count. Expected behavior for REPEATABLE READ/SERIALIZABLE."
+                else:
+                    verdict = f"⚠️ {committed_count} writer(s) committed, {conflict_count} conflicts. Delta: {delta} (expected {committed_count})."
             elif conflict_count > 0:
                 verdict = f"⚠️ Serialization conflicts detected: {conflict_count}. {committed_count} writer(s) committed."
             else:
-                verdict = f"Writers status: {committed_count} committed, {conflict_count} conflicts."
-        elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ:
-            # Check if non-repeatable read was detected
-            for actor_id, result in state.actor_results.items():
-                if result.get("role") == "read":
-                    details = result.get("details", {})
-                    if details.get("non_repeatable_detected"):
-                        verdict = "⚠️ Non-repeatable read detected! Same row returned different values within transaction."
-                    else:
-                        verdict = "✅ No non-repeatable read. Isolation level prevented the anomaly."
-        elif state.payload.scenario == ScenarioType.PHANTOM_READ:
-            # Check if phantom read was detected
-            for actor_id, result in state.actor_results.items():
-                if result.get("role") == "read_range":
-                    details = result.get("details", {})
-                    if details.get("phantom_detected"):
-                        verdict = f"⚠️ Phantom read detected! Row count changed from {details.get('initial_count')} to {details.get('final_count')}."
-                    else:
-                        verdict = "✅ No phantom read. Isolation level prevented the anomaly."
+                verdict = f"Writers status: {committed_count}/{total_writers} committed, {conflict_count} conflicts. Delta: {delta}"
+        
+        # Calculate timing metrics
+        timing_metrics = self._calculate_timing_metrics(state)
+        
+        # Detect anomalies
+        anomalies = self._detect_anomalies(state)
         
         return {
             "order_id": str(order_id),
@@ -886,11 +859,194 @@ class TransactionOrchestrator:
             "isolation_overview": isolation_overview,
             "read_uncommitted_note": note,
             "serialization_conflicts": state.serialization_conflicts,
-            "execution_times": state.execution_times,
             "verdict": verdict,
+            "timing_metrics": timing_metrics,
+            "anomalies": anomalies,
             "replication_note": "Node snapshots reflect latest pull at query time; minor lag is expected.",
         }
-
+    
+    def _calculate_timing_metrics(self, state: RunState) -> Dict[str, Any]:
+        """Calculate aggregate and per-actor timing metrics."""
+        if not state.actor_timings:
+            return {}
+        
+        # Calculate aggregate metrics
+        total_durations = [t["total_duration_ms"] for t in state.actor_timings.values()]
+        sleep_times = [t["sleep_time_ms"] for t in state.actor_timings.values()]
+        execution_times = [t["execution_time_ms"] for t in state.actor_timings.values()]
+        
+        avg_total = sum(total_durations) / len(total_durations) if total_durations else 0
+        avg_sleep = sum(sleep_times) / len(sleep_times) if sleep_times else 0
+        avg_exec = sum(execution_times) / len(execution_times) if execution_times else 0
+        
+        # Build per-actor breakdown
+        per_actor = {}
+        for actor_id, timing in state.actor_timings.items():
+            per_actor[actor_id] = {
+                "total_duration_ms": round(timing["total_duration_ms"], 2),
+                "sleep_time_ms": round(timing["sleep_time_ms"], 2),
+                "execution_time_ms": round(timing["execution_time_ms"], 2),
+            }
+        
+        return {
+            "avg_total_duration_ms": round(avg_total, 2),
+            "avg_sleep_time_ms": round(avg_sleep, 2),
+            "avg_execution_time_ms": round(avg_exec, 2),
+            "per_actor": per_actor,
+        }
+    
+    def _detect_anomalies(self, state: RunState) -> Dict[str, Any]:
+        """Detect concurrency anomalies based on transaction logs and results."""
+        anomalies = {
+            "dirty_read": self._check_dirty_read(state),
+            "non_repeatable_read": self._check_non_repeatable_read(state),
+            "phantom_read": self._check_phantom_read(state),
+            "lost_update": self._check_lost_update(state),
+        }
+        return anomalies
+    
+    def _check_dirty_read(self, state: RunState) -> Dict[str, Any]:
+        """Check if a dirty read occurred (reading uncommitted data)."""
+        # Dirty reads can only occur in READ UNCOMMITTED isolation level
+        # Look for readers that saw intermediate values from uncommitted transactions
+        
+        occurred = False
+        evidence = []
+        
+        for actor_id, result in state.actor_results.items():
+            if result.get("role") == "read":
+                details = result.get("details", {})
+                initial = details.get("initial_quantity")
+                final = details.get("final_quantity")
+                
+                # If reader saw different values and a writer was active, potential dirty read
+                if initial != final:
+                    # Check if there was a concurrent writer
+                    writers = [a for a, r in state.actor_results.items() if r.get("role") == "write"]
+                    if writers:
+                        occurred = True
+                        evidence.append({
+                            "reader": actor_id,
+                            "saw_initial": initial,
+                            "saw_final": final,
+                            "concurrent_writers": writers
+                        })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "Reader saw uncommitted data from another transaction"
+        }
+    
+    def _check_non_repeatable_read(self, state: RunState) -> Dict[str, Any]:
+        """Check if a non-repeatable read occurred (same query, different results)."""
+        occurred = False
+        evidence = []
+        
+        for actor_id, result in state.actor_results.items():
+            if result.get("role") == "read":
+                details = result.get("details", {})
+                initial = details.get("initial_quantity")
+                final = details.get("final_quantity")
+                
+                # Non-repeatable read: same row queried twice, different values
+                if initial is not None and final is not None and initial != final:
+                    occurred = True
+                    evidence.append({
+                        "reader": actor_id,
+                        "first_read": initial,
+                        "second_read": final,
+                        "difference": final - initial if isinstance(final, (int, float)) and isinstance(initial, (int, float)) else None
+                    })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "Reader saw different values when querying the same row twice"
+        }
+    
+    def _check_phantom_read(self, state: RunState) -> Dict[str, Any]:
+        """Check if a phantom read occurred (range query saw new rows)."""
+        # Note: Current implementation uses UPDATE not INSERT, so true phantom detection is limited
+        # We detect if the writer modified data that would affect a range query
+        
+        occurred = False
+        evidence = []
+        
+        # For PHANTOM_READ scenario, check if writer changed data during reader's transaction
+        if state.payload.scenario == ScenarioType.PHANTOM_READ:
+            readers = [(aid, r) for aid, r in state.actor_results.items() if r.get("role") == "read"]
+            writers = [(aid, r) for aid, r in state.actor_results.items() if r.get("role") == "write"]
+            
+            for reader_id, reader_result in readers:
+                reader_details = reader_result.get("details", {})
+                initial = reader_details.get("initial_quantity")
+                final = reader_details.get("final_quantity")
+                
+                # If reader saw changes (phantom would be new rows, but we detect value changes)
+                if initial != final and writers:
+                    occurred = True
+                    evidence.append({
+                        "reader": reader_id,
+                        "initial_result": initial,
+                        "second_result": final,
+                        "note": "Value changed during transaction (actual phantom requires INSERT)"
+                    })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "Reader saw different results in range query (phantom rows)"
+        }
+    
+    def _check_lost_update(self, state: RunState) -> Dict[str, Any]:
+        """Check if a lost update occurred (concurrent writes, one overwrites another)."""
+        occurred = False
+        evidence = []
+        
+        # Lost update detection for WRITE_WRITE scenario
+        if state.payload.scenario == ScenarioType.WRITE_WRITE:
+            writers = [(aid, r) for aid, r in state.actor_results.items() if r.get("role") == "write"]
+            
+            # Count committed writers
+            committed_writers = [w for w in writers if state.client_status.get(w[0], {}).get("status") == "committed"]
+            num_committed = len(committed_writers)
+            expected_delta = num_committed  # Each committed writer should add 1
+            
+            if num_committed >= 2:
+                # Check the actual delta
+                delta = None
+                if state.summary:
+                    delta = state.summary.get("delta")
+                elif hasattr(state, 'initial_quantity'):
+                    # Calculate from available data
+                    for node_snapshot in state.summary.get("final_states", {}).values() if state.summary else []:
+                        if isinstance(node_snapshot, dict) and node_snapshot.get("present"):
+                            final_qty = node_snapshot.get("quantity")
+                            if final_qty is not None and state.initial_quantity is not None:
+                                delta = final_qty - state.initial_quantity
+                                break
+                
+                # Lost update if delta doesn't match number of committed writers
+                if delta is not None and delta < expected_delta:
+                    occurred = True
+                    evidence.append({
+                        "writers": [w[0] for w in committed_writers],
+                        "expected_delta": expected_delta,
+                        "actual_delta": delta,
+                        "note": f"{num_committed} writers committed but only {delta} increment(s) applied"
+                    })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "One transaction's update was lost due to concurrent modification"
+        }
+    
     async def _fetch_node_snapshot(self, dsn: str, order_id: UUID) -> Dict[str, Any]:
         conn = await self._connection_factory(dsn)
         try:

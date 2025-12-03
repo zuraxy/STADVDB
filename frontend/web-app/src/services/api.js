@@ -1,18 +1,62 @@
 // API Service - Centralized data fetching functions
-const API_BASE_URL = import.meta.env.VITE_API_URL || '';
+// Supports multiple backend nodes for resilience
+
+// Node URLs - can be configured via environment
+const NODE_URLS = {
+  node0: import.meta.env.VITE_NODE0_URL || import.meta.env.VITE_API_URL || '',
+  node1: import.meta.env.VITE_NODE1_URL || '',
+  node2: import.meta.env.VITE_NODE2_URL || '',
+};
+
+// Track which nodes are currently available
+const nodeStatus = {
+  node0: { available: true, lastError: null, lastCheck: null },
+  node1: { available: true, lastError: null, lastCheck: null },
+  node2: { available: true, lastError: null, lastCheck: null },
+};
+
+// Default to first available node
+let API_BASE_URL = NODE_URLS.node0 || '';
 
 /**
- * Generic fetch wrapper with error handling
+ * Get the best available API URL (prefers node0, falls back to node1/node2)
  */
-const fetchAPI = async (endpoint, options = {}) => {
+const getAvailableApiUrl = () => {
+  // Try node0 first (master)
+  if (nodeStatus.node0.available && NODE_URLS.node0) {
+    return NODE_URLS.node0;
+  }
+  // Fall back to node1
+  if (nodeStatus.node1.available && NODE_URLS.node1) {
+    return NODE_URLS.node1;
+  }
+  // Fall back to node2
+  if (nodeStatus.node2.available && NODE_URLS.node2) {
+    return NODE_URLS.node2;
+  }
+  // Return default even if unavailable (let it fail)
+  return NODE_URLS.node0 || '';
+};
+
+/**
+ * Generic fetch wrapper with error handling and timeout
+ */
+const fetchAPI = async (endpoint, options = {}, timeout = 8000) => {
+  const url = `${getAvailableApiUrl()}${endpoint}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
   try {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+    const response = await fetch(url, {
       headers: {
         'Content-Type': 'application/json',
         ...options.headers,
       },
+      signal: controller.signal,
       ...options,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
@@ -21,8 +65,67 @@ const fetchAPI = async (endpoint, options = {}) => {
     const data = await response.json();
     return data;
   } catch (error) {
+    clearTimeout(timeoutId);
+    
+    // Track node failure
+    const baseUrl = getAvailableApiUrl();
+    for (const [node, url] of Object.entries(NODE_URLS)) {
+      if (url === baseUrl) {
+        nodeStatus[node].available = false;
+        nodeStatus[node].lastError = error.message;
+        nodeStatus[node].lastCheck = new Date().toISOString();
+        break;
+      }
+    }
+    
     console.error(`API Error (${endpoint}):`, error);
     throw error;
+  }
+};
+
+/**
+ * Fetch from a specific node URL with timeout
+ */
+const fetchFromNode = async (nodeUrl, endpoint, options = {}, timeout = 5000) => {
+  if (!nodeUrl) {
+    throw new Error('Node URL not configured');
+  }
+  
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(`${nodeUrl}${endpoint}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      signal: controller.signal,
+      ...options,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+};
+
+/**
+ * Safe fetch that returns null on failure instead of throwing
+ */
+const fetchAPISafe = async (endpoint, options = {}, timeout = 5000) => {
+  try {
+    return await fetchAPI(endpoint, options, timeout);
+  } catch (error) {
+    console.warn(`Safe fetch failed for ${endpoint}:`, error.message);
+    return null;
   }
 };
 
@@ -98,7 +201,8 @@ export const updateOrder = async (orderId, orderData) => {
  * @returns {Promise<void>}
  */
 export const deleteOrder = async (orderId) => {
-  const response = await fetch(`${API_BASE_URL}/orders/${orderId}`, {
+  const baseUrl = getAvailableApiUrl();
+  const response = await fetch(`${baseUrl}/orders/${orderId}`, {
     method: 'DELETE',
     headers: {
       'Content-Type': 'application/json',
@@ -336,3 +440,118 @@ export const exportSnapshot = async (partition, format = 'json') => {
   params.append('format', format);
   return fetchAPI(`/recovery/snapshot?${params.toString()}`);
 };
+
+// ==================== RECOVERY TEST SUITE ====================
+
+/**
+ * Get list of available recovery test cases
+ * @returns {Promise<Object>} { cases: Array }
+ */
+export const getRecoveryTestCases = async () => {
+  return fetchAPI('/recovery-tests/cases');
+};
+
+/**
+ * Run a recovery test case
+ * @param {string} testCase - Test case ID ('case_1', 'case_2', 'case_3', 'case_4')
+ * @returns {Promise<Object>} Test result with logs and states
+ */
+export const runRecoveryTest = async (testCase) => {
+  return fetchAPI('/recovery-tests/run', {
+    method: 'POST',
+    body: JSON.stringify({ test_case: testCase }),
+  });
+};
+
+/**
+ * Get currently running recovery test
+ * @returns {Promise<Object>} { current_test: Object|null }
+ */
+export const getCurrentRecoveryTest = async () => {
+  return fetchAPI('/recovery-tests/current');
+};
+
+/**
+ * Get recovery test history
+ * @returns {Promise<Object>} { history: Array }
+ */
+export const getRecoveryTestHistory = async () => {
+  return fetchAPI('/recovery-tests/history');
+};
+
+/**
+ * Clear recovery test history
+ * @returns {Promise<Object>} { status: 'cleared' }
+ */
+export const clearRecoveryTestHistory = async () => {
+  return fetchAPI('/recovery-tests/history/clear', { method: 'POST' });
+};
+
+/**
+ * Get simulated node availability states
+ * @returns {Promise<Object>} { availability: { node0: bool, node1: bool, node2: bool } }
+ */
+export const getNodeAvailability = async () => {
+  return fetchAPI('/recovery-tests/node-availability');
+};
+
+/**
+ * Set simulated node availability
+ * @param {string} node - Node name ('node0', 'node1', 'node2')
+ * @param {boolean} available - Whether node should be available
+ * @returns {Promise<Object>} Updated availability states
+ */
+export const setNodeAvailability = async (node, available) => {
+  return fetchAPI('/recovery-tests/node-availability', {
+    method: 'POST',
+    body: JSON.stringify({ node, available }),
+  });
+};
+
+// ==================== RESILIENT NODE HEALTH ====================
+
+/**
+ * Get all nodes health with resilient fetching
+ * Returns data even if some nodes are down
+ * @returns {Promise<Object>} Node health states
+ */
+export const getAllNodesHealth = async () => {
+  return fetchAPISafe('/status/nodes', {}, 5000) || { nodes: {}, all_online: false };
+};
+
+/**
+ * Check if a specific node is reachable
+ * @param {string} nodeUrl - Base URL of the node
+ * @returns {Promise<boolean>} True if node is reachable
+ */
+export const checkNodeHealth = async (nodeUrl) => {
+  try {
+    const result = await fetchFromNode(nodeUrl, '/health', {}, 3000);
+    return result?.status === 'ok';
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Get node status tracking info
+ * @returns {Object} Current node status tracking
+ */
+export const getNodeStatusTracking = () => {
+  return { ...nodeStatus };
+};
+
+/**
+ * Reset node availability (mark all as available for retry)
+ */
+export const resetNodeAvailabilityTracking = () => {
+  for (const node of Object.keys(nodeStatus)) {
+    nodeStatus[node].available = true;
+    nodeStatus[node].lastError = null;
+  }
+};
+
+/**
+ * Export node URLs for external use
+ */
+export { NODE_URLS, getAvailableApiUrl };

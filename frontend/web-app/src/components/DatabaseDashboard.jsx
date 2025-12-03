@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Database, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Database, Activity, AlertCircle, CheckCircle2, Loader2, RefreshCw, ChevronLeft, ChevronRight, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders } from '../services/api';
+import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders, resetNodeAvailabilityTracking } from '../services/api';
 
 const DEFAULT_NODE_CARDS = [
   { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
@@ -83,37 +83,84 @@ export function DatabaseDashboard() {
   const fetchData = async () => {
     setLoading(true);
     setError(null);
+    let partialFailure = false;
+    let node0Failed = false;
 
     try {
       console.log('🔄 Fetching data from all nodes...');
-      const [statusResponse, ordersResponse, metricsResponse, node1Orders, node2Orders] = await Promise.all([
+      
+      // Fetch all data with individual error handling for resilience
+      const results = await Promise.allSettled([
         fetchReplicationStatus(),
         fetchAllOrders(),
         fetchAllNodeMetrics(),
-        fetchNodeOrders('node1').catch(err => { 
-          console.error('❌ Node1 fetch failed:', err); 
-          return []; 
-        }),
-        fetchNodeOrders('node2').catch(err => { 
-          console.error('❌ Node2 fetch failed:', err); 
-          return []; 
-        }),
+        fetchNodeOrders('node1'),
+        fetchNodeOrders('node2'),
       ]);
+
+      const statusResponse = results[0].status === 'fulfilled' ? results[0].value : null;
+      const ordersResponse = results[1].status === 'fulfilled' ? results[1].value : null;
+      const metricsResponse = results[2].status === 'fulfilled' ? results[2].value : {};
+      const node1Orders = results[3].status === 'fulfilled' ? results[3].value : [];
+      const node2Orders = results[4].status === 'fulfilled' ? results[4].value : [];
+
+      // Check for partial failures
+      results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+          console.warn(`⚠️ Fetch ${i} failed:`, r.reason);
+          partialFailure = true;
+          if (i === 1) node0Failed = true; // ordersResponse from node0
+        }
+      });
 
       console.log('✅ Data fetched:', {
         node0Orders: ordersResponse?.length || 0,
         node1Orders: node1Orders?.length || 0,
         node2Orders: node2Orders?.length || 0,
+        partialFailure,
       });
 
-      applyReplicationStatus(statusResponse);
+      // Build node status, marking node0 as error if its data fetch failed
+      if (statusResponse) {
+        // If we got status but node0 data failed, update node0 status manually
+        if (node0Failed && statusResponse.nodes) {
+          const n0 = statusResponse.nodes.find(n => n.name?.toLowerCase() === 'node0');
+          if (n0) {
+            n0.status = 'error';
+            n0.error = 'Failed to fetch data';
+          }
+        }
+        applyReplicationStatus(statusResponse);
+      } else {
+        // No status response - show what we know from data availability
+        const fallbackStatus = {
+          nodes: [
+            { name: 'node0', status: node0Failed ? 'error' : 'online', error: node0Failed ? 'Connection failed' : null },
+            { name: 'node1', status: node1Orders?.length > 0 || results[3].status === 'fulfilled' ? 'online' : 'error' },
+            { name: 'node2', status: node2Orders?.length > 0 || results[4].status === 'fulfilled' ? 'online' : 'error' },
+          ]
+        };
+        applyReplicationStatus(fallbackStatus);
+      }
+      
       setNodeMetrics(metricsResponse);
       
       // Store node-specific data
       setNode1Data(Array.isArray(node1Orders) ? node1Orders : []);
       setNode2Data(Array.isArray(node2Orders) ? node2Orders : []);
 
-      const rows = Array.isArray(ordersResponse) ? ordersResponse : [];
+      // Combine data: use node0 data if available, otherwise combine node1 + node2
+      let rows;
+      if (ordersResponse && Array.isArray(ordersResponse) && ordersResponse.length > 0) {
+        rows = ordersResponse;
+      } else {
+        // Fallback: combine data from node1 and node2
+        console.log('📦 Node0 unavailable, combining data from Node1 + Node2');
+        const combined = [...(Array.isArray(node1Orders) ? node1Orders : []), ...(Array.isArray(node2Orders) ? node2Orders : [])];
+        // Sort by order_id for consistent display
+        rows = combined.sort((a, b) => (a.order_id || '').localeCompare(b.order_id || ''));
+      }
+      
       setAllData(rows);
       setTotalRecords(rows.length);
       setTotalPages(Math.ceil(rows.length / itemsPerPage));
@@ -122,6 +169,11 @@ export function DatabaseDashboard() {
       const startIndex = (currentPage - 1) * itemsPerPage;
       const endIndex = startIndex + itemsPerPage;
       setData(rows.slice(startIndex, endIndex));
+
+      // Show warning if partial failure but we still have data
+      if (partialFailure && rows.length > 0) {
+        setError('Some nodes are unavailable. Showing data from available nodes.');
+      }
     } catch (err) {
       console.error('❌ Failed to fetch data:', err);
       setError(err.message || 'Failed to connect to database nodes');
@@ -246,11 +298,32 @@ export function DatabaseDashboard() {
         </div>
       </div>
 
-      {/* Error Display */}
+      {/* Error/Warning Display */}
       {error && (
-        <div className="p-4 bg-red-50 border-2 border-red-200 rounded-lg text-red-700">
-          <p className="font-semibold">Error loading data:</p>
-          <p className="text-sm">{error}</p>
+        <div className={`p-4 border-2 rounded-lg ${error.includes('unavailable') ? 'bg-yellow-50 border-yellow-200 text-yellow-700' : 'bg-red-50 border-red-200 text-red-700'}`}>
+          <div className="flex items-center gap-2">
+            {error.includes('unavailable') ? (
+              <AlertTriangle className="w-5 h-5" />
+            ) : (
+              <AlertCircle className="w-5 h-5" />
+            )}
+            <div>
+              <p className="font-semibold">{error.includes('unavailable') ? 'Partial Connectivity:' : 'Error loading data:'}</p>
+              <p className="text-sm">{error}</p>
+              {error.includes('unavailable') && (
+                <Button 
+                  variant="link" 
+                  className="text-xs p-0 h-auto text-yellow-800 underline"
+                  onClick={() => {
+                    resetNodeAvailabilityTracking();
+                    fetchData();
+                  }}
+                >
+                  Try reconnecting all nodes
+                </Button>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

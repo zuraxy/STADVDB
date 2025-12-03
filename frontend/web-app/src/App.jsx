@@ -3,8 +3,9 @@ import { DatabaseDashboard } from './components/DatabaseDashboard';
 import { SimplifiedArchitecture } from './components/SimplifiedArchitecture';
 import { CrudPage } from './components/CrudPage';
 import { RecoveryPanel } from './components/RecoveryPanel';
+import { RecoveryTestsPanel } from './components/RecoveryTestsPanel';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './components/ui/tabs';
-import { Database, Activity, Network, Edit, RefreshCw } from 'lucide-react';
+import { Database, Activity, Network, Edit, RefreshCw, FlaskConical } from 'lucide-react';
 import { TransactionOrchestrator } from './components/TransactionOrchestrator';
 
 export default function App() {
@@ -31,27 +32,34 @@ export default function App() {
 
         {/* Main Tabbed Interface */}
         <Tabs defaultValue="dashboard" className="w-full">
-          <TabsList className="grid w-full grid-cols-5 mb-6 bg-gray-100 border border-gray-200 p-1 rounded-lg">
+          <TabsList className="grid w-full grid-cols-6 mb-6 bg-gray-100 border border-gray-200 p-1 rounded-lg">
             <TabsTrigger 
               value="dashboard" 
               className="data-[state=active]:bg-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-700 transition-all duration-150 rounded-md font-medium"
             >
               <Database className="w-4 h-4 mr-2" />
-              Database Dashboard
+              Dashboard
             </TabsTrigger>
             <TabsTrigger 
               value="crud" 
               className="data-[state=active]:bg-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-700 transition-all duration-150 rounded-md font-medium"
             >
               <Edit className="w-4 h-4 mr-2" />
-              Order Management
+              Orders
             </TabsTrigger>
             <TabsTrigger 
               value="concurrency"
               className="data-[state=active]:bg-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-700 transition-all duration-150 rounded-md font-medium"
             >
               <Activity className="w-4 h-4 mr-2" />
-              Concurrency Testing
+              Concurrency
+            </TabsTrigger>
+            <TabsTrigger 
+              value="recovery-tests"
+              className="data-[state=active]:bg-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-700 transition-all duration-150 rounded-md font-medium"
+            >
+              <FlaskConical className="w-4 h-4 mr-2" />
+              Recovery Tests
             </TabsTrigger>
             <TabsTrigger 
               value="recovery"
@@ -65,7 +73,7 @@ export default function App() {
               className="data-[state=active]:bg-cyan-500 data-[state=active]:text-white data-[state=active]:shadow-sm text-gray-700 transition-all duration-150 rounded-md font-medium"
             >
               <Network className="w-4 h-4 mr-2" />
-              Architecture Overview
+              Architecture
             </TabsTrigger>
           </TabsList>
 
@@ -84,14 +92,19 @@ export default function App() {
             <TransactionOrchestrator />
           </TabsContent>
 
-          {/* Tab 4: Recovery Panel */}
+          {/* Tab 4: Recovery Tests */}
+          <TabsContent value="recovery-tests" className="space-y-6">
+            <RecoveryTestsPanel />
+          </TabsContent>
+
+          {/* Tab 5: Recovery Panel */}
           <TabsContent value="recovery" className="space-y-6">
             <div className="bg-white rounded-lg border-2 border-cyan-200 p-6">
               <RecoveryPanel />
             </div>
           </TabsContent>
 
-          {/* Tab 5: Architecture Overview */}
+          {/* Tab 6: Architecture Overview */}
           <TabsContent value="architecture" className="space-y-6">
             <div className="bg-white rounded-lg border-2 border-cyan-200 p-8">
               <SimplifiedArchitecture 
