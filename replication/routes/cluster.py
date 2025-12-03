@@ -428,7 +428,7 @@ TEST_CASES = {
     "case_1": {
         "id": "case_1",
         "name": "Follower Write → Downed Leader",
-        "description": "Write from Node2/Node3 (follower) fails to replicate to Node0 (leader) because leader is down",
+        "description": "Write from Node1/Node2 (follower) fails to replicate to Node0 (leader) because leader is down",
         "scenario": "Demonstrates replication failure when the leader is unavailable",
         "expected": "Writes from followers should fail with 503 (leader unreachable)",
     },
@@ -442,14 +442,14 @@ TEST_CASES = {
     "case_3": {
         "id": "case_3",
         "name": "Leader Write → Downed Followers",
-        "description": "Write from Node0 (leader) fails to replicate to Node2/Node3 (followers) because they are down",
+        "description": "Write from Node0 (leader) fails to replicate to Node1/Node2 (followers) because they are down",
         "scenario": "Demonstrates replication lag when followers are unavailable",
         "expected": "Writes accepted locally on leader, oplogs queued for replication",
     },
     "case_4": {
         "id": "case_4",
         "name": "Followers Catch Up",
-        "description": "Node2/Node3 (followers) come back online and catch up with oplogs",
+        "description": "Node1/Node2 (followers) come back online and catch up with oplogs",
         "scenario": "Recovery after follower failure - followers sync missed writes",
         "expected": "Followers should recover and pull all queued oplogs from leader",
     },

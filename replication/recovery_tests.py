@@ -1,10 +1,10 @@
 """Recovery Test Suite - 4 recovery scenarios with structured logging.
 
 Test Cases:
-1. Replication fails from Node2/Node3 → Node0
+1. Replication fails from Node1/Node2 → Node0
 2. Node0 comes back online after missing writes
-3. Replication fails from Node0 → Node2/Node3
-4. Node2/Node3 recovers after missing writes
+3. Replication fails from Node0 → Node1/Node2
+4. Node1/Node2 recovers after missing writes
 """
 
 from __future__ import annotations
@@ -366,7 +366,7 @@ class RecoveryTestRunner:
             return result
 
     async def _run_case_1(self):
-        """Case 1: Replication fails from Node2/Node3 → Node0.
+        """Case 1: Replication fails from Node1/Node2 → Node0.
         
         Steps:
         1. Node0 is online
@@ -459,7 +459,7 @@ class RecoveryTestRunner:
                   ops_replicated=self._current_test.ops_replicated)
 
     async def _run_case_3(self):
-        """Case 3: Replication fails from Node0 → Node2/Node3.
+        """Case 3: Replication fails from Node0 → Node1/Node2.
         
         Steps:
         1. Create writes on Node0
@@ -503,7 +503,7 @@ class RecoveryTestRunner:
         await self._wait_for_replication(5.0)
 
     async def _run_case_4(self):
-        """Case 4: Node2/Node3 recovers after missing writes.
+        """Case 4: Node1/Node2 recovers after missing writes.
         
         Steps:
         1. Simulate Node1 or Node2 going offline

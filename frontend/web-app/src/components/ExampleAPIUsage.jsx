@@ -15,7 +15,7 @@ import {
 } from '../services/api';
 
 export function ExampleComponent() {
-  const [orders, setOrders] = useState({ node1: [], node2: [], node3: [] });
+  const [orders, setOrders] = useState({ node0: [], node1: [], node2: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
@@ -95,9 +95,9 @@ export function ExampleComponent() {
       {error && <p>Error: {error}</p>}
       
       <div>
+        <h3>Node 0: {orders.node0.length} orders</h3>
         <h3>Node 1: {orders.node1.length} orders</h3>
         <h3>Node 2: {orders.node2.length} orders</h3>
-        <h3>Node 3: {orders.node3.length} orders</h3>
       </div>
 
       <button onClick={() => handleCreateOrder(10, { item: 'test' })}>

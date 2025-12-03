@@ -100,7 +100,7 @@ const testScenarios = [
   {
     id: 'case_1',
     name: 'Case #1: Follower → Downed Leader',
-    description: 'Write from Node2/Node3 (follower) fails to replicate to Node0 (leader) because the leader is down.',
+    description: 'Write from Node1/Node2 (follower) fails to replicate to Node0 (leader) because the leader is down.',
     expectedEvents: ['node_down', 'write_failed', 'replication_pending'],
     outcome: 'Demonstrates that writes from followers fail (503) when leader is unavailable.',
   },
@@ -114,14 +114,14 @@ const testScenarios = [
   {
     id: 'case_3',
     name: 'Case #3: Leader → Downed Followers',
-    description: 'Write from Node0 (leader) fails to replicate to Node2/Node3 (followers) because they are down.',
+    description: 'Write from Node0 (leader) fails to replicate to Node1/Node2 (followers) because they are down.',
     expectedEvents: ['node_down', 'write_accepted', 'replication_pending'],
     outcome: 'Writes accepted locally on leader, oplogs queued for later replication.',
   },
   {
     id: 'case_4',
     name: 'Case #4: Followers Catch Up',
-    description: 'Node2/Node3 (followers) come back online and catch up with queued oplogs from leader.',
+    description: 'Node1/Node2 (followers) come back online and catch up with queued oplogs from leader.',
     expectedEvents: ['node_up', 'recovery_started', 'recovery_fetching', 'recovery_completed'],
     outcome: 'Followers pull all queued oplogs from leader and become fully synced.',
   },

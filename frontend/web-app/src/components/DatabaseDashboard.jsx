@@ -279,10 +279,10 @@ export function DatabaseDashboard() {
       return 'All Orders';
     }
     if (card.id === 'node1') {
-      return partitionRule ? `Quantity ≤ ${partitionRule}` : 'Fragment 1-5';
+      return partitionRule ? `Quantity ≤ ${partitionRule}` : 'Qty <=5';
     }
     if (card.id === 'node2') {
-      return partitionRule ? `Quantity > ${partitionRule}` : 'Fragment 6-10';
+      return partitionRule ? `Quantity > ${partitionRule}` : 'Qty >5';
     }
     return card.description;
   };

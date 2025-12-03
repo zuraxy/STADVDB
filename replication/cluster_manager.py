@@ -1033,10 +1033,10 @@ class ClusterManager:
         Run a predefined recovery test scenario.
         
         The 4 correct test cases are:
-        - case_1: Write from Node2/Node3 (follower) fails to replicate to Node0 (leader) because leader is down
+        - case_1: Write from Node1/Node2 (follower) fails to replicate to Node0 (leader) because leader is down
         - case_2: Node0 (leader) comes back online and pulls missed oplogs to catch up
-        - case_3: Write from Node0 (leader) fails to replicate to Node2/Node3 (followers) because they are down
-        - case_4: Node2/Node3 (followers) come back online and catch up with oplogs
+        - case_3: Write from Node0 (leader) fails to replicate to Node1/Node2 (followers) because they are down
+        - case_4: Node1/Node2 (followers) come back online and catch up with oplogs
         """
         await self._emit_event(
             ClusterEventType.RECOVERY_STARTED,

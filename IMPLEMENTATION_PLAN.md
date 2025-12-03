@@ -1582,7 +1582,7 @@ curl -X POST http://localhost:3000/api/recovery/case4/Node2
 ### Phase 2: Basic CRUD ✅
 - [ ] Initialize all 3 nodes with `/api/init`
 - [ ] Verify fragmentation constraints work
-- [ ] Create order on Node1, verify replication to Node2/Node3
+- [ ] Create order on Node1, verify replication to Node1/Node2
 - [ ] Create order on Node2 (qty 1-5), verify replication to Node1
 - [ ] Create order on Node3 (qty 6-10), verify replication to Node1
 - [ ] Update order, verify replication
