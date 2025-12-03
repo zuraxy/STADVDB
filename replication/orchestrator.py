@@ -246,12 +246,15 @@ class TransactionOrchestrator:
                 actors=[plan.actor_id for plan in plans],
             )
             
-            # For READ_WRITE scenario: writer executes first, reader follows
-            # This allows testing dirty reads (reader sees uncommitted) or 
-            # committed reads (reader sees after commit)
-            if state.payload.scenario == ScenarioType.READ_WRITE and len(plans) == 2:
+            # For READ_WRITE scenario: writer executes first, readers follow
+            # This allows testing dirty reads (readers see uncommitted) or 
+            # committed reads (readers see after commit)
+            if state.payload.scenario == ScenarioType.READ_WRITE:
                 writer_plan = plans[0]  # First actor is writer
-                reader_plan = plans[1]  # Second actor is reader
+                reader_plans = plans[1:]  # Remaining actors are readers
+                
+                await state.log("read_write_start",
+                    message=f"1 writer + {len(reader_plans)} reader(s) starting")
                 
                 # Start writer first
                 writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
@@ -259,10 +262,10 @@ class TransactionOrchestrator:
                 # Small delay to let writer start its transaction and perform UPDATE
                 await asyncio.sleep(0.3)
                 
-                # Then start reader
-                reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
+                # Then start all readers
+                reader_tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in reader_plans]
                 
-                results = await asyncio.gather(writer_task, reader_task, return_exceptions=True)
+                results = await asyncio.gather(writer_task, *reader_tasks, return_exceptions=True)
             elif state.payload.scenario == ScenarioType.WRITE_WRITE:
                 # WRITE_WRITE: All writers start simultaneously to create contention
                 # This tests FOR UPDATE locking behavior and serialization conflicts
@@ -278,13 +281,13 @@ class TransactionOrchestrator:
                 
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-            elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ and len(plans) == 2:
-                # NON_REPEATABLE_READ: Reader starts first with sleep, writer updates during sleep
+            elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ:
+                # NON_REPEATABLE_READ: Reader starts first with sleep, writers update during sleep
                 reader_plan = plans[0]  # First actor is reader
-                writer_plan = plans[1]  # Second actor is writer
+                writer_plans = plans[1:]  # Remaining actors are writers
                 
                 await state.log("non_repeatable_read_start",
-                    message="Reader starting first, writer will update during reader's sleep")
+                    message=f"Reader starting first, {len(writer_plans)} writer(s) will update during reader's sleep")
                 
                 # Start reader first
                 reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
@@ -292,18 +295,18 @@ class TransactionOrchestrator:
                 # Delay to let reader perform first SELECT and start sleeping
                 await asyncio.sleep(0.5)
                 
-                # Start writer to update during reader's sleep
-                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                # Start all writers to update during reader's sleep
+                writer_tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in writer_plans]
                 
-                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
-            elif state.payload.scenario == ScenarioType.PHANTOM_READ and len(plans) == 2:
-                # PHANTOM_READ: Reader performs COUNT/range queries, writer modifies during sleep
+                results = await asyncio.gather(reader_task, *writer_tasks, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.PHANTOM_READ:
+                # PHANTOM_READ: Reader performs COUNT/range queries, writers modify during sleep
                 # Note: Current implementation uses UPDATE, not INSERT (limitation)
                 reader_plan = plans[0]  # First actor is reader
-                writer_plan = plans[1]  # Second actor is writer
+                writer_plans = plans[1:]  # Remaining actors are writers
                 
                 await state.log("phantom_read_start",
-                    message="Reader starting first with range queries, writer will modify during sleep")
+                    message=f"Reader starting first with range queries, {len(writer_plans)} writer(s) will modify during sleep")
                 
                 # Start reader first
                 reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
@@ -311,10 +314,13 @@ class TransactionOrchestrator:
                 # Delay to let reader perform first queries and start sleeping
                 await asyncio.sleep(0.5)
                 
-                # Start writer to modify during reader's sleep
-                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                # Start all writers to modify during reader's sleep
+                writer_tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in writer_plans]
                 
-                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
+                results = await asyncio.gather(reader_task, *writer_tasks, return_exceptions=True)
+                
+                # Cleanup: Revert the quantity changes made by writers
+                await self._cleanup_phantom_read(state, order_id, len(writer_plans))
             else:
                 # Other scenarios: run concurrently
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
@@ -733,6 +739,56 @@ class TransactionOrchestrator:
             "locked_quantity": current_qty,
             "committed_quantity": final_quantity,
         }
+
+    async def _cleanup_phantom_read(
+        self,
+        state: RunState,
+        order_id: int,
+        num_writers: int,
+    ) -> None:
+        """
+        Cleanup method for PHANTOM_READ scenarios to restore original quantity.
+        Reverts the increments made by writers during the test.
+        """
+        primary = self._primary_node().lower()
+        dsn = self._node_dsns.get(primary)
+        if not dsn:
+            await state.log("cleanup_skip", reason="Primary node unavailable")
+            return
+
+        await state.log(
+            "cleanup_start",
+            order_id=order_id,
+            num_increments=num_writers,
+        )
+
+        conn = await asyncpg.connect(dsn)
+        try:
+            # Calculate original quantity by subtracting all writer increments
+            await conn.execute(
+                """
+                UPDATE orders
+                SET quantity = quantity - $1
+                WHERE order_id = $2
+                """,
+                num_writers,
+                order_id,
+            )
+            
+            # Verify the cleanup
+            result = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1",
+                order_id,
+            )
+            restored_qty = result["quantity"] if result else None
+            
+            await state.log(
+                "cleanup_complete",
+                order_id=order_id,
+                restored_quantity=restored_qty,
+            )
+        finally:
+            await conn.close()
 
     async def _collect_summary(self, state: RunState) -> Dict[str, Any]:
         order_id = state.order_id

@@ -90,7 +90,7 @@ class RunOrchestrationRequest(BaseModel):
                         name=f"reader_{chr(97 + i)}",  # reader_a, reader_b, etc.
                         node=nodes[i % len(nodes)],  # Distribute across available nodes
                         isolation_level=isolation,
-                        delay_seconds=2.0,  # Add delay for READ_READ scenario
+                        # No delay needed for READ_READ - just testing snapshot reads
                     )
                 )
         elif scenario == ScenarioType.READ_WRITE:
@@ -125,41 +125,52 @@ class RunOrchestrationRequest(BaseModel):
                     )
                 )
         elif scenario == ScenarioType.NON_REPEATABLE_READ:
-            # Reader on node_x, Writer on node_y
+            # 1 reader + (N-1) writers
             # Reader performs SELECT, sleeps, SELECT again
-            # Writer updates during reader's sleep
+            # Multiple writers update during reader's sleep
             self.actors = [
                 TransactionActorModel(
                     name="reader",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writer to modify
-                ),
-                TransactionActorModel(
-                    name="writer",
-                    node=self.node_y or "node1",
-                    isolation_level=isolation,
-                    auto_increment=True,  # Increment the quantity
+                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writers to modify
                 ),
             ]
+            # Add (N-1) writers distributed across nodes
+            nodes = [self.node_y or "node1", "node2", self.node_x or "node0"]
+            for i in range(num_clients - 1):
+                self.actors.append(
+                    TransactionActorModel(
+                        name=f"writer_{chr(97 + i)}",
+                        node=nodes[i % len(nodes)],
+                        isolation_level=isolation,
+                        auto_increment=True,
+                    )
+                )
         elif scenario == ScenarioType.PHANTOM_READ:
-            # Reader on node_x, Writer on node_y
+            # 1 reader + (N-1) writers
             # Reader performs range queries, sleeps, queries again
-            # Writer modifies data during reader's sleep
+            # Multiple writers modify data during reader's sleep
+            # Note: Writers will be cleaned up after test completes
             self.actors = [
                 TransactionActorModel(
                     name="reader",
                     node=self.node_x or "node0",
                     isolation_level=isolation,
-                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writer to modify
-                ),
-                TransactionActorModel(
-                    name="writer",
-                    node=self.node_y or "node1",
-                    isolation_level=isolation,
-                    auto_increment=True,  # Modify the data (ideally INSERT, but using UPDATE)
+                    delay_seconds=self.delay_reader or 2.0,  # Sleep to allow writers to modify
                 ),
             ]
+            # Add (N-1) writers distributed across nodes
+            nodes = [self.node_y or "node1", "node2", self.node_x or "node0"]
+            for i in range(num_clients - 1):
+                self.actors.append(
+                    TransactionActorModel(
+                        name=f"writer_{chr(97 + i)}",
+                        node=nodes[i % len(nodes)],
+                        isolation_level=isolation,
+                        auto_increment=True,
+                    )
+                )
         
         # Validate the generated actors
         if self.actors:

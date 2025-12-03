@@ -137,7 +137,8 @@ export function TransactionOrchestrator() {
           setLogs((prev) => [...prev.slice(-199), entry]);
         },
         onError: () => {
-          setStreamError('Live stream interrupted. Falling back to polling.');
+          setStreamError('Real-time updates paused. Switching to polling mode...');
+          setAutoRefresh(true);  // Enable polling fallback
           if (streamRef.current) {
             streamRef.current.close();
             streamRef.current = null;
