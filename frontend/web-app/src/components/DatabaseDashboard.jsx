@@ -479,7 +479,7 @@ export function DatabaseDashboard() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-base">Node 2 - Fragment 1</CardTitle>
+                  <CardTitle className="text-base">Node 1 - Fragment 1</CardTitle>
                   <CardDescription>Orders 1-5 (Horizontal partition)</CardDescription>
                 </div>
                 <Badge variant="outline" className={getBadgeClasses(getNodeStatusById('node1'))}>
@@ -536,7 +536,7 @@ export function DatabaseDashboard() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
-                  <CardTitle className="text-base">Node 3 - Fragment 2</CardTitle>
+                  <CardTitle className="text-base">Node 2 - Fragment 2</CardTitle>
                   <CardDescription>Orders 6-10 (Horizontal partition)</CardDescription>
                 </div>
                 <Badge variant="outline" className={getBadgeClasses(getNodeStatusById('node2'))}>
