@@ -35,10 +35,12 @@ async def next_lamport(conn, origin_node: str) -> int:
     """Fetch the next lamport clock value for the node.
 
     We intentionally query the database to ensure durability across crashes.
+    We use MAX(lamport) across ALL entries (not just this origin_node) to ensure
+    a newly promoted leader assigns lamport values higher than what already exists
+    in the cluster. This is critical for recovery to work correctly.
     """
 
     current = await conn.fetchval(
-        "SELECT COALESCE(MAX(lamport), 0) FROM op_log WHERE origin_node = $1",
-        origin_node,
+        "SELECT COALESCE(MAX(lamport), 0) FROM op_log",
     )
     return tick(int(current or 0))
