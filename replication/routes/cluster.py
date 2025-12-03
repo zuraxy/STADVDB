@@ -224,6 +224,17 @@ async def get_node_states(request: Request) -> Dict[str, Any]:
     return {"nodes": cluster_manager.get_node_states()}
 
 
+@router.get("/lamport")
+async def get_db_lamport(request: Request) -> Dict[str, Any]:
+    """Get actual lamport values from database (replication_cursors and op_log)."""
+    cluster_manager = getattr(request.app.state, "cluster_manager", None)
+    if not cluster_manager:
+        return {"error": "Cluster manager not initialized", "values": {}}
+    
+    values = await cluster_manager.get_db_lamport_values()
+    return {"values": values}
+
+
 @router.get("/events")
 async def get_cluster_events(
     request: Request,
@@ -245,6 +256,21 @@ async def get_cluster_events(
     return {
         "events": events,
         "latest_lamport": events[-1]["lamport_time"] if events else since_lamport,
+    }
+
+
+@router.post("/events/clear")
+async def clear_cluster_events(request: Request) -> Dict[str, Any]:
+    """Clear all stored cluster events."""
+    cluster_manager = getattr(request.app.state, "cluster_manager", None)
+    if not cluster_manager:
+        return {"status": "error", "message": "Cluster manager not initialized", "cleared": 0}
+    
+    cleared_count = cluster_manager.clear_events()
+    return {
+        "status": "success",
+        "message": f"Cleared {cleared_count} events",
+        "cleared": cleared_count,
     }
 
 

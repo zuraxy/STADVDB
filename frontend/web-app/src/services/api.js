@@ -567,6 +567,14 @@ export const getClusterStatus = async () => {
 };
 
 /**
+ * Get actual lamport values from database (replication_cursors and op_log)
+ * @returns {Promise<Object>} { values: { max_op_log, node0, node1, ... } }
+ */
+export const getClusterLamport = async () => {
+  return fetchAPI('/cluster/lamport');
+};
+
+/**
  * Get cluster events (real activity logs)
  * @param {number} limit - Max number of events to return
  * @param {string} eventType - Optional filter by event type
@@ -576,6 +584,14 @@ export const getClusterEvents = async (limit = 100, eventType = null) => {
   const params = new URLSearchParams({ limit: limit.toString() });
   if (eventType) params.append('event_type', eventType);
   return fetchAPI(`/cluster/events?${params.toString()}`);
+};
+
+/**
+ * Clear all cluster events
+ * @returns {Promise<Object>} { status, message, cleared }
+ */
+export const clearClusterEvents = async () => {
+  return fetchAPI('/cluster/events/clear', { method: 'POST' });
 };
 
 /**

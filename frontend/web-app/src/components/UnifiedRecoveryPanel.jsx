@@ -141,7 +141,7 @@ export function UnifiedRecoveryPanel() {
   // Cluster state
   const [clusterStatus, setClusterStatus] = useState(null);
   const [events, setEvents] = useState([]);
-  const [latestLamport, setLatestLamport] = useState(0);
+  const [dbLamport, setDbLamport] = useState(null);
   
   // UI state
   const [isLoading, setIsLoading] = useState(false);
@@ -164,31 +164,35 @@ export function UnifiedRecoveryPanel() {
         const data = await response.json();
         setClusterStatus(data);
       }
+      // Also fetch real lamport values from DB
+      const lamportResponse = await fetch(`${API_BASE_URL}/cluster/lamport`);
+      if (lamportResponse.ok) {
+        const lamportData = await lamportResponse.json();
+        setDbLamport(lamportData.values);
+      }
+    } catch (err) {
+      console.error('Failed to fetch cluster status:', err);
+    }
+  }, []);
     } catch (err) {
       console.error('Failed to fetch cluster status:', err);
     }
   }, []);
 
-  // Fetch events
+  // Fetch events (always fetch last 200, merge by event_id)
   const fetchEvents = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/cluster/events?limit=100&since_lamport=${latestLamport}`);
+      const response = await fetch(`${API_BASE_URL}/cluster/events?limit=200`);
       if (response.ok) {
         const data = await response.json();
-        if (data.events && data.events.length > 0) {
-          setEvents(prev => {
-            const newEvents = data.events.filter(
-              e => !prev.some(p => p.event_id === e.event_id)
-            );
-            return [...prev, ...newEvents].slice(-200); // Keep last 200
-          });
-          setLatestLamport(data.latest_lamport);
+        if (data.events) {
+          setEvents(data.events.slice(-200)); // Replace with backend events
         }
       }
     } catch (err) {
       console.error('Failed to fetch events:', err);
     }
-  }, [latestLamport]);
+  }, []);
 
   // Toggle node state
   const toggleNode = async (nodeName, currentlyUp) => {
@@ -262,7 +266,6 @@ export function UnifiedRecoveryPanel() {
               if (prev.some(p => p.event_id === event.event_id)) return prev;
               return [...prev, event].slice(-200);
             });
-            setLatestLamport(event.lamport_time);
           }
         } catch (err) {
           console.error('Failed to parse event:', err);
@@ -510,10 +513,7 @@ export function UnifiedRecoveryPanel() {
                 
                 <div className="text-xs text-slate-600 space-y-1 mb-3">
                   <p>Role: <span className="font-medium">{node.role}</span></p>
-                  {node.last_heartbeat && (
-                    <p>Last HB: <span className="font-mono">{formatTime(node.last_heartbeat)}</span></p>
-                  )}
-                  <p>Lamport: <span className="font-mono">{node.last_seen_lamport}</span></p>
+                  <p>DB Lamport: <span className="font-mono">{dbLamport?.max_op_log ?? '-'}</span></p>
                 </div>
                 
                 <Button
@@ -712,7 +712,14 @@ export function UnifiedRecoveryPanel() {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setEvents([])}
+              onClick={async () => {
+                try {
+                  await fetch(`${API_BASE_URL}/cluster/events/clear`, { method: 'POST' });
+                  setEvents([]);
+                } catch (err) {
+                  console.error('Failed to clear events:', err);
+                }
+              }}
             >
               Clear
             </Button>

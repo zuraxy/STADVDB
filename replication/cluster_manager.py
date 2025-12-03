@@ -517,13 +517,14 @@ class ClusterManager:
                     new_leader=new_leader,
                 )
             
-            # Enable writes if we're the leader
-            if self._my_role == NodeRole.LEADER:
-                self._writes_gated = False
-                await self._emit_event(
-                    ClusterEventType.WRITES_ENABLED,
-                    "Writes enabled (leader ready)",
-                )
+            # Enable writes - election is complete
+            # Note: writes should be enabled regardless of role since election is done
+            # The new leader will handle writes, followers will forward
+            self._writes_gated = False
+            await self._emit_event(
+                ClusterEventType.WRITES_ENABLED,
+                f"Writes enabled (election complete, leader is {new_leader})",
+            )
         
         finally:
             self._election_in_progress = False
@@ -586,6 +587,8 @@ class ClusterManager:
         state = self._nodes[node_name]
         was_down = state.is_simulated_down
         state.is_simulated_down = False
+        state.is_alive = True
+        state.last_heartbeat = datetime.now(timezone.utc)
         
         await self._emit_event(
             ClusterEventType.NODE_UP,
@@ -594,10 +597,64 @@ class ClusterManager:
         )
         
         if was_down:
-            # Trigger automatic recovery
-            await self._trigger_node_recovery(node_name)
+            # If node0 (default_master) comes back, re-elect it as leader and demote others
+            if node_name.lower() == self.settings.default_master.lower():
+                await self._restore_default_leader(node_name)
+            else:
+                # Regular node recovery
+                await self._trigger_node_recovery(node_name)
         
         return True
+
+    async def _restore_default_leader(self, node_name: str):
+        """Restore node0 as leader when it comes back online and demote promoted nodes."""
+        old_leader = self._current_leader
+        
+        await self._emit_event(
+            ClusterEventType.ELECTION_STARTED,
+            f"Restoring {node_name} as leader (default master)",
+            node=node_name,
+        )
+        
+        # Set node0 as the leader
+        self._current_leader = node_name
+        
+        if node_name == self.settings.node_name:
+            # This node is the default master coming back
+            self._my_role = NodeRole.LEADER
+            self._set_promoted_flag(False)  # Leader doesn't need promoted flag
+        
+        await self._emit_event(
+            ClusterEventType.LEADER_ELECTED,
+            f"{node_name} restored as leader",
+            node=node_name,
+            old_leader=old_leader,
+        )
+        
+        # Broadcast demotion to all peer nodes
+        await self._broadcast_demotion_to_all()
+        
+        # Trigger recovery for the restored leader to catch up
+        await self._trigger_node_recovery(node_name)
+
+    async def _broadcast_demotion_to_all(self):
+        """Broadcast demotion signal to all peer nodes."""
+        await self._emit_event(
+            ClusterEventType.NODE_SYNCED,
+            "Broadcasting demotion to all promoted nodes",
+        )
+        
+        for peer in self.settings.peer_nodes:
+            if peer.name == self.settings.node_name:
+                continue
+            try:
+                await self.http_client.post_json(
+                    f"{peer.base_url}/admin/demote",
+                    {"demote": True}
+                )
+                _LOGGER.info("Demoted %s", peer.name)
+            except Exception as e:
+                _LOGGER.warning("Failed to demote %s: %s", peer.name, e)
 
     async def _trigger_node_recovery(self, node_name: str):
         """Trigger automatic recovery for a node that just came back."""
@@ -825,6 +882,32 @@ class ClusterManager:
             for e in events[-limit:]
         ]
 
+    def clear_events(self) -> int:
+        """Clear all stored events. Returns count of cleared events."""
+        count = len(self._events)
+        self._events.clear()
+        return count
+
+    async def get_db_lamport_values(self) -> Dict[str, int]:
+        """Fetch actual lamport values from replication_cursors table."""
+        try:
+            async with self.pool.acquire() as conn:
+                # Get max lamport from op_log
+                max_lamport = await conn.fetchval(
+                    "SELECT COALESCE(MAX(lamport), -1) FROM op_log"
+                )
+                # Get replication cursors for each peer
+                cursors = await conn.fetch(
+                    "SELECT node, last_lamport FROM replication_cursors"
+                )
+                result = {"max_op_log": int(max_lamport)}
+                for row in cursors:
+                    result[row["node"]] = int(row["last_lamport"])
+                return result
+        except Exception as e:
+            _LOGGER.warning("Failed to fetch DB lamport values: %s", e)
+            return {"error": str(e)}
+
     def get_cluster_status(self) -> Dict[str, Any]:
         """Get full cluster status."""
         return {
@@ -857,8 +940,15 @@ class ClusterManager:
             # Check if we need to accept new leader
             if payload.get("leader") and payload["leader"] != self._current_leader:
                 if not self._election_in_progress:
+                    old_leader = self._current_leader
                     self._current_leader = payload["leader"]
-                    if self._current_leader != self.settings.node_name:
+                    
+                    if self._current_leader == self.settings.node_name:
+                        # This node is now the leader (learned via heartbeat)
+                        self._my_role = NodeRole.LEADER
+                        self._writes_gated = False  # Leader must enable writes
+                        _LOGGER.info("This node became leader via heartbeat (was: %s)", old_leader)
+                    else:
                         self._my_role = NodeRole.FOLLOWER
         
         my_lamport = await self._tick_lamport()
@@ -878,9 +968,17 @@ class ClusterManager:
         
         if new_leader:
             self._current_leader = new_leader
+            self._election_in_progress = False  # Election is complete
+            
             if new_leader == self.settings.node_name:
+                # This node is the new leader
                 self._my_role = NodeRole.LEADER
                 self._set_promoted_flag(True)
+                self._writes_gated = False  # Leader must enable writes
+                await self._emit_event(
+                    ClusterEventType.WRITES_ENABLED,
+                    "Writes enabled (this node is new leader)",
+                )
             else:
                 self._my_role = NodeRole.FOLLOWER
             
