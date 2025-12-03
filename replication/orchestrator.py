@@ -271,6 +271,43 @@ class TransactionOrchestrator:
                 
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ and len(plans) == 2:
+                # NON_REPEATABLE_READ: Reader starts first with sleep, writer updates during sleep
+                reader_plan = plans[0]  # First actor is reader
+                writer_plan = plans[1]  # Second actor is writer
+                
+                await state.log("non_repeatable_read_start",
+                    message="Reader starting first, writer will update during reader's sleep")
+                
+                # Start reader first
+                reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
+                
+                # Delay to let reader perform first SELECT and start sleeping
+                await asyncio.sleep(0.5)
+                
+                # Start writer to update during reader's sleep
+                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                
+                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.PHANTOM_READ and len(plans) == 2:
+                # PHANTOM_READ: Reader performs COUNT/range queries, writer modifies during sleep
+                # Note: Current implementation uses UPDATE, not INSERT (limitation)
+                reader_plan = plans[0]  # First actor is reader
+                writer_plan = plans[1]  # Second actor is writer
+                
+                await state.log("phantom_read_start",
+                    message="Reader starting first with range queries, writer will modify during sleep")
+                
+                # Start reader first
+                reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
+                
+                # Delay to let reader perform first queries and start sleeping
+                await asyncio.sleep(0.5)
+                
+                # Start writer to modify during reader's sleep
+                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                
+                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
             else:
                 # Other scenarios: run concurrently
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
@@ -489,6 +526,7 @@ class TransactionOrchestrator:
                 "delay_seconds": plan.delay_seconds,
                 "new_quantity": plan.new_quantity,
                 "auto_increment": plan.auto_increment,
+                "scenario": state.payload.scenario.value,
             }
             # For READ_WRITE scenario writers, add delay before commit for dirty read testing
             if state.payload.scenario == ScenarioType.READ_WRITE and plan.role == "write":
@@ -496,6 +534,7 @@ class TransactionOrchestrator:
             # For WRITE_WRITE scenario, add delay after lock to create contention
             if state.payload.scenario == ScenarioType.WRITE_WRITE and plan.role == "write":
                 payload["delay_after_lock"] = 0.5
+            # For NON_REPEATABLE_READ and PHANTOM_READ, no special delays needed (using delay_seconds)
             url = f"{node_url}/orchestrator/local-transaction"
             result = await self._http_client.post_json(url, payload)
 
@@ -556,10 +595,18 @@ class TransactionOrchestrator:
         plan: ActorPlan,
         order_id: UUID,
     ) -> Dict[str, Any]:
-        snapshot = await conn.fetchrow(
-            "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
-            order_id,
-        )
+        # For READ_READ scenario, use simple SELECT (no locking overhead)
+        # For scenarios with writers, use FOR SHARE to demonstrate read locking
+        if state.payload.scenario == ScenarioType.READ_READ:
+            snapshot = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1",
+                order_id,
+            )
+        else:
+            snapshot = await conn.fetchrow(
+                "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
+                order_id,
+            )
         qty_before = snapshot["quantity"] if snapshot else None
         await state.log(
             "read_snapshot",
@@ -700,6 +747,9 @@ class TransactionOrchestrator:
         # Calculate timing metrics
         timing_metrics = self._calculate_timing_metrics(state)
         
+        # Detect anomalies
+        anomalies = self._detect_anomalies(state)
+        
         return {
             "order_id": str(order_id),
             "initial_quantity": state.initial_quantity,
@@ -712,6 +762,7 @@ class TransactionOrchestrator:
             "serialization_conflicts": state.serialization_conflicts,
             "verdict": verdict,
             "timing_metrics": timing_metrics,
+            "anomalies": anomalies,
             "replication_note": "Node snapshots reflect latest pull at query time; minor lag is expected.",
         }
     
@@ -743,6 +794,155 @@ class TransactionOrchestrator:
             "avg_sleep_time_ms": round(avg_sleep, 2),
             "avg_execution_time_ms": round(avg_exec, 2),
             "per_actor": per_actor,
+        }
+    
+    def _detect_anomalies(self, state: RunState) -> Dict[str, Any]:
+        """Detect concurrency anomalies based on transaction logs and results."""
+        anomalies = {
+            "dirty_read": self._check_dirty_read(state),
+            "non_repeatable_read": self._check_non_repeatable_read(state),
+            "phantom_read": self._check_phantom_read(state),
+            "lost_update": self._check_lost_update(state),
+        }
+        return anomalies
+    
+    def _check_dirty_read(self, state: RunState) -> Dict[str, Any]:
+        """Check if a dirty read occurred (reading uncommitted data)."""
+        # Dirty reads can only occur in READ UNCOMMITTED isolation level
+        # Look for readers that saw intermediate values from uncommitted transactions
+        
+        occurred = False
+        evidence = []
+        
+        for actor_id, result in state.actor_results.items():
+            if result.get("role") == "read":
+                details = result.get("details", {})
+                initial = details.get("initial_quantity")
+                final = details.get("final_quantity")
+                
+                # If reader saw different values and a writer was active, potential dirty read
+                if initial != final:
+                    # Check if there was a concurrent writer
+                    writers = [a for a, r in state.actor_results.items() if r.get("role") == "write"]
+                    if writers:
+                        occurred = True
+                        evidence.append({
+                            "reader": actor_id,
+                            "saw_initial": initial,
+                            "saw_final": final,
+                            "concurrent_writers": writers
+                        })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "Reader saw uncommitted data from another transaction"
+        }
+    
+    def _check_non_repeatable_read(self, state: RunState) -> Dict[str, Any]:
+        """Check if a non-repeatable read occurred (same query, different results)."""
+        occurred = False
+        evidence = []
+        
+        for actor_id, result in state.actor_results.items():
+            if result.get("role") == "read":
+                details = result.get("details", {})
+                initial = details.get("initial_quantity")
+                final = details.get("final_quantity")
+                
+                # Non-repeatable read: same row queried twice, different values
+                if initial is not None and final is not None and initial != final:
+                    occurred = True
+                    evidence.append({
+                        "reader": actor_id,
+                        "first_read": initial,
+                        "second_read": final,
+                        "difference": final - initial if isinstance(final, (int, float)) and isinstance(initial, (int, float)) else None
+                    })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "Reader saw different values when querying the same row twice"
+        }
+    
+    def _check_phantom_read(self, state: RunState) -> Dict[str, Any]:
+        """Check if a phantom read occurred (range query saw new rows)."""
+        # Note: Current implementation uses UPDATE not INSERT, so true phantom detection is limited
+        # We detect if the writer modified data that would affect a range query
+        
+        occurred = False
+        evidence = []
+        
+        # For PHANTOM_READ scenario, check if writer changed data during reader's transaction
+        if state.payload.scenario == ScenarioType.PHANTOM_READ:
+            readers = [(aid, r) for aid, r in state.actor_results.items() if r.get("role") == "read"]
+            writers = [(aid, r) for aid, r in state.actor_results.items() if r.get("role") == "write"]
+            
+            for reader_id, reader_result in readers:
+                reader_details = reader_result.get("details", {})
+                initial = reader_details.get("initial_quantity")
+                final = reader_details.get("final_quantity")
+                
+                # If reader saw changes (phantom would be new rows, but we detect value changes)
+                if initial != final and writers:
+                    occurred = True
+                    evidence.append({
+                        "reader": reader_id,
+                        "initial_result": initial,
+                        "second_result": final,
+                        "note": "Value changed during transaction (actual phantom requires INSERT)"
+                    })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "Reader saw different results in range query (phantom rows)"
+        }
+    
+    def _check_lost_update(self, state: RunState) -> Dict[str, Any]:
+        """Check if a lost update occurred (concurrent writes, one overwrites another)."""
+        occurred = False
+        evidence = []
+        
+        # Lost update detection for WRITE_WRITE scenario
+        if state.payload.scenario == ScenarioType.WRITE_WRITE:
+            writers = [(aid, r) for aid, r in state.actor_results.items() if r.get("role") == "write"]
+            
+            # If both writers committed but delta is only 1 (expected 2), lost update occurred
+            committed_writers = [w for w in writers if state.client_status.get(w[0], {}).get("status") == "committed"]
+            
+            if len(committed_writers) == 2:
+                # Check the actual delta
+                delta = None
+                if state.summary:
+                    delta = state.summary.get("delta")
+                elif hasattr(state, 'initial_quantity'):
+                    # Calculate from available data
+                    for node_snapshot in state.summary.get("final_states", {}).values() if state.summary else []:
+                        if isinstance(node_snapshot, dict) and node_snapshot.get("present"):
+                            final_qty = node_snapshot.get("quantity")
+                            if final_qty is not None and state.initial_quantity is not None:
+                                delta = final_qty - state.initial_quantity
+                                break
+                
+                if delta == 1:
+                    occurred = True
+                    evidence.append({
+                        "writers": [w[0] for w in committed_writers],
+                        "expected_delta": 2,
+                        "actual_delta": delta,
+                        "note": "Both writers committed but only 1 increment applied"
+                    })
+        
+        return {
+            "occurred": occurred,
+            "prevented": not occurred,
+            "evidence": evidence,
+            "description": "One transaction's update was lost due to concurrent modification"
         }
     
     async def _fetch_node_snapshot(self, dsn: str, order_id: UUID) -> Dict[str, Any]:

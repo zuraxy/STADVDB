@@ -203,6 +203,7 @@ class LocalTransactionRequest(BaseModel):
     delay_after_lock: float = 0.0  # Delay after FOR UPDATE lock (for write-write contention)
     new_quantity: Optional[int] = None
     auto_increment: bool = False  # If True, increment quantity by 1 instead of setting
+    scenario: Optional[str] = None  # Scenario type for conditional locking behavior
 
 
 @router.post("/local-transaction")
@@ -225,11 +226,18 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
         )
         
         if payload.role == "read":
-            # First read with FOR SHARE lock
-            snapshot = await conn.fetchrow(
-                "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
-                payload.order_id,
-            )
+            # For READ_READ scenario, use simple SELECT (no locking overhead)
+            # For scenarios with writers, use FOR SHARE to demonstrate read locking
+            if payload.scenario == "READ_READ":
+                snapshot = await conn.fetchrow(
+                    "SELECT quantity FROM orders WHERE order_id = $1",
+                    payload.order_id,
+                )
+            else:
+                snapshot = await conn.fetchrow(
+                    "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
+                    payload.order_id,
+                )
             qty_before = snapshot["quantity"] if snapshot else None
             
             # Optional delay for concurrency testing

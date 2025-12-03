@@ -795,6 +795,157 @@ export function TransactionOrchestrator() {
                 </div>
               )}
 
+              {/* Anomaly Detection Panel */}
+              {statusSnapshot.result_summary?.anomalies && (
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-slate-700">Anomaly Detection</p>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {/* Dirty Read */}
+                    <div className={`border rounded-md p-3 ${
+                      statusSnapshot.result_summary.anomalies.dirty_read.prevented 
+                        ? 'bg-green-50 border-green-200' 
+                        : 'bg-red-50 border-red-200'
+                    }`}>
+                      <div className="flex items-start justify-between mb-2">
+                        <p className="text-sm font-semibold">Dirty Read</p>
+                        <span className="text-lg">
+                          {statusSnapshot.result_summary.anomalies.dirty_read.prevented ? '✅' : '❌'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 mb-2">
+                        {statusSnapshot.result_summary.anomalies.dirty_read.description}
+                      </p>
+                      <p className={`text-xs font-semibold ${
+                        statusSnapshot.result_summary.anomalies.dirty_read.prevented 
+                          ? 'text-green-700' 
+                          : 'text-red-700'
+                      }`}>
+                        {statusSnapshot.result_summary.anomalies.dirty_read.prevented 
+                          ? 'PREVENTED' 
+                          : 'OCCURRED'}
+                      </p>
+                      {statusSnapshot.result_summary.anomalies.dirty_read.evidence?.length > 0 && (
+                        <div className="mt-2 text-xs bg-white rounded p-2 font-mono">
+                          {statusSnapshot.result_summary.anomalies.dirty_read.evidence.map((e, idx) => (
+                            <div key={idx}>
+                              {e.reader}: {e.saw_initial} → {e.saw_final}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Non-Repeatable Read */}
+                    <div className={`border rounded-md p-3 ${
+                      statusSnapshot.result_summary.anomalies.non_repeatable_read.prevented 
+                        ? 'bg-green-50 border-green-200' 
+                        : 'bg-red-50 border-red-200'
+                    }`}>
+                      <div className="flex items-start justify-between mb-2">
+                        <p className="text-sm font-semibold">Non-Repeatable Read</p>
+                        <span className="text-lg">
+                          {statusSnapshot.result_summary.anomalies.non_repeatable_read.prevented ? '✅' : '❌'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 mb-2">
+                        {statusSnapshot.result_summary.anomalies.non_repeatable_read.description}
+                      </p>
+                      <p className={`text-xs font-semibold ${
+                        statusSnapshot.result_summary.anomalies.non_repeatable_read.prevented 
+                          ? 'text-green-700' 
+                          : 'text-red-700'
+                      }`}>
+                        {statusSnapshot.result_summary.anomalies.non_repeatable_read.prevented 
+                          ? 'PREVENTED' 
+                          : 'OCCURRED'}
+                      </p>
+                      {statusSnapshot.result_summary.anomalies.non_repeatable_read.evidence?.length > 0 && (
+                        <div className="mt-2 text-xs bg-white rounded p-2 font-mono">
+                          {statusSnapshot.result_summary.anomalies.non_repeatable_read.evidence.map((e, idx) => (
+                            <div key={idx}>
+                              {e.reader}: {e.first_read} → {e.second_read} (Δ{e.difference})
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Phantom Read */}
+                    <div className={`border rounded-md p-3 ${
+                      statusSnapshot.result_summary.anomalies.phantom_read.prevented 
+                        ? 'bg-green-50 border-green-200' 
+                        : 'bg-red-50 border-red-200'
+                    }`}>
+                      <div className="flex items-start justify-between mb-2">
+                        <p className="text-sm font-semibold">Phantom Read</p>
+                        <span className="text-lg">
+                          {statusSnapshot.result_summary.anomalies.phantom_read.prevented ? '✅' : '❌'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 mb-2">
+                        {statusSnapshot.result_summary.anomalies.phantom_read.description}
+                      </p>
+                      <p className={`text-xs font-semibold ${
+                        statusSnapshot.result_summary.anomalies.phantom_read.prevented 
+                          ? 'text-green-700' 
+                          : 'text-red-700'
+                      }`}>
+                        {statusSnapshot.result_summary.anomalies.phantom_read.prevented 
+                          ? 'PREVENTED' 
+                          : 'OCCURRED'}
+                      </p>
+                      {statusSnapshot.result_summary.anomalies.phantom_read.evidence?.length > 0 && (
+                        <div className="mt-2 text-xs bg-white rounded p-2 font-mono">
+                          {statusSnapshot.result_summary.anomalies.phantom_read.evidence.map((e, idx) => (
+                            <div key={idx}>
+                              {e.reader}: {e.initial_result} → {e.second_result}
+                              {e.note && <div className="text-slate-500">({e.note})</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Lost Update */}
+                    <div className={`border rounded-md p-3 ${
+                      statusSnapshot.result_summary.anomalies.lost_update.prevented 
+                        ? 'bg-green-50 border-green-200' 
+                        : 'bg-red-50 border-red-200'
+                    }`}>
+                      <div className="flex items-start justify-between mb-2">
+                        <p className="text-sm font-semibold">Lost Update</p>
+                        <span className="text-lg">
+                          {statusSnapshot.result_summary.anomalies.lost_update.prevented ? '✅' : '❌'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 mb-2">
+                        {statusSnapshot.result_summary.anomalies.lost_update.description}
+                      </p>
+                      <p className={`text-xs font-semibold ${
+                        statusSnapshot.result_summary.anomalies.lost_update.prevented 
+                          ? 'text-green-700' 
+                          : 'text-red-700'
+                      }`}>
+                        {statusSnapshot.result_summary.anomalies.lost_update.prevented 
+                          ? 'PREVENTED' 
+                          : 'OCCURRED'}
+                      </p>
+                      {statusSnapshot.result_summary.anomalies.lost_update.evidence?.length > 0 && (
+                        <div className="mt-2 text-xs bg-white rounded p-2 font-mono">
+                          {statusSnapshot.result_summary.anomalies.lost_update.evidence.map((e, idx) => (
+                            <div key={idx}>
+                              Writers: {e.writers?.join(', ')}
+                              <div>Expected Δ{e.expected_delta}, Got Δ{e.actual_delta}</div>
+                              {e.note && <div className="text-slate-500">({e.note})</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <p className="text-sm font-semibold text-slate-700">Client Status</p>
                 {clientEntries.length === 0 && <p className="text-sm text-slate-500">Clients are spinning up...</p>}
