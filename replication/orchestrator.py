@@ -50,6 +50,8 @@ class ScenarioType(str, Enum):
     READ_READ = "READ_READ"
     READ_WRITE = "READ_WRITE"
     WRITE_WRITE = "WRITE_WRITE"
+    NON_REPEATABLE_READ = "NON_REPEATABLE_READ"  # Reader reads twice, writer updates in between
+    PHANTOM_READ = "PHANTOM_READ"  # Reader scans range twice, writer inserts in between
 
     @property
     def roles(self) -> Tuple[str, str]:
@@ -57,6 +59,8 @@ class ScenarioType(str, Enum):
             ScenarioType.READ_READ: ("read", "read"),
             ScenarioType.READ_WRITE: ("write", "read"),  # Writer first (on node_x), Reader second (on node_y)
             ScenarioType.WRITE_WRITE: ("write", "write"),
+            ScenarioType.NON_REPEATABLE_READ: ("read", "write"),  # Reader first, writer updates
+            ScenarioType.PHANTOM_READ: ("read_range", "insert"),  # Reader scans, writer inserts
         }
         return mapping[self]
 
@@ -113,6 +117,7 @@ class RunState:
         self.serialization_conflicts: List[str] = []
         self.actor_results: Dict[str, Dict[str, Any]] = {}
         self.actor_levels: Dict[str, IsolationLevel] = {}
+        self.execution_times: Dict[str, Dict[str, float]] = {}  # Track execution times per actor
 
     async def log(self, event: str, **details: Any) -> None:
         entry = {
@@ -263,6 +268,44 @@ class TransactionOrchestrator:
                 
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ and len(plans) == 2:
+                # NON_REPEATABLE_READ: Reader starts first with delay, writer updates in between reads
+                # This tests if the same row returns different values within one transaction
+                reader_plan = plans[0]  # First actor is reader
+                writer_plan = plans[1]  # Second actor is writer
+                
+                await state.log("non_repeatable_read_test_start",
+                    message="Reader starts first, writer will update between reads")
+                
+                # Start reader first (it will read, delay, then read again)
+                reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
+                
+                # Small delay to let reader perform first read
+                await asyncio.sleep(0.5)
+                
+                # Then start writer to update the row
+                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                
+                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
+            elif state.payload.scenario == ScenarioType.PHANTOM_READ and len(plans) == 2:
+                # PHANTOM_READ: Reader scans range first with delay, writer inserts in between scans
+                # This tests if new rows appear in repeated range scans within one transaction
+                reader_plan = plans[0]  # First actor is range reader
+                writer_plan = plans[1]  # Second actor is inserter
+                
+                await state.log("phantom_read_test_start",
+                    message="Reader scans range twice, writer will insert between scans")
+                
+                # Start reader first (it will scan, delay, then scan again)
+                reader_task = asyncio.create_task(self._execute_actor(state, reader_plan, order_id))
+                
+                # Small delay to let reader perform first scan
+                await asyncio.sleep(0.5)
+                
+                # Then start writer to insert a new row
+                writer_task = asyncio.create_task(self._execute_actor(state, writer_plan, order_id))
+                
+                results = await asyncio.gather(reader_task, writer_task, return_exceptions=True)
             else:
                 # Other scenarios: run concurrently
                 tasks = [asyncio.create_task(self._execute_actor(state, plan, order_id)) for plan in plans]
@@ -354,12 +397,15 @@ class TransactionOrchestrator:
         return plans
 
     async def _execute_actor(self, state: RunState, plan: ActorPlan, order_id: UUID) -> None:
+        # Track execution time
+        start_time = datetime.now(timezone.utc)
         state.client_status[plan.actor_id] = {
             "status": "running",
             "node": plan.node,
             "role": plan.role,
             "isolation_level": plan.isolation_level.sql_clause,
             "delay_seconds": plan.delay_seconds,
+            "start_time": start_time.isoformat(),
         }
         if plan.auto_increment:
             state.client_status[plan.actor_id]["auto_increment"] = True
@@ -380,6 +426,7 @@ class TransactionOrchestrator:
             await conn.execute(
                 f"BEGIN TRANSACTION ISOLATION LEVEL {plan.isolation_level.sql_clause}"
             )
+            txn_start = datetime.now(timezone.utc)  # Track transaction start (after BEGIN)
             await state.log(
                 "transaction_started",
                 actor_id=plan.actor_id,
@@ -387,8 +434,10 @@ class TransactionOrchestrator:
                 role=plan.role,
                 isolation=plan.isolation_level.sql_clause,
             )
-            if plan.role == "read":
+            if plan.role == "read" or plan.role == "read_range":
                 details = await self._perform_read(state, conn, plan, order_id)
+            elif plan.role == "insert":
+                details = await self._perform_insert(state, conn, plan, order_id)
             else:
                 details = await self._perform_write(state, conn, plan, order_id)
                 # For READ_WRITE scenario: writer delays before commit to allow
@@ -397,20 +446,41 @@ class TransactionOrchestrator:
                     await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=1.0)
                     await asyncio.sleep(1.0)  # Hold transaction open for dirty read testing
             await conn.execute("COMMIT")
+            txn_end = datetime.now(timezone.utc)  # Track transaction end (after COMMIT)
+            
+            # Calculate execution times
+            total_time = (txn_end - start_time).total_seconds()
+            txn_time = (txn_end - txn_start).total_seconds()
+            
             state.client_status[plan.actor_id]["status"] = "committed"
+            state.client_status[plan.actor_id]["end_time"] = txn_end.isoformat()
+            state.execution_times[plan.actor_id] = {
+                "total_seconds": total_time,
+                "transaction_seconds": txn_time,
+                "delay_seconds": plan.delay_seconds,
+                "net_execution_seconds": txn_time - plan.delay_seconds,
+            }
             state.actor_results[plan.actor_id] = {
                 "node": plan.node,
                 "role": plan.role,
                 "isolation_level": plan.isolation_level.sql_clause,
                 "delay_seconds": plan.delay_seconds,
+                "execution_time": state.execution_times[plan.actor_id],
                 "details": details,
             }
         except asyncio.CancelledError:
             await conn.execute("ROLLBACK")
+            end_time = datetime.now(timezone.utc)
             state.client_status[plan.actor_id]["status"] = "cancelled"
+            state.client_status[plan.actor_id]["end_time"] = end_time.isoformat()
+            state.execution_times[plan.actor_id] = {
+                "total_seconds": (end_time - start_time).total_seconds(),
+                "status": "cancelled",
+            }
             raise
         except Exception as exc:
             await conn.execute("ROLLBACK")
+            end_time = datetime.now(timezone.utc)
             sqlstate = getattr(exc, "sqlstate", None)
             if sqlstate == "40001":
                 state.serialization_conflicts.append(plan.actor_id)
@@ -420,6 +490,12 @@ class TransactionOrchestrator:
                 await state.log("client_error", actor_id=plan.actor_id, error=str(exc))
                 state.client_status[plan.actor_id]["status"] = "error"
                 state.status = "failed"
+            state.client_status[plan.actor_id]["end_time"] = end_time.isoformat()
+            state.execution_times[plan.actor_id] = {
+                "total_seconds": (end_time - start_time).total_seconds(),
+                "status": "error" if sqlstate != "40001" else "serialization_aborted",
+            }
+            if sqlstate != "40001":
                 raise
         finally:
             await conn.close()
@@ -518,6 +594,45 @@ class TransactionOrchestrator:
         plan: ActorPlan,
         order_id: UUID,
     ) -> Dict[str, Any]:
+        # For read_range (phantom read testing): scan a range of orders
+        if plan.role == "read_range":
+            # First range scan
+            rows_before = await conn.fetch(
+                "SELECT order_id, quantity FROM orders ORDER BY quantity LIMIT 10"
+            )
+            count_before = len(rows_before)
+            await state.log(
+                "range_scan_snapshot",
+                actor_id=plan.actor_id,
+                count=count_before,
+                rows=[{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_before],
+            )
+            
+            if plan.delay_seconds:
+                await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
+                await state.log("pg_sleep", actor_id=plan.actor_id, seconds=plan.delay_seconds)
+            
+            # Second range scan (should see phantom if writer inserted)
+            rows_after = await conn.fetch(
+                "SELECT order_id, quantity FROM orders ORDER BY quantity LIMIT 10"
+            )
+            count_after = len(rows_after)
+            await state.log(
+                "range_scan_complete",
+                actor_id=plan.actor_id,
+                initial_count=count_before,
+                final_count=count_after,
+                phantom_detected=count_after != count_before,
+            )
+            return {
+                "initial_count": count_before,
+                "final_count": count_after,
+                "phantom_detected": count_after != count_before,
+                "initial_rows": [{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_before],
+                "final_rows": [{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_after],
+            }
+        
+        # Standard single-row read (for non-repeatable read testing)
         snapshot = await conn.fetchrow(
             "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
             order_id,
@@ -536,13 +651,83 @@ class TransactionOrchestrator:
             order_id,
         )
         qty_after = follow_up["quantity"] if follow_up else None
+        non_repeatable = qty_before != qty_after
         await state.log(
             "read_complete",
             actor_id=plan.actor_id,
             initial_quantity=qty_before,
             final_quantity=qty_after,
+            non_repeatable_detected=non_repeatable,
         )
-        return {"initial_quantity": qty_before, "final_quantity": qty_after}
+        return {
+            "initial_quantity": qty_before,
+            "final_quantity": qty_after,
+            "non_repeatable_detected": non_repeatable,
+        }
+
+    async def _perform_insert(
+        self,
+        state: RunState,
+        conn: asyncpg.Connection,
+        plan: ActorPlan,
+        order_id: UUID,
+    ) -> Dict[str, Any]:
+        """Insert a new order for phantom read testing."""
+        # Generate a new order with a quantity value that fits in the range being scanned
+        new_order_id = uuid4()
+        new_quantity = plan.new_quantity if plan.new_quantity is not None else 5  # Default to middle range
+        
+        await state.log("insert_preparing", actor_id=plan.actor_id, new_order_id=str(new_order_id), quantity=new_quantity)
+        
+        if plan.delay_seconds:
+            await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
+            await state.log("pg_sleep", actor_id=plan.actor_id, seconds=plan.delay_seconds)
+        
+        # Insert the new order
+        payload_json = json.dumps({})
+        await conn.execute(
+            """
+            INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
+            VALUES ($1, $2, $3::jsonb, NOW(), NOW())
+            ON CONFLICT (order_id) DO NOTHING
+            """,
+            new_order_id,
+            new_quantity,
+            payload_json,
+        )
+        
+        # Write to op_log for replication
+        origin_node = self.settings.node_name
+        lamport_value = await lamport_utils.next_lamport(conn, origin_node)
+        op_payload = {"quantity": new_quantity, "payload": {}}
+        op_payload_json = json.dumps(op_payload)
+        await conn.execute(
+            """
+            INSERT INTO op_log (
+                op_id, origin_node, op_type, table_name, row_id, payload,
+                ts, lamport, applied, applied_ts
+            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),$7,false,NULL)
+            ON CONFLICT (op_id) DO NOTHING
+            """,
+            uuid4(),
+            origin_node,
+            "upsert",
+            "orders",
+            new_order_id,
+            op_payload_json,
+            lamport_value,
+        )
+        
+        await state.log(
+            "insert_complete",
+            actor_id=plan.actor_id,
+            new_order_id=str(new_order_id),
+            quantity=new_quantity,
+        )
+        return {
+            "inserted_order_id": str(new_order_id),
+            "quantity": new_quantity,
+        }
 
     async def _perform_write(
         self,
@@ -658,6 +843,24 @@ class TransactionOrchestrator:
                 verdict = f"⚠️ Serialization conflicts detected: {conflict_count}. {committed_count} writer(s) committed."
             else:
                 verdict = f"Writers status: {committed_count} committed, {conflict_count} conflicts."
+        elif state.payload.scenario == ScenarioType.NON_REPEATABLE_READ:
+            # Check if non-repeatable read was detected
+            for actor_id, result in state.actor_results.items():
+                if result.get("role") == "read":
+                    details = result.get("details", {})
+                    if details.get("non_repeatable_detected"):
+                        verdict = "⚠️ Non-repeatable read detected! Same row returned different values within transaction."
+                    else:
+                        verdict = "✅ No non-repeatable read. Isolation level prevented the anomaly."
+        elif state.payload.scenario == ScenarioType.PHANTOM_READ:
+            # Check if phantom read was detected
+            for actor_id, result in state.actor_results.items():
+                if result.get("role") == "read_range":
+                    details = result.get("details", {})
+                    if details.get("phantom_detected"):
+                        verdict = f"⚠️ Phantom read detected! Row count changed from {details.get('initial_count')} to {details.get('final_count')}."
+                    else:
+                        verdict = "✅ No phantom read. Isolation level prevented the anomaly."
         
         return {
             "order_id": str(order_id),
@@ -669,6 +872,7 @@ class TransactionOrchestrator:
             "isolation_overview": isolation_overview,
             "read_uncommitted_note": note,
             "serialization_conflicts": state.serialization_conflicts,
+            "execution_times": state.execution_times,
             "verdict": verdict,
             "replication_note": "Node snapshots reflect latest pull at query time; minor lag is expected.",
         }

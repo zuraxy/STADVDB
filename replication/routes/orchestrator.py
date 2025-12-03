@@ -127,6 +127,42 @@ class RunOrchestrationRequest(BaseModel):
                     auto_increment=True,
                 ),
             ]
+        elif scenario == ScenarioType.NON_REPEATABLE_READ:
+            # Reader reads twice (with delay), writer updates in between
+            # This tests if the same row returns different values within one transaction
+            write_value = self.new_value_1 if self.new_value_1 is not None else 99
+            self.actors = [
+                TransactionActorModel(
+                    name="reader",
+                    node=self.node_x or "node0",
+                    isolation_level=isolation,
+                    delay_seconds=2.0,  # Delay between reads to allow writer to commit
+                ),
+                TransactionActorModel(
+                    name="writer",
+                    node=self.node_y or "node1",
+                    isolation_level=isolation,
+                    new_quantity=write_value,
+                ),
+            ]
+        elif scenario == ScenarioType.PHANTOM_READ:
+            # Range reader scans twice (with delay), writer inserts in between
+            # This tests if new rows appear in repeated range scans
+            insert_value = self.new_value_1 if self.new_value_1 is not None else 5
+            self.actors = [
+                TransactionActorModel(
+                    name="range_reader",
+                    node=self.node_x or "node0",
+                    isolation_level=isolation,
+                    delay_seconds=2.0,  # Delay between scans to allow writer to commit
+                ),
+                TransactionActorModel(
+                    name="inserter",
+                    node=self.node_y or "node1",
+                    isolation_level=isolation,
+                    new_quantity=insert_value,  # Quantity for the new row
+                ),
+            ]
         
         # Validate the generated actors
         if self.actors:
@@ -135,6 +171,10 @@ class RunOrchestrationRequest(BaseModel):
                 if role == "write" and actor.new_quantity is None and not actor.auto_increment:
                     raise ValueError(
                         f"Actor '{actor.name}' requires new_quantity or auto_increment for write operations"
+                    )
+                if role == "insert" and actor.new_quantity is None:
+                    raise ValueError(
+                        f"Actor '{actor.name}' requires new_quantity for insert operations"
                     )
         
         return self
@@ -211,11 +251,15 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
     Execute a transaction on THIS node's local database.
     Called by the orchestrator on the master node to run actors on slave nodes.
     """
+    from datetime import datetime, timezone
+    
     pool = get_pool()
+    start_time = datetime.now(timezone.utc)
     result: Dict[str, Any] = {
         "actor_id": payload.actor_id,
         "role": payload.role,
         "status": "running",
+        "start_time": start_time.isoformat(),
     }
     
     conn = await pool.acquire()
@@ -223,6 +267,7 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
         await conn.execute(
             f"BEGIN TRANSACTION ISOLATION LEVEL {payload.isolation_level.sql_clause}"
         )
+        txn_start = datetime.now(timezone.utc)
         
         if payload.role == "read":
             # First read with FOR SHARE lock
@@ -244,10 +289,100 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
             qty_after = follow_up["quantity"] if follow_up else None
             
             await conn.execute("COMMIT")
+            txn_end = datetime.now(timezone.utc)
+            
             result["status"] = "committed"
+            result["end_time"] = txn_end.isoformat()
             result["details"] = {
                 "initial_quantity": qty_before,
                 "final_quantity": qty_after,
+                "non_repeatable_detected": qty_before != qty_after,
+            }
+        
+        elif payload.role == "read_range":
+            # Range scan for phantom read testing
+            rows_before = await conn.fetch(
+                "SELECT order_id, quantity FROM orders ORDER BY quantity LIMIT 10"
+            )
+            count_before = len(rows_before)
+            
+            # Optional delay for concurrency testing
+            if payload.delay_seconds > 0:
+                await conn.execute("SELECT pg_sleep($1)", payload.delay_seconds)
+            
+            # Second range scan
+            rows_after = await conn.fetch(
+                "SELECT order_id, quantity FROM orders ORDER BY quantity LIMIT 10"
+            )
+            count_after = len(rows_after)
+            
+            await conn.execute("COMMIT")
+            txn_end = datetime.now(timezone.utc)
+            
+            result["status"] = "committed"
+            result["end_time"] = txn_end.isoformat()
+            result["details"] = {
+                "initial_count": count_before,
+                "final_count": count_after,
+                "phantom_detected": count_after != count_before,
+                "initial_rows": [{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_before],
+                "final_rows": [{"order_id": str(r["order_id"]), "quantity": r["quantity"]} for r in rows_after],
+            }
+            
+        elif payload.role == "insert":
+            # Insert new order for phantom read testing
+            new_order_id = uuid4()
+            new_quantity = payload.new_quantity if payload.new_quantity is not None else 5
+            
+            if payload.delay_seconds > 0:
+                await conn.execute("SELECT pg_sleep($1)", payload.delay_seconds)
+            
+            # Get settings for origin node
+            settings = get_settings()
+            origin_node = settings.node_name
+            
+            # Insert the new order
+            payload_json = json.dumps({})
+            await conn.execute(
+                """
+                INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
+                VALUES ($1, $2, $3::jsonb, NOW(), NOW())
+                ON CONFLICT (order_id) DO NOTHING
+                """,
+                new_order_id,
+                new_quantity,
+                payload_json,
+            )
+            
+            # Write to op_log for replication
+            lamport_value = await lamport_utils.next_lamport(conn, origin_node)
+            op_payload_data = {"quantity": new_quantity, "payload": {}}
+            op_payload_json = json.dumps(op_payload_data)
+            await conn.execute(
+                """
+                INSERT INTO op_log (
+                    op_id, origin_node, op_type, table_name, row_id, payload,
+                    ts, lamport, applied, applied_ts
+                ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),$7,false,NULL)
+                ON CONFLICT (op_id) DO NOTHING
+                """,
+                uuid4(),
+                origin_node,
+                "upsert",
+                "orders",
+                new_order_id,
+                op_payload_json,
+                lamport_value,
+            )
+            
+            await conn.execute("COMMIT")
+            txn_end = datetime.now(timezone.utc)
+            
+            result["status"] = "committed"
+            result["end_time"] = txn_end.isoformat()
+            result["details"] = {
+                "inserted_order_id": str(new_order_id),
+                "quantity": new_quantity,
             }
             
         elif payload.role == "write":
@@ -313,13 +448,27 @@ async def execute_local_transaction(request: Request, payload: LocalTransactionR
                 await asyncio.sleep(payload.delay_before_commit)
             
             await conn.execute("COMMIT")
+            txn_end = datetime.now(timezone.utc)
+            
             result["status"] = "committed"
+            result["end_time"] = txn_end.isoformat()
             result["details"] = {
                 "locked_quantity": current_qty,
                 "committed_quantity": final_quantity,
             }
         else:
             raise ValueError(f"Unknown role: {payload.role}")
+        
+        # Calculate execution times
+        end_time = datetime.now(timezone.utc)
+        total_time = (end_time - start_time).total_seconds()
+        txn_time = (txn_end - txn_start).total_seconds()
+        result["execution_time"] = {
+            "total_seconds": total_time,
+            "transaction_seconds": txn_time,
+            "delay_seconds": payload.delay_seconds,
+            "net_execution_seconds": txn_time - payload.delay_seconds,
+        }
             
     except Exception as exc:
         await conn.execute("ROLLBACK")
