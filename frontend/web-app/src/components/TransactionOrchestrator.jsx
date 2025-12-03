@@ -30,6 +30,16 @@ const scenarioOptions = [
     label: 'Writer vs Writer',
     description: 'Two writers concurrently increment the same row. Each reads current value and adds 1. Tests for lost updates and serialization conflicts.',
   },
+  {
+    id: 'NON_REPEATABLE_READ',
+    label: 'Non-Repeatable Read Test',
+    description: 'Reader reads same row twice with delay. Writer updates between reads. Tests if same data changes within transaction.',
+  },
+  {
+    id: 'PHANTOM_READ',
+    label: 'Phantom Read Test',
+    description: 'Reader scans range twice with delay. Writer inserts row between scans. Tests if new rows appear within transaction.',
+  },
 ];
 
 const isolationLevels = [
@@ -82,12 +92,16 @@ export function TransactionOrchestrator() {
   const nodeXLabel = useMemo(() => {
     if (scenario === 'READ_READ') return 'Reader A Node';
     if (scenario === 'READ_WRITE') return 'Writer Node (Master)';
+    if (scenario === 'NON_REPEATABLE_READ') return 'Reader Node';
+    if (scenario === 'PHANTOM_READ') return 'Range Reader Node';
     return 'Writer A Node';
   }, [scenario]);
 
   const nodeYLabel = useMemo(() => {
     if (scenario === 'READ_READ') return 'Reader B Node';
     if (scenario === 'READ_WRITE') return 'Reader Node (Slave)';
+    if (scenario === 'NON_REPEATABLE_READ') return 'Writer Node';
+    if (scenario === 'PHANTOM_READ') return 'Inserter Node';
     return 'Writer B Node';
   }, [scenario]);
 
@@ -684,6 +698,27 @@ export function TransactionOrchestrator() {
                       <div className="md:col-span-2 p-3 border rounded-md bg-white">
                         <p className="text-xs uppercase text-slate-500">Verdict</p>
                         <p className="text-sm text-slate-700">{statusSnapshot.result_summary.verdict}</p>
+                      </div>
+                    )}
+                    {statusSnapshot.result_summary.execution_times && Object.keys(statusSnapshot.result_summary.execution_times).length > 0 && (
+                      <div className="md:col-span-2 p-3 border rounded-md bg-blue-50">
+                        <p className="text-xs uppercase text-slate-500 mb-2 flex items-center gap-1">
+                          <Clock className="w-3 h-3" />
+                          Execution Times
+                        </p>
+                        <div className="space-y-2">
+                          {Object.entries(statusSnapshot.result_summary.execution_times).map(([actor, times]) => (
+                            <div key={actor} className="text-xs">
+                              <p className="font-semibold text-slate-700">{actor}:</p>
+                              <div className="ml-3 grid grid-cols-2 gap-x-4 gap-y-1 text-slate-600">
+                                <span>Total: {times.total_seconds?.toFixed(3)}s</span>
+                                <span>Transaction: {times.transaction_seconds?.toFixed(3)}s</span>
+                                <span>Delay: {times.delay_seconds?.toFixed(3)}s</span>
+                                <span className="font-medium text-blue-700">Net: {times.net_execution_seconds?.toFixed(3)}s</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
