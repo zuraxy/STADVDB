@@ -636,16 +636,22 @@ class TransactionOrchestrator:
         plan: ActorPlan,
         order_id: UUID,
     ) -> Dict[str, Any]:
-        # For READ_READ scenario, use simple SELECT (no locking overhead)
-        # For scenarios with writers, use FOR SHARE to demonstrate read locking
-        if state.payload.scenario == ScenarioType.READ_READ:
+        # For NON_REPEATABLE_READ and PHANTOM_READ: don't use FOR SHARE
+        # This allows writers to modify data during the reader's sleep, enabling anomaly detection
+        # For READ_WRITE: use FOR SHARE to demonstrate read locking behavior
+        # For READ_READ: use simple SELECT (no locking overhead)
+        use_for_share = (
+            state.payload.scenario == ScenarioType.READ_WRITE
+        )
+        
+        if use_for_share:
             snapshot = await conn.fetchrow(
-                "SELECT quantity FROM orders WHERE order_id = $1",
+                "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
                 order_id,
             )
         else:
             snapshot = await conn.fetchrow(
-                "SELECT quantity FROM orders WHERE order_id = $1 FOR SHARE",
+                "SELECT quantity FROM orders WHERE order_id = $1",
                 order_id,
             )
         qty_before = snapshot["quantity"] if snapshot else None
