@@ -442,6 +442,26 @@ class TransactionOrchestrator:
     async def _execute_actor(self, state: RunState, plan: ActorPlan, order_id: UUID) -> None:
         import time
         
+        # Retry logic for serialization conflicts (up to 3 attempts)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                await self._execute_actor_once(state, plan, order_id, attempt)
+                return  # Success - exit retry loop
+            except Exception as exc:
+                sqlstate = getattr(exc, "sqlstate", None)
+                if sqlstate == "40001" and attempt < max_retries - 1:
+                    # Serialization conflict - retry
+                    await state.log("serialization_retry", actor_id=plan.actor_id, attempt=attempt + 1)
+                    await asyncio.sleep(0.05 * (attempt + 1))  # Brief exponential backoff
+                    continue
+                else:
+                    # Non-retryable error or max retries reached
+                    raise
+
+    async def _execute_actor_once(self, state: RunState, plan: ActorPlan, order_id: UUID, attempt: int = 0) -> None:
+        import time
+        
         start_time = time.perf_counter()
         sleep_time_ms = 0.0
         
