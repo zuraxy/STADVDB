@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Plus, Search, Edit, Trash2, Save, X, Loader2, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Save, X, Loader2, AlertCircle, CheckCircle2, ChevronLeft, ChevronRight, Eye } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from './ui/table';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription } from './ui/alert';
-import { fetchAllOrders, createOrder, updateOrder, deleteOrder } from '../services/api';
+import { fetchAllOrders, createOrder, updateOrder, deleteOrder, fetchOrder } from '../services/api';
 
 export function CrudPage() {
   const [allOrders, setAllOrders] = useState([]);
@@ -19,6 +19,12 @@ export function CrudPage() {
   const [formData, setFormData] = useState({ quantity: '', payload: '' });
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
+  
+  // Single order lookup state
+  const [lookupId, setLookupId] = useState('');
+  const [lookupResult, setLookupResult] = useState(null);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupError, setLookupError] = useState(null);
 
   const loadOrders = async () => {
     setLoading(true);
@@ -31,6 +37,36 @@ export function CrudPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleLookup = async () => {
+    if (!lookupId.trim()) {
+      setLookupError('Please enter an Order ID');
+      return;
+    }
+    
+    setLookupLoading(true);
+    setLookupError(null);
+    setLookupResult(null);
+    
+    try {
+      const result = await fetchOrder(lookupId.trim());
+      if (result) {
+        setLookupResult(result);
+      } else {
+        setLookupError('Order not found');
+      }
+    } catch (err) {
+      setLookupError(err.message || 'Failed to fetch order');
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
+  const clearLookup = () => {
+    setLookupId('');
+    setLookupResult(null);
+    setLookupError(null);
   };
 
   useEffect(() => {
@@ -163,17 +199,103 @@ export function CrudPage() {
             </Button>
           </div>
         </CardHeader>
-        <CardContent>
-          {/* Search Bar */}
+        <CardContent className="space-y-4">
+          {/* Search Bar (filters list) */}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
               type="text"
-              placeholder="Search by Order ID..."
+              placeholder="Filter orders in list..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-10"
             />
+          </div>
+          
+          {/* Single Order Lookup */}
+          <div className="border rounded-lg p-4 bg-slate-50">
+            <div className="flex items-center gap-2 mb-2">
+              <Eye className="w-4 h-4 text-cyan-600" />
+              <span className="font-medium text-sm">Lookup Single Order by ID</span>
+            </div>
+            <div className="flex gap-2">
+              <Input
+                type="text"
+                placeholder="Enter full Order ID (UUID)..."
+                value={lookupId}
+                onChange={(e) => setLookupId(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleLookup()}
+                className="flex-1"
+              />
+              <Button 
+                onClick={handleLookup} 
+                disabled={lookupLoading}
+                className="bg-cyan-600 hover:bg-cyan-700"
+              >
+                {lookupLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Lookup'}
+              </Button>
+              {(lookupResult || lookupError) && (
+                <Button variant="outline" onClick={clearLookup}>
+                  <X className="w-4 h-4" />
+                </Button>
+              )}
+            </div>
+            
+            {/* Lookup Error */}
+            {lookupError && (
+              <div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
+                {lookupError}
+              </div>
+            )}
+            
+            {/* Lookup Result */}
+            {lookupResult && (
+              <div className="mt-3 p-3 bg-white border rounded-lg">
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div>
+                    <span className="text-gray-500">Order ID:</span>
+                    <p className="font-mono text-xs break-all">{lookupResult.order_id}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Quantity:</span>
+                    <p className="font-semibold text-lg">{lookupResult.quantity}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Created:</span>
+                    <p>{new Date(lookupResult.created_at).toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Updated:</span>
+                    <p>{new Date(lookupResult.updated_at).toLocaleString()}</p>
+                  </div>
+                  {lookupResult.payload && (
+                    <div className="col-span-2">
+                      <span className="text-gray-500">Payload:</span>
+                      <pre className="text-xs bg-slate-100 p-2 rounded mt-1 overflow-auto">
+                        {JSON.stringify(lookupResult.payload, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={() => startEdit(lookupResult)}
+                  >
+                    <Edit className="w-3 h-3 mr-1" /> Edit
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    variant="outline" 
+                    className="text-red-600 hover:text-red-700"
+                    onClick={() => handleDelete(lookupResult.order_id)}
+                  >
+                    <Trash2 className="w-3 h-3 mr-1" /> Delete
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

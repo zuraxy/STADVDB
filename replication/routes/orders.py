@@ -543,6 +543,40 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 	return OrderRead(**response)
 
 
+async def _fetch_orders_from_partitions(request: Request, settings: Settings) -> list[OrderRead]:
+	"""Fetch orders from Node1 and Node2 and combine them.
+	
+	This is used as a fallback when Node0 (master) is unavailable.
+	Node1 has orders with qty 1-5, Node2 has orders with qty >= 6.
+	Combined, they should equal all orders.
+	"""
+	all_orders = []
+	
+	for peer in settings.peer_nodes:
+		if peer.name.lower() == settings.node_name.lower():
+			continue
+		
+		try:
+			# Use /orders/local/all to get that node's local data directly
+			orders_data = await request.app.state.http_client.get_json_safe(
+				f"{peer.base_url}/orders/local/all", 
+				default=[]
+			)
+			if orders_data:
+				for order_data in orders_data:
+					try:
+						all_orders.append(OrderRead(**order_data))
+					except Exception:
+						pass  # Skip malformed orders
+				_LOGGER.info("Fetched %d orders from %s", len(orders_data), peer.name)
+		except Exception as exc:
+			_LOGGER.warning("Failed to fetch orders from %s: %s", peer.name, exc)
+	
+	# Sort by updated_at descending (most recent first)
+	all_orders.sort(key=lambda o: o.updated_at, reverse=True)
+	return all_orders
+
+
 @router.get("/orders", response_model=list[OrderRead])
 async def list_orders(request: Request):
 	settings = get_settings()
@@ -553,11 +587,36 @@ async def list_orders(request: Request):
 		return response
 	
 	pool = get_pool()
-	if _is_leader(settings):
-		orders, _ = await crud.list_orders(pool, page=1, limit=1000000)
-		return orders
-	response = await _forward(request, "GET", "/orders")
-	return response
+	
+	# Try local database first
+	try:
+		if _is_leader(settings):
+			orders, _ = await crud.list_orders(pool, page=1, limit=1000000)
+			return orders
+	except Exception as exc:
+		# Local DB failed - if we're the leader, try fetching from partitions
+		if _is_leader(settings) and _is_database_error(exc):
+			_LOGGER.warning("Leader DB unavailable, fetching from partition nodes: %s", exc)
+			try:
+				return await _fetch_orders_from_partitions(request, settings)
+			except Exception as fallback_exc:
+				_LOGGER.error("Failed to fetch from partitions: %s", fallback_exc)
+				raise HTTPException(
+					status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+					detail="Database temporarily unavailable. Please try again."
+				)
+		raise
+	
+	# Not leader - forward to leader, with fallback to partitions
+	try:
+		response = await _forward(request, "GET", "/orders")
+		return response
+	except HTTPException as exc:
+		if exc.status_code in (502, 503, 504):
+			# Leader unavailable, try fetching from partitions
+			_LOGGER.warning("Leader unavailable for list, fetching from partitions")
+			return await _fetch_orders_from_partitions(request, settings)
+		raise
 
 
 @router.get("/orders/local/all", response_model=list[OrderRead])
@@ -584,10 +643,52 @@ async def read_order(order_id: UUID, request: Request, local: bool = False) -> O
 		return OrderRead(**response) if response else None
 	
 	pool = get_pool()
-	if _is_leader(settings) or local:
-		return await crud.get_order(pool, order_id)
-	response = await _forward(request, "GET", f"/orders/{order_id}")
-	return OrderRead(**response) if response else None
+	
+	# Try local database first
+	try:
+		if _is_leader(settings) or local:
+			return await crud.get_order(pool, order_id)
+	except Exception as exc:
+		# Local DB failed - if we're the leader, try fetching from partition nodes
+		if _is_leader(settings) and _is_database_error(exc):
+			_LOGGER.warning("Leader DB unavailable for read, trying partitions: %s", exc)
+			# Try to find the order in partition nodes
+			for peer in settings.peer_nodes:
+				if peer.name.lower() == settings.node_name.lower():
+					continue
+				try:
+					order_data = await request.app.state.http_client.get_json_safe(
+						f"{peer.base_url}/orders/{order_id}?local=true",
+						default=None
+					)
+					if order_data:
+						return OrderRead(**order_data)
+				except Exception:
+					continue
+			return None  # Order not found in any partition
+		raise
+	
+	# Not leader - forward to leader, with fallback to partitions
+	try:
+		response = await _forward(request, "GET", f"/orders/{order_id}")
+		return OrderRead(**response) if response else None
+	except HTTPException as exc:
+		if exc.status_code in (502, 503, 504):
+			# Leader unavailable, try partitions
+			for peer in settings.peer_nodes:
+				if peer.name.lower() == settings.node_name.lower():
+					continue
+				try:
+					order_data = await request.app.state.http_client.get_json_safe(
+						f"{peer.base_url}/orders/{order_id}?local=true",
+						default=None
+					)
+					if order_data:
+						return OrderRead(**order_data)
+				except Exception:
+					continue
+			return None
+		raise
 
 
 @router.put("/orders/{order_id}", response_model=OrderRead)
