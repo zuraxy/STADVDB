@@ -617,8 +617,19 @@ class ClusterManager:
             if node_name.lower() == self.settings.default_master.lower():
                 await self._restore_default_leader(node_name)
             else:
-                # Regular node recovery
-                await self._trigger_node_recovery(node_name)
+                # Check if the current leader is down - if so, we need an election
+                current_leader_state = self._nodes.get(self._current_leader)
+                leader_is_down = (
+                    current_leader_state is None or 
+                    not current_leader_state.effective_alive
+                )
+                
+                if leader_is_down:
+                    # Current leader is down, trigger election so this node can become leader
+                    await self._start_leader_election()
+                else:
+                    # Leader is alive, just do regular node recovery
+                    await self._trigger_node_recovery(node_name)
         
         return True
 

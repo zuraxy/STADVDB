@@ -412,7 +412,7 @@ export function DatabaseDashboard() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>Node 1 - Central Database</CardTitle>
+                <CardTitle>Node 0 - Central Database</CardTitle>
                 <CardDescription>Complete dataset with all orders</CardDescription>
               </div>
               <Badge variant="outline" className={getBadgeClasses(getNodeStatusById('node0'))}>

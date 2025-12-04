@@ -250,11 +250,18 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 		return await crud.create_order(pool, order, settings.node_name)
 	
 	# This node can't handle the partition - forward to the correct partition node
-	# If we're the leader, we need to route to the correct partition node
+	# If we're the leader (or promoted), we need to route to the correct partition node
 	if _is_leader(settings) or promoted:
-		# Forward to the target partition node
-		response = await _forward_to_node(request, target_node, "POST", "/orders", payload=order.model_dump())
-		return OrderRead(**response)
+		# Check if target partition node is available
+		target_url = _get_node_url(settings, target_node)
+		if target_url:
+			# Target node is available - forward to it
+			response = await _forward_to_node(request, target_node, "POST", "/orders", payload=order.model_dump())
+			return OrderRead(**response)
+		else:
+			# Target node is down - as leader, handle locally as fallback
+			# The replication system will sync to the target node when it comes back
+			return await crud.create_order(pool, order, settings.node_name)
 	
 	# We're not the leader and can't handle this partition - forward to leader
 	response = await _forward(request, "POST", "/orders", payload=order.model_dump())
