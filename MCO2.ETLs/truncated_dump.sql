@@ -60,6 +60,15 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
+-- Drop existing tables, indexes, and constraints if they exist
+--
+
+DROP TABLE IF EXISTS public.log_acknowledgements CASCADE;
+DROP TABLE IF EXISTS public.op_log CASCADE;
+DROP TABLE IF EXISTS public.orders CASCADE;
+DROP TABLE IF EXISTS public.replication_cursors CASCADE;
+
+--
 -- TOC entry 223 (class 1259 OID 17624)
 -- Name: log_acknowledgements; Type: TABLE; Schema: public; Owner: postgres
 --
@@ -109,6 +118,18 @@ CREATE TABLE public.orders (
 
 
 ALTER TABLE public.orders OWNER TO postgres;
+
+--
+-- TOC entry: replication_cursors; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.replication_cursors (
+    node text PRIMARY KEY,
+    last_lamport bigint NOT NULL
+);
+
+
+ALTER TABLE public.replication_cursors OWNER TO postgres;
 
 --
 -- TOC entry 4977 (class 0 OID 17624)
@@ -100172,7 +100193,7 @@ ALTER TABLE ONLY public.orders
 -- Name: idx_oplog_lamport; Type: INDEX; Schema: public; Owner: postgres
 --
 
-CREATE INDEX idx_oplog_lamport ON public.op_log USING btree (lamport);
+CREATE INDEX IF NOT EXISTS idx_oplog_lamport ON public.op_log USING btree (lamport);
 
 
 --
@@ -100180,7 +100201,7 @@ CREATE INDEX idx_oplog_lamport ON public.op_log USING btree (lamport);
 -- Name: idx_oplog_origin_ts; Type: INDEX; Schema: public; Owner: postgres
 --
 
-CREATE INDEX idx_oplog_origin_ts ON public.op_log USING btree (origin_node, ts);
+CREATE INDEX IF NOT EXISTS idx_oplog_origin_ts ON public.op_log USING btree (origin_node, ts);
 
 
 --
