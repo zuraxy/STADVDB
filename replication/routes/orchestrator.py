@@ -130,7 +130,7 @@ class RunOrchestrationRequest(BaseModel):
         elif scenario == ScenarioType.NON_REPEATABLE_READ:
             # Reader reads twice (with delay), writer updates in between
             # This tests if the same row returns different values within one transaction
-            write_value = self.new_value_1 if self.new_value_1 is not None else 99
+            write_value = self.new_value_1 if self.new_value_1 is not None else 4  # Default to 4 (within qty_1to5 constraint)
             self.actors = [
                 TransactionActorModel(
                     name="reader",

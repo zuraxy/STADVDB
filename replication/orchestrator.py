@@ -716,14 +716,18 @@ class TransactionOrchestrator:
         # Write to op_log for replication
         origin_node = self.settings.node_name
         lamport_value = await lamport_utils.next_lamport(conn, origin_node)
-        op_payload = {"quantity": final_quantity, "payload": current_payload}
+        op_payload = {
+            "quantity": final_quantity, 
+            "payload": current_payload,
+            "is_increment": plan.auto_increment  # Mark increment operations for proper replication
+        }
         op_payload_json = json.dumps(op_payload)
         await conn.execute(
             """
             INSERT INTO op_log (
                 op_id, origin_node, op_type, table_name, row_id, payload,
                 ts, lamport, applied, applied_ts
-            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),$7,false,NULL)
+            ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW(),$7,true,NOW())
             ON CONFLICT (op_id) DO NOTHING
             """,
             uuid4(),

@@ -307,20 +307,56 @@ async def apply_op_tx(conn, op_record: OpRecord, use_transaction: bool = True) -
 			order_payload = payload.get("payload")
 			# Convert payload dict to JSON string for JSONB column
 			order_payload_json = json.dumps(order_payload) if order_payload is not None else None
-			await conn.execute(
-				"""
-				INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
-				VALUES ($1,$2,$3::jsonb,$4,$4)
-				ON CONFLICT (order_id)
-				DO UPDATE SET quantity = EXCLUDED.quantity,
-							  payload = EXCLUDED.payload,
-							  updated_at = EXCLUDED.updated_at
-				""",
-				op_record.row_id,
-				quantity,
-				order_payload_json,
-				op_record.ts,
-			)
+			
+			# Check if this is an increment operation (for WRITE_WRITE scenarios)
+			# If the payload contains 'is_increment', we need to apply it as an increment
+			# rather than a blind overwrite to avoid lost updates
+			is_increment = payload.get("is_increment", False)
+			
+			if is_increment:
+				# For increment operations: Always increment, even on INSERT
+				# First try to update existing row
+				result = await conn.execute(
+					"""
+					UPDATE orders 
+					SET quantity = quantity + 1,
+						payload = $2::jsonb,
+						updated_at = $3
+					WHERE order_id = $1
+					""",
+					op_record.row_id,
+					order_payload_json,
+					op_record.ts,
+				)
+				# If no row was updated, insert with the quantity value from the operation
+				if result == "UPDATE 0":
+					await conn.execute(
+						"""
+						INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
+						VALUES ($1, $2, $3::jsonb, $4, $4)
+						ON CONFLICT (order_id) DO NOTHING
+						""",
+						op_record.row_id,
+						quantity,
+						order_payload_json,
+						op_record.ts,
+					)
+			else:
+				# For regular set operations: Use last-write-wins
+				await conn.execute(
+					"""
+					INSERT INTO orders (order_id, quantity, payload, created_at, updated_at)
+					VALUES ($1,$2,$3::jsonb,$4,$4)
+					ON CONFLICT (order_id)
+					DO UPDATE SET quantity = EXCLUDED.quantity,
+								  payload = EXCLUDED.payload,
+								  updated_at = EXCLUDED.updated_at
+					""",
+					op_record.row_id,
+					quantity,
+					order_payload_json,
+					op_record.ts,
+				)
 		await mark_op_applied(conn, op_record.op_id)
 
 	if use_transaction:

@@ -21,7 +21,7 @@ test.describe('Isolation Level Anomaly Tests', () => {
         isolation_level: 'READ_COMMITTED',
         node_x: 'node0',
         node_y: 'node1',
-        new_value_1: 999,  // Writer will update to this value
+        new_value_1: 4,  // Writer will update to this value (must be 1-5 due to qty_1to5 constraint)
       }
     });
     
@@ -65,7 +65,7 @@ test.describe('Isolation Level Anomaly Tests', () => {
         isolation_level: 'REPEATABLE_READ',
         node_x: 'node0',
         node_y: 'node1',
-        new_value_1: 888,
+        new_value_1: 3,  // Must be 1-5 due to qty_1to5 constraint
       }
     });
     
