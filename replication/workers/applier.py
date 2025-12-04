@@ -80,8 +80,10 @@ class ApplierWorker:
     async def apply_once(self) -> None:
         # Skip processing if node is paused (simulated as down)
         if self._is_paused and self._is_paused():
+            _LOGGER.debug("APPLIER: Skipping - node is paused")
             return
         
+        _LOGGER.info("APPLIER: apply_once starting, node=%s is_master=%s", self._local_node(), self._is_master())
         await self._refresh_cursor_cache()
         async with self.pool.acquire() as conn:
             while True:
@@ -89,9 +91,12 @@ class ApplierWorker:
                 async with conn.transaction():
                     op = await self._next_locked_op(conn)
                     if not op:
+                        _LOGGER.info("APPLIER: No unapplied ops found")
                         self.last_error = None
                         return
+                    _LOGGER.info("APPLIER: Processing op=%s lamport=%s origin=%s", op.op_id, op.lamport, op.origin_node)
                     outcome = await self._process_locked_op(conn, op)
+                    _LOGGER.info("APPLIER: Outcome for op=%s: %s", op.op_id, outcome)
                     if outcome == "retry":
                         retry_requested = True
                         self.retry_count += 1
@@ -148,6 +153,10 @@ class ApplierWorker:
         self._attempts.pop(op_id, None)
 
     async def _partition_decision(self, conn, op, attempt: int) -> PartitionDecision:
+        _LOGGER.info(
+            "APPLIER_DEBUG: Processing op=%s type=%s origin=%s payload=%s local_node=%s is_master=%s",
+            op.op_id, op.op_type, op.origin_node, op.payload, self._local_node(), self._is_master()
+        )
         if op.op_type == "delete":
             return PartitionDecision("apply", "delete", None, self._local_node())
         if self._is_master():
@@ -160,8 +169,11 @@ class ApplierWorker:
                 return PartitionDecision("apply", "target_node", self._extract_quantity(payload), target_lower)
             return PartitionDecision("skip", "target_node", self._extract_quantity(payload), target_lower, "target_node_mismatch")
         quantity = self._extract_quantity(payload)
+        _LOGGER.info("APPLIER_DEBUG: Extracted quantity=%s from payload", quantity)
         if quantity is not None:
-            return self._decision_from_quantity(quantity, "payload_quantity")
+            decision = self._decision_from_quantity(quantity, "payload_quantity")
+            _LOGGER.info("APPLIER_DEBUG: Decision from quantity: mode=%s target=%s", decision.mode, decision.resolved_target)
+            return decision
         quantity = await self._lookup_local_quantity(conn, op.row_id)
         if quantity is not None:
             return self._decision_from_quantity(quantity, "local_lookup")

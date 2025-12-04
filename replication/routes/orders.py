@@ -227,7 +227,7 @@ async def _promote_and_forward(request: Request, method: str, path: str, quantit
 			# Promote the node
 			_LOGGER.info("Promoting node at %s", node_url)
 			await request.app.state.http_client.post_json(
-				f"{node_url}/admin/promote",
+				f"{node_url}/promote",
 				{"promote": True}
 			)
 			
@@ -302,7 +302,7 @@ async def _forward_to_promoted_follower(request: Request, method: str, path: str
 			if health and health.get("status") == "ok":
 				# Promote and forward
 				await request.app.state.http_client.post_json(
-					f"{peer.base_url}/admin/promote",
+					f"{peer.base_url}/promote",
 					{"promote": True}
 				)
 				
