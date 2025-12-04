@@ -458,42 +458,25 @@ class TransactionOrchestrator:
             state.client_status[plan.actor_id]["new_quantity"] = plan.new_quantity
 
         # Check if this is a remote node - use HTTP instead of direct DB connection
-        # But first check if we have a DSN for this node (for multi-DB same-machine setups)
         if not self._is_local_node(plan.node):
-            # Try to use DSN if available (for same-machine multi-DB setup)
-            dsn = self._node_dsns.get(plan.node)
-            if dsn:
-                # We have a DSN for this node, use direct DB connection
-                await self._execute_local_db_actor(state, plan, order_id, dsn, start_time, sleep_time_ms)
-                return
-            else:
-                # No DSN, must be a remote node - use HTTP
-                await self._execute_remote_actor(state, plan, order_id)
-                # For remote execution, calculate timing
-                end_time = time.perf_counter()
-                total_duration_ms = (end_time - start_time) * 1000
-                # Estimate sleep time based on delay_seconds
-                if plan.delay_seconds:
-                    sleep_time_ms = plan.delay_seconds * 1000
-                state.actor_timings[plan.actor_id] = {
-                    "total_duration_ms": total_duration_ms,
-                    "sleep_time_ms": sleep_time_ms,
-                    "execution_time_ms": total_duration_ms - sleep_time_ms,
-                }
-                return
+            await self._execute_remote_actor(state, plan, order_id)
+            # For remote execution, calculate timing
+            end_time = time.perf_counter()
+            total_duration_ms = (end_time - start_time) * 1000
+            # Estimate sleep time based on delay_seconds
+            if plan.delay_seconds:
+                sleep_time_ms = plan.delay_seconds * 1000
+            state.actor_timings[plan.actor_id] = {
+                "total_duration_ms": total_duration_ms,
+                "sleep_time_ms": sleep_time_ms,
+                "execution_time_ms": total_duration_ms - sleep_time_ms,
+            }
+            return
 
         # Local node - use direct database connection
         dsn = self._node_dsns.get(plan.node)
         if not dsn:
             raise RuntimeError(f"Missing DSN for node {plan.node}")
-        await self._execute_local_db_actor(state, plan, order_id, dsn, start_time, sleep_time_ms)
-
-    async def _execute_local_db_actor(
-        self, state: RunState, plan: ActorPlan, order_id: UUID, dsn: str, start_time: float, sleep_time_ms: float
-    ) -> None:
-        """Execute an actor using direct database connection."""
-        import time
-        
         conn = await self._connection_factory(dsn)
         try:
             await conn.execute(
@@ -881,7 +864,7 @@ class TransactionOrchestrator:
             "read_uncommitted_note": note,
             "serialization_conflicts": state.serialization_conflicts,
             "verdict": verdict,
-            "timing_metrics": timing_metrics,
+            "execution_times": timing_metrics,
             "anomalies": anomalies,
             "replication_note": "Node snapshots reflect latest pull at query time; minor lag is expected.",
         }
@@ -900,21 +883,18 @@ class TransactionOrchestrator:
         avg_sleep = sum(sleep_times) / len(sleep_times) if sleep_times else 0
         avg_exec = sum(execution_times) / len(execution_times) if execution_times else 0
         
-        # Build per-actor breakdown
+        # Build per-actor breakdown in format expected by frontend
+        # Frontend expects: execution_times[actor_id] = {total_seconds, transaction_seconds, delay_seconds, net_execution_seconds}
         per_actor = {}
         for actor_id, timing in state.actor_timings.items():
             per_actor[actor_id] = {
-                "total_duration_ms": round(timing["total_duration_ms"], 2),
-                "sleep_time_ms": round(timing["sleep_time_ms"], 2),
-                "execution_time_ms": round(timing["execution_time_ms"], 2),
+                "total_seconds": timing["total_duration_ms"] / 1000,
+                "delay_seconds": timing["sleep_time_ms"] / 1000,
+                "transaction_seconds": timing["execution_time_ms"] / 1000,
+                "net_execution_seconds": timing["execution_time_ms"] / 1000,
             }
         
-        return {
-            "avg_total_duration_ms": round(avg_total, 2),
-            "avg_sleep_time_ms": round(avg_sleep, 2),
-            "avg_execution_time_ms": round(avg_exec, 2),
-            "per_actor": per_actor,
-        }
+        return per_actor
     
     def _detect_anomalies(self, state: RunState) -> Dict[str, Any]:
         """Detect concurrency anomalies based on transaction logs and results."""

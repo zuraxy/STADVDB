@@ -112,17 +112,19 @@ class RunOrchestrationRequest(BaseModel):
             ]
         elif scenario == ScenarioType.WRITE_WRITE:
             # Two writers with auto-increment (each adds 1 to current quantity)
-            # This demonstrates lost update scenarios
+            # IMPORTANT: Both writers MUST use the same node/database for FOR UPDATE locks to work
+            # If they hit different databases, they won't block each other and lost updates occur
+            target_node = self.node_x or "node0"
             self.actors = [
                 TransactionActorModel(
                     name="writer_a",
-                    node=self.node_x or "node0",
+                    node=target_node,
                     isolation_level=isolation,
                     auto_increment=True,
                 ),
                 TransactionActorModel(
                     name="writer_b",
-                    node=self.node_y or "node1",
+                    node=target_node,
                     isolation_level=isolation,
                     auto_increment=True,
                 ),
