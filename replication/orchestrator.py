@@ -452,11 +452,17 @@ class TransactionOrchestrator:
                 sqlstate = getattr(exc, "sqlstate", None)
                 if sqlstate == "40001" and attempt < max_retries - 1:
                     # Serialization conflict - retry
+                    if attempt == 0:
+                        # Only add to conflicts list once (on first failure)
+                        state.serialization_conflicts.append(plan.actor_id)
                     await state.log("serialization_retry", actor_id=plan.actor_id, attempt=attempt + 1)
                     await asyncio.sleep(0.05 * (attempt + 1))  # Brief exponential backoff
                     continue
                 else:
                     # Non-retryable error or max retries reached
+                    if sqlstate == "40001" and attempt == 0:
+                        # First attempt failed with serialization error
+                        state.serialization_conflicts.append(plan.actor_id)
                     raise
 
     async def _execute_actor_once(self, state: RunState, plan: ActorPlan, order_id: UUID, attempt: int = 0) -> None:
@@ -549,9 +555,10 @@ class TransactionOrchestrator:
             await conn.execute("ROLLBACK")
             sqlstate = getattr(exc, "sqlstate", None)
             if sqlstate == "40001":
-                state.serialization_conflicts.append(plan.actor_id)
-                await state.log("client_serialization_abort", actor_id=plan.actor_id, error=str(exc))
+                # Serialization conflict - will be retried by _execute_actor
+                await state.log("client_serialization_abort", actor_id=plan.actor_id, error=str(exc), attempt=attempt)
                 state.client_status[plan.actor_id]["status"] = "serialization_aborted"
+                raise  # Re-raise to trigger retry logic
             else:
                 await state.log("client_error", actor_id=plan.actor_id, error=str(exc))
                 state.client_status[plan.actor_id]["status"] = "error"
