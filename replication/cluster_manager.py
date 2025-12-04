@@ -729,17 +729,12 @@ class ClusterManager:
                         # Ingest ops
                         await self._ingest_ops(ops)
                 except Exception as e:
-                    # Get more details from the exception
-                    error_msg = str(e) or type(e).__name__
-                    if hasattr(e, '__cause__') and e.__cause__:
-                        error_msg = f"{error_msg} (caused by: {e.__cause__})"
                     await self._emit_event(
                         ClusterEventType.RECOVERY_FAILED,
-                        f"Failed to fetch from {name}: {error_msg}",
+                        f"Failed to fetch from {name}: {e}",
                         node=name,
                         level="warning",
-                        error=error_msg,
-                        error_type=type(e).__name__,
+                        error=str(e),
                     )
             
             # Step 3: Apply all unapplied ops
@@ -995,33 +990,28 @@ class ClusterManager:
     async def handle_election_result(self, payload: Dict) -> Dict:
         """Handle election result broadcast from another node.
         
-        When we receive an election result, we should trust it because:
-        1. The sending node has local knowledge about why the election happened
-        2. The sender knows the old leader is down (that's why they ran an election)
-        
-        We update our local state to match the election result.
+        IMPORTANT: We validate the election result to prevent wrong leader scenarios.
+        If node0 (default_master) is alive, only accept node0 as leader.
         """
         new_leader = payload.get("new_leader")
         received_lamport = payload.get("lamport", 0)
-        from_node = payload.get("from_node", "unknown")
         
         await self._update_lamport(received_lamport)
         
         if new_leader:
-            # If a non-default-master is being elected, it means the default master is down
-            # Update our local view to reflect this
+            # Validate: If default_master (node0) is alive, it should ALWAYS be leader
             default_master = self.settings.default_master.lower()
+            default_master_state = self._nodes.get(default_master)
+            
             if new_leader.lower() != default_master:
-                # The sender is telling us the default master is down
-                # Update our local state to reflect this
-                default_master_state = self._nodes.get(default_master)
-                if default_master_state:
-                    if default_master_state.effective_alive:
-                        _LOGGER.info(
-                            "Election result from %s: marking default_master %s as down (new leader: %s)",
-                            from_node, default_master, new_leader
-                        )
-                    default_master_state.is_alive = False
+                # Someone is trying to elect a non-default-master as leader
+                # Only accept if default_master is actually down
+                if default_master_state and default_master_state.effective_alive:
+                    _LOGGER.warning(
+                        "Rejecting election result: %s claims leader is %s, but default_master %s is alive",
+                        payload.get("from_node", "unknown"), new_leader, default_master
+                    )
+                    return {"status": "rejected", "reason": "default_master is alive", "leader": self._current_leader}
             
             self._current_leader = new_leader
             self._election_in_progress = False  # Election is complete
@@ -1037,8 +1027,6 @@ class ClusterManager:
                 )
             else:
                 self._my_role = NodeRole.FOLLOWER
-                # Followers should also enable writes - they'll forward to the new leader
-                self._writes_gated = False
             
             await self._emit_event(
                 ClusterEventType.LEADER_ELECTED,
