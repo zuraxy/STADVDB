@@ -286,11 +286,17 @@ export function TransactionOrchestrator() {
       'write_complete': <Edit3 className="w-3.5 h-3.5 text-emerald-500" />,
       'write_delay_before_commit': <Clock className="w-3.5 h-3.5 text-orange-500" />,
       'write_write_concurrent_start': <Zap className="w-3.5 h-3.5 text-purple-500" />,
+      'read_write_start': <Zap className="w-3.5 h-3.5 text-blue-500" />,
+      'read_read_concurrent_start': <Zap className="w-3.5 h-3.5 text-cyan-500" />,
+      'non_repeatable_read_start': <Zap className="w-3.5 h-3.5 text-indigo-500" />,
+      'phantom_read_start': <Zap className="w-3.5 h-3.5 text-violet-500" />,
       'pg_sleep': <Clock className="w-3.5 h-3.5 text-slate-400" />,
       'client_error': <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />,
       'client_serialization_abort': <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />,
       'run_failed': <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />,
       'run_aborted': <StopCircle className="w-3.5 h-3.5 text-amber-500" />,
+      'cleanup_start': <RefreshCw className="w-3.5 h-3.5 text-blue-400" />,
+      'cleanup_complete': <Check className="w-3.5 h-3.5 text-green-500" />,
     };
     return iconMap[event] || <Activity className="w-3.5 h-3.5 text-slate-400" />;
   };
@@ -301,15 +307,21 @@ export function TransactionOrchestrator() {
       'transaction_started': 'Transaction Started',
       'read_snapshot': 'Read Snapshot',
       'read_complete': 'Read Complete',
-      'write_locked': 'Row Locked',
+      'write_locked': 'Row Locked (FOR UPDATE)',
       'write_complete': 'Write Complete',
-      'write_delay_before_commit': 'Holding Transaction',
+      'write_delay_before_commit': 'Holding Transaction (Testing Dirty Read)',
       'write_write_concurrent_start': 'Concurrent Writers Starting',
-      'pg_sleep': 'Waiting',
+      'read_write_start': 'Read-Write Scenario Starting',
+      'read_read_concurrent_start': 'Concurrent Readers Starting',
+      'non_repeatable_read_start': 'Non-Repeatable Read Test Starting',
+      'phantom_read_start': 'Phantom Read Test Starting',
+      'pg_sleep': 'Waiting (pg_sleep)',
       'client_error': 'Error',
       'client_serialization_abort': 'Serialization Conflict',
       'run_failed': 'Run Failed',
       'run_aborted': 'Run Aborted',
+      'cleanup_start': 'Cleanup Starting',
+      'cleanup_complete': 'Cleanup Complete',
     };
     return eventLabels[event] || event.replace(/_/g, ' ');
   };
@@ -390,6 +402,38 @@ export function TransactionOrchestrator() {
           <span className="font-mono text-xs">{details.order_id?.slice(0, 8)}...</span>
           <span className="text-slate-400">Actors:</span>
           <span className="font-medium">{details.actors?.join(', ')}</span>
+        </span>
+      );
+    }
+
+    if (event.includes('_start')) {
+      // Scenario start events
+      return (
+        <span className="flex items-center gap-1">
+          {details.message && <span className="text-blue-600">{details.message}</span>}
+          {!details.message && details.actors && (
+            <><span className="text-slate-400">Starting with actors:</span>
+            <span className="font-medium">{details.actors.join(', ')}</span></>
+          )}
+        </span>
+      );
+    }
+
+    if (event === 'cleanup_start' || event === 'cleanup_complete') {
+      return (
+        <span className="flex items-center gap-1">
+          {details.order_id && (
+            <><span className="text-slate-400">Order:</span>
+            <span className="font-mono text-xs">{details.order_id}</span></>
+          )}
+          {details.num_increments && (
+            <><span className="text-slate-400">Reverting</span>
+            <span className="font-medium">{details.num_increments} increments</span></>
+          )}
+          {details.restored_quantity && (
+            <><span className="text-slate-400">→ qty:</span>
+            <span className="font-mono bg-green-100 px-1.5 py-0.5 rounded">{details.restored_quantity}</span></>
+          )}
         </span>
       );
     }
@@ -700,33 +744,75 @@ export function TransactionOrchestrator() {
                         <p className="text-sm text-slate-700">{statusSnapshot.result_summary.verdict}</p>
                       </div>
                     )}
-                    {statusSnapshot.result_summary.execution_times && Object.keys(statusSnapshot.result_summary.execution_times).length > 0 && (
+                    {statusSnapshot.result_summary.timing_metrics && (
                       <div className="md:col-span-2 p-3 border rounded-md bg-blue-50">
                         <p className="text-xs uppercase text-slate-500 mb-2 flex items-center gap-1">
                           <Clock className="w-3 h-3" />
-                          Execution Times (Average)
+                          Execution Times
                         </p>
-                        {(() => {
-                          const times = Object.values(statusSnapshot.result_summary.execution_times);
-                          const avgTotal = times.reduce((sum, t) => sum + (t.total_seconds || 0), 0) / times.length * 1000;
-                          const avgTxn = times.reduce((sum, t) => sum + (t.transaction_seconds || 0), 0) / times.length * 1000;
-                          const avgDelay = times.reduce((sum, t) => sum + (t.delay_seconds || 0), 0) / times.length * 1000;
-                          const avgNet = times.reduce((sum, t) => sum + (t.net_execution_seconds || 0), 0) / times.length * 1000;
-                          
-                          return (
-                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
-                              <span>Avg Total: {avgTotal.toFixed(2)}ms</span>
-                              <span>Avg Transaction: {avgTxn.toFixed(2)}ms</span>
-                              <span>Avg Delay: {avgDelay.toFixed(2)}ms</span>
-                              <span className="font-medium text-blue-700">Avg Net: {avgNet.toFixed(2)}ms</span>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
+                          <span>Avg Total: {statusSnapshot.result_summary.timing_metrics.avg_total_duration_ms?.toFixed(2) || 0}ms</span>
+                          <span>Avg Sleep: {statusSnapshot.result_summary.timing_metrics.avg_sleep_time_ms?.toFixed(2) || 0}ms</span>
+                          <span className="font-medium text-blue-700">Avg Execution: {statusSnapshot.result_summary.timing_metrics.avg_execution_time_ms?.toFixed(2) || 0}ms</span>
+                        </div>
+                        {statusSnapshot.result_summary.timing_metrics.per_actor && Object.keys(statusSnapshot.result_summary.timing_metrics.per_actor).length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-blue-200">
+                            <p className="text-xs text-slate-500 mb-1">Per Actor:</p>
+                            <div className="space-y-1">
+                              {Object.entries(statusSnapshot.result_summary.timing_metrics.per_actor).map(([actorId, timing]) => (
+                                <div key={actorId} className="text-xs text-slate-600">
+                                  <span className="font-medium">{actorId}:</span>{' '}
+                                  <span className="text-blue-700">{timing.execution_time_ms?.toFixed(2) || 0}ms</span>
+                                  <span className="text-slate-400"> (total: {timing.total_duration_ms?.toFixed(2) || 0}ms, sleep: {timing.sleep_time_ms?.toFixed(2) || 0}ms)</span>
+                                </div>
+                              ))}
                             </div>
-                          );
-                        })()}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 ) : (
                   <p className="text-sm text-slate-500">Waiting for summary...</p>
+                )}
+                {statusSnapshot.result_summary?.anomalies && (
+                  <div className="space-y-2">
+                    <p className="text-xs uppercase text-slate-500">Anomaly Detection</p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {statusSnapshot.result_summary.anomalies.dirty_read && (
+                        <div className={`border rounded-md p-3 ${statusSnapshot.result_summary.anomalies.dirty_read.occurred ? 'bg-rose-50 border-rose-200' : 'bg-green-50 border-green-200'}`}>
+                          <p className="text-xs font-medium">{statusSnapshot.result_summary.anomalies.dirty_read.occurred ? '⚠️ Dirty Read Detected' : '✅ No Dirty Read'}</p>
+                          {statusSnapshot.result_summary.anomalies.dirty_read.evidence?.length > 0 && (
+                            <p className="text-xs text-slate-600 mt-1">{statusSnapshot.result_summary.anomalies.dirty_read.evidence.length} occurrence(s)</p>
+                          )}
+                        </div>
+                      )}
+                      {statusSnapshot.result_summary.anomalies.non_repeatable_read && (
+                        <div className={`border rounded-md p-3 ${statusSnapshot.result_summary.anomalies.non_repeatable_read.occurred ? 'bg-rose-50 border-rose-200' : 'bg-green-50 border-green-200'}`}>
+                          <p className="text-xs font-medium">{statusSnapshot.result_summary.anomalies.non_repeatable_read.occurred ? '⚠️ Non-Repeatable Read' : '✅ No Non-Repeatable Read'}</p>
+                          {statusSnapshot.result_summary.anomalies.non_repeatable_read.evidence?.length > 0 && (
+                            <p className="text-xs text-slate-600 mt-1">{statusSnapshot.result_summary.anomalies.non_repeatable_read.evidence.length} occurrence(s)</p>
+                          )}
+                        </div>
+                      )}
+                      {statusSnapshot.result_summary.anomalies.phantom_read && (
+                        <div className={`border rounded-md p-3 ${statusSnapshot.result_summary.anomalies.phantom_read.occurred ? 'bg-rose-50 border-rose-200' : 'bg-green-50 border-green-200'}`}>
+                          <p className="text-xs font-medium">{statusSnapshot.result_summary.anomalies.phantom_read.occurred ? '⚠️ Phantom Read' : '✅ No Phantom Read'}</p>
+                          {statusSnapshot.result_summary.anomalies.phantom_read.evidence?.length > 0 && (
+                            <p className="text-xs text-slate-600 mt-1">{statusSnapshot.result_summary.anomalies.phantom_read.evidence.length} occurrence(s)</p>
+                          )}
+                        </div>
+                      )}
+                      {statusSnapshot.result_summary.anomalies.lost_update && (
+                        <div className={`border rounded-md p-3 ${statusSnapshot.result_summary.anomalies.lost_update.occurred ? 'bg-rose-50 border-rose-200' : 'bg-green-50 border-green-200'}`}>
+                          <p className="text-xs font-medium">{statusSnapshot.result_summary.anomalies.lost_update.occurred ? '⚠️ Lost Update' : '✅ No Lost Update'}</p>
+                          {statusSnapshot.result_summary.anomalies.lost_update.evidence?.length > 0 && (
+                            <p className="text-xs text-slate-600 mt-1">{statusSnapshot.result_summary.anomalies.lost_update.evidence.length} occurrence(s)</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
                 {statusSnapshot.result_summary?.read_uncommitted_note && (
                   <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
