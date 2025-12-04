@@ -15,8 +15,10 @@ class HTTPClient:
     """Wrapper around httpx.AsyncClient with retry/backoff."""
 
     def __init__(self, timeout: float = 5.0, max_retries: int = 2) -> None:
-        # Reduced default timeout for faster failure detection
-        self._client = httpx.AsyncClient(timeout=timeout)
+        # Configure connection pool with higher limits to prevent PoolTimeout
+        # Default is 10 max connections per host, increase to 100
+        limits = httpx.Limits(max_keepalive_connections=50, max_connections=100)
+        self._client = httpx.AsyncClient(timeout=timeout, limits=limits)
         self._max_retries = max_retries
         self._node_errors: Dict[str, str] = {}  # Track per-node errors
 

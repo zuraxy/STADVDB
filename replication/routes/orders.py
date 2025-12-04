@@ -194,10 +194,13 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 async def list_orders(request: Request):
 	settings = get_settings()
 	
-	# If this node is simulated as down, forward to the leader
+	# If this node is simulated as down, return 503 immediately
+	# Don't forward read requests when down - it causes connection pool exhaustion
 	if _cluster_manager and _cluster_manager.is_node_simulated_down(settings.node_name):
-		response = await _forward(request, "GET", "/orders")
-		return response
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail=f"Node {settings.node_name} is simulated as offline - use a different node"
+		)
 	
 	pool = get_pool()
 	if _is_leader(settings):
@@ -209,12 +212,13 @@ async def list_orders(request: Request):
 
 @router.get("/orders/local/all", response_model=list[OrderRead])
 async def list_local_orders(request: Request):
-	"""Get orders from THIS node's local database only (no forwarding)."""
-	settings = get_settings()
+	"""Get orders from THIS node's local database only (no forwarding).
 	
-	# Check if this node is available
-	_check_node_available(settings)
-	
+	This endpoint ALWAYS returns local data regardless of node simulation state.
+	It's used by the dashboard to show per-node order counts.
+	"""
+	# NOTE: Do NOT check node availability here - this endpoint must always work
+	# so the dashboard can show data from each node's local database
 	pool = get_pool()
 	orders, _ = await crud.list_orders(pool, page=1, limit=1000000)
 	return orders
@@ -224,10 +228,12 @@ async def list_local_orders(request: Request):
 async def read_order(order_id: UUID, request: Request, local: bool = False) -> Optional[OrderRead]:
 	settings = get_settings()
 	
-	# If this node is simulated as down and not local-only, forward to the leader
+	# If this node is simulated as down and not local-only, return 503
 	if not local and _cluster_manager and _cluster_manager.is_node_simulated_down(settings.node_name):
-		response = await _forward(request, "GET", f"/orders/{order_id}")
-		return OrderRead(**response) if response else None
+		raise HTTPException(
+			status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+			detail=f"Node {settings.node_name} is simulated as offline - use a different node"
+		)
 	
 	pool = get_pool()
 	if _is_leader(settings) or local:
