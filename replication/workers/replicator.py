@@ -23,6 +23,7 @@ class ReplicatorWorker:
         settings: Settings,
         http_client: Optional[HTTPClient] = None,
         crud_module=crud,
+        is_paused: Optional[callable] = None,
     ) -> None:
         self.pool = pool
         self.settings = settings
@@ -35,6 +36,7 @@ class ReplicatorWorker:
         self.last_error: Optional[str] = None
         self.peer_errors: Dict[str, Optional[str]] = {peer.base_url: None for peer in settings.peer_nodes}
         self._cursors_loaded = False
+        self._is_paused = is_paused  # Callback to check if worker should pause
 
     async def start(self) -> None:
         if self._task is None:
@@ -57,6 +59,10 @@ class ReplicatorWorker:
                 continue
 
     async def poll_once(self) -> None:
+        # Skip processing if node is paused (simulated as down)
+        if self._is_paused and self._is_paused():
+            return
+        
         for peer in self.settings.peer_nodes:
             if peer.name == self.settings.node_name:
                 continue

@@ -37,7 +37,7 @@ class PartitionDecision:
 class ApplierWorker:
     """Continuously applies unapplied operations with partition awareness."""
 
-    def __init__(self, pool, settings: Settings, crud_module=crud, worker_id: Optional[str] = None) -> None:
+    def __init__(self, pool, settings: Settings, crud_module=crud, worker_id: Optional[str] = None, is_paused: Optional[callable] = None) -> None:
         self.pool = pool
         self.settings = settings
         self.crud = crud_module
@@ -54,6 +54,7 @@ class ApplierWorker:
         self._cursor_cache: Dict[str, int] = {}
         self._cursor_loaded = False
         self._max_attempts = max(1, self.settings.applier_max_attempts)
+        self._is_paused = is_paused  # Callback to check if worker should pause
 
     async def start(self) -> None:
         if self._task is None:
@@ -76,6 +77,10 @@ class ApplierWorker:
                 continue
 
     async def apply_once(self) -> None:
+        # Skip processing if node is paused (simulated as down)
+        if self._is_paused and self._is_paused():
+            return
+        
         await self._refresh_cursor_cache()
         async with self.pool.acquire() as conn:
             while True:

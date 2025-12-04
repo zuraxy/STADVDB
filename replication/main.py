@@ -54,8 +54,22 @@ async def on_startup() -> None:  # pragma: no cover - exercised via integration 
 		await crud.ensure_replication_metadata(conn)
 	app.state.promoted = settings.promoted
 	app.state.http_client = HTTPClient()
-	app.state.replicator = ReplicatorWorker(pool, settings, app.state.http_client)
-	app.state.applier = ApplierWorker(pool, settings)
+	
+	# Initialize cluster manager first so workers can use it
+	app.state.cluster_manager = ClusterManager(
+		pool, settings, app.state.http_client,
+		get_promoted_flag=lambda: bool(app.state.promoted),
+		set_promoted_flag=lambda v: setattr(app.state, 'promoted', v),
+	)
+	
+	# Create a callback to check if this node is simulated as down
+	def is_node_paused() -> bool:
+		if hasattr(app.state, 'cluster_manager'):
+			return app.state.cluster_manager.is_node_simulated_down(settings.node_name)
+		return False
+	
+	app.state.replicator = ReplicatorWorker(pool, settings, app.state.http_client, is_paused=is_node_paused)
+	app.state.applier = ApplierWorker(pool, settings, is_paused=is_node_paused)
 	app.state.orchestrator = TransactionOrchestrator(
 		settings,
 		lambda: bool(app.state.promoted),
@@ -67,13 +81,6 @@ async def on_startup() -> None:  # pragma: no cover - exercised via integration 
 	)
 	app.state.recovery_test_runner = RecoveryTestRunner(
 		pool, settings, app.state.http_client
-	)
-	
-	# Initialize cluster manager for automatic failover and recovery
-	app.state.cluster_manager = ClusterManager(
-		pool, settings, app.state.http_client,
-		get_promoted_flag=lambda: bool(app.state.promoted),
-		set_promoted_flag=lambda v: setattr(app.state, 'promoted', v),
 	)
 	
 	# Inject cluster manager into orders routes for leader-aware routing
