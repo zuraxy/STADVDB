@@ -468,6 +468,38 @@ class ClusterManager:
         except:
             pass
 
+    async def report_leader_unhealthy(self, leader_name: str, error: str):
+        """Report that the leader is unhealthy (database errors, etc.).
+        
+        This is called when a follower detects that forwarding to the leader
+        failed due to database or internal errors (not just network issues).
+        
+        This triggers a leader election if the reported leader matches the current leader.
+        """
+        if leader_name.lower() != self._current_leader.lower():
+            _LOGGER.debug(
+                "Ignoring leader unhealthy report for %s (current leader is %s)",
+                leader_name, self._current_leader
+            )
+            return
+        
+        await self._emit_event(
+            ClusterEventType.NODE_DOWN,
+            f"Leader {leader_name} reported unhealthy: {error}",
+            node=leader_name,
+            level="warning",
+            reason="database_error",
+            error=error,
+        )
+        
+        # Mark leader as down
+        state = self._nodes.get(leader_name)
+        if state:
+            state.is_alive = False
+        
+        # Trigger election
+        await self._start_leader_election()
+
     async def _start_leader_election(self):
         """Start a leader election process."""
         if self._election_in_progress:

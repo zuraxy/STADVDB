@@ -37,7 +37,7 @@ class PartitionDecision:
 class ApplierWorker:
     """Continuously applies unapplied operations with partition awareness."""
 
-    def __init__(self, pool, settings: Settings, crud_module=crud, worker_id: Optional[str] = None, is_paused: Optional[callable] = None) -> None:
+    def __init__(self, pool, settings: Settings, crud_module=crud, worker_id: Optional[str] = None, is_paused: Optional[callable] = None, is_leader: Optional[callable] = None) -> None:
         self.pool = pool
         self.settings = settings
         self.crud = crud_module
@@ -55,6 +55,7 @@ class ApplierWorker:
         self._cursor_loaded = False
         self._max_attempts = max(1, self.settings.applier_max_attempts)
         self._is_paused = is_paused  # Callback to check if worker should pause
+        self._is_leader_cb = is_leader  # Callback to check if this node is current leader
 
     async def start(self) -> None:
         if self._task is None:
@@ -237,6 +238,13 @@ class ApplierWorker:
         return self.settings.node_name.lower()
 
     def _is_master(self) -> bool:
+        """Check if this node is the current leader/master.
+        
+        Uses the is_leader callback if available (checks ClusterManager's current_leader),
+        otherwise falls back to checking if this is the default_master.
+        """
+        if self._is_leader_cb:
+            return self._is_leader_cb()
         return self.settings.node_name == self.settings.default_master
 
     @staticmethod
