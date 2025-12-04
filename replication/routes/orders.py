@@ -17,7 +17,7 @@ from .. import crud
 from ..config import Settings, get_settings
 from ..db import get_pool
 from ..models import OrderCreate, OrderRead, OrderUpdate
-from ..utils.partition import can_accept_partition
+from ..utils.partition import can_accept_partition, target_node_for_quantity
 
 router = APIRouter(tags=["orders"])
 
@@ -91,6 +91,26 @@ def _get_leader_url(settings: Settings) -> Optional[str]:
 	return settings.default_master_url
 
 
+def _get_node_url(settings: Settings, node_name: str) -> Optional[str]:
+	"""Get the URL for a specific node."""
+	node_lower = node_name.lower()
+	
+	# If it's this node, return None (handle locally)
+	if node_lower == settings.node_name.lower():
+		return None
+	
+	# Check if node is simulated as down
+	if _cluster_manager and _cluster_manager.is_node_simulated_down(node_lower):
+		return None  # Can't forward to a down node
+	
+	# Find the node in peer list
+	for peer in settings.peer_nodes:
+		if peer.name.lower() == node_lower:
+			return peer.base_url
+	
+	return None
+
+
 def _check_leader_available():
 	"""Check if the current leader is online. Raise 503 if leader is down."""
 	if _cluster_manager is None:
@@ -161,6 +181,40 @@ async def _forward(request: Request, method: str, path: str, payload: Optional[d
 		raise
 
 
+async def _forward_to_node(request: Request, node_name: str, method: str, path: str, payload: Optional[dict] = None):
+	"""Forward request to a specific node (for partition-based routing)."""
+	settings = get_settings()
+	
+	base_url = _get_node_url(settings, node_name)
+	if not base_url:
+		raise HTTPException(
+			status.HTTP_503_SERVICE_UNAVAILABLE,
+			f"Node {node_name} URL not available - cannot forward request"
+		)
+	
+	client = request.app.state.http_client
+	url = f"{base_url}{path}"
+	
+	try:
+		if method == "POST":
+			return await client.post_json(url, payload or {})
+		if method == "PUT":
+			return await client.put_json(url, payload or {})
+		if method == "GET":
+			return await client.get_json(url)
+		if method == "DELETE":
+			return await client.delete(url)
+		raise RuntimeError(f"Unsupported forward method {method}")
+	except Exception as e:
+		error_msg = str(e).lower()
+		if "connect" in error_msg or "timeout" in error_msg or "refused" in error_msg:
+			raise HTTPException(
+				status.HTTP_503_SERVICE_UNAVAILABLE,
+				f"Node {node_name} unreachable at {base_url}: {e}"
+			)
+		raise
+
+
 # ---------------------------------------------------------------------------
 # CRUD Endpoints with Node Availability Checks
 # ---------------------------------------------------------------------------
@@ -181,11 +235,28 @@ async def create_order(order: OrderCreate, request: Request) -> OrderRead:
 	pool = get_pool()
 	promoted: bool = request.app.state.promoted
 	
-	# If we're the leader, or we're promoted and can accept this partition, handle locally
-	if _is_leader(settings) or (promoted and can_accept_partition(settings.node_name, order.quantity, settings.partition_rule)):
+	# Determine which partition node should handle this order
+	target_node = target_node_for_quantity(order.quantity, settings.partition_rule)
+	this_node = settings.node_name.lower()
+	
+	# Check if we can handle this order locally
+	can_handle_locally = (
+		can_accept_partition(this_node, order.quantity, settings.partition_rule) or
+		(this_node == "node0")  # node0 (central) can handle any partition
+	)
+	
+	if can_handle_locally:
+		# This node is responsible for this partition - handle locally
 		return await crud.create_order(pool, order, settings.node_name)
 	
-	# Forward to the current leader
+	# This node can't handle the partition - forward to the correct partition node
+	# If we're the leader, we need to route to the correct partition node
+	if _is_leader(settings) or promoted:
+		# Forward to the target partition node
+		response = await _forward_to_node(request, target_node, "POST", "/orders", payload=order.model_dump())
+		return OrderRead(**response)
+	
+	# We're not the leader and can't handle this partition - forward to leader
 	response = await _forward(request, "POST", "/orders", payload=order.model_dump())
 	return OrderRead(**response)
 
