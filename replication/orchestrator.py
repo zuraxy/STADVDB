@@ -468,8 +468,14 @@ class TransactionOrchestrator:
     async def _execute_actor_once(self, state: RunState, plan: ActorPlan, order_id: UUID, attempt: int = 0) -> None:
         import time
         
-        start_time = time.perf_counter()
-        sleep_time_ms = 0.0
+        # Timing breakdown:
+        # - total_duration_ms: Wall-clock time (connection + transaction + all delays)
+        # - transaction_duration_ms: Time from BEGIN to COMMIT
+        # - delay_ms: Explicit sleep/delay time (pg_sleep, asyncio.sleep)
+        # - net_execution_ms: Transaction time minus delays (pure DB work)
+        
+        total_start = time.perf_counter()
+        delay_ms = 0.0
         
         state.client_status[plan.actor_id] = {
             "status": "running",
@@ -486,16 +492,17 @@ class TransactionOrchestrator:
         # Check if this is a remote node - use HTTP instead of direct DB connection
         if not self._is_local_node(plan.node):
             await self._execute_remote_actor(state, plan, order_id)
-            # For remote execution, calculate timing
-            end_time = time.perf_counter()
-            total_duration_ms = (end_time - start_time) * 1000
-            # Estimate sleep time based on delay_seconds
+            # For remote execution, estimate timing
+            total_end = time.perf_counter()
+            total_duration_ms = (total_end - total_start) * 1000
             if plan.delay_seconds:
-                sleep_time_ms = plan.delay_seconds * 1000
+                delay_ms = plan.delay_seconds * 1000
+            transaction_duration_ms = total_duration_ms  # Can't separate for remote
             state.actor_timings[plan.actor_id] = {
                 "total_duration_ms": total_duration_ms,
-                "sleep_time_ms": sleep_time_ms,
-                "execution_time_ms": total_duration_ms - sleep_time_ms,
+                "transaction_duration_ms": transaction_duration_ms,
+                "delay_ms": delay_ms,
+                "net_execution_ms": transaction_duration_ms - delay_ms,
             }
             return
 
@@ -505,6 +512,8 @@ class TransactionOrchestrator:
             raise RuntimeError(f"Missing DSN for node {plan.node}")
         conn = await self._connection_factory(dsn)
         try:
+            # Start transaction timing
+            txn_start = time.perf_counter()
             await conn.execute(
                 f"BEGIN TRANSACTION ISOLATION LEVEL {plan.isolation_level.sql_clause}"
             )
@@ -515,11 +524,12 @@ class TransactionOrchestrator:
                 role=plan.role,
                 isolation=plan.isolation_level.sql_clause,
             )
+            
             if plan.role == "read":
                 details = await self._perform_read(state, conn, plan, order_id)
-                # Track sleep time if delay was used
+                # Track explicit delays
                 if plan.delay_seconds:
-                    sleep_time_ms = plan.delay_seconds * 1000
+                    delay_ms += plan.delay_seconds * 1000
             else:
                 details = await self._perform_write(state, conn, plan, order_id)
                 # For READ_WRITE scenario: writer delays before commit to allow
@@ -527,8 +537,11 @@ class TransactionOrchestrator:
                 if state.payload.scenario == ScenarioType.READ_WRITE:
                     await state.log("write_delay_before_commit", actor_id=plan.actor_id, seconds=1.0)
                     await asyncio.sleep(1.0)  # Hold transaction open for dirty read testing
-                    sleep_time_ms += 1000  # Add commit delay to sleep time
+                    delay_ms += 1000  # Track this delay
+            
             await conn.execute("COMMIT")
+            txn_end = time.perf_counter()
+            
             state.client_status[plan.actor_id]["status"] = "committed"
             state.actor_results[plan.actor_id] = {
                 "node": plan.node,
@@ -539,12 +552,16 @@ class TransactionOrchestrator:
             }
             
             # Calculate and store timing
-            end_time = time.perf_counter()
-            total_duration_ms = (end_time - start_time) * 1000
+            total_end = time.perf_counter()
+            total_duration_ms = (total_end - total_start) * 1000
+            transaction_duration_ms = (txn_end - txn_start) * 1000
+            net_execution_ms = transaction_duration_ms - delay_ms
+            
             state.actor_timings[plan.actor_id] = {
                 "total_duration_ms": total_duration_ms,
-                "sleep_time_ms": sleep_time_ms,
-                "execution_time_ms": total_duration_ms - sleep_time_ms,
+                "transaction_duration_ms": transaction_duration_ms,
+                "delay_ms": delay_ms,
+                "net_execution_ms": net_execution_ms,
             }
             
         except asyncio.CancelledError:
@@ -901,24 +918,15 @@ class TransactionOrchestrator:
         if not state.actor_timings:
             return {}
         
-        # Calculate aggregate metrics
-        total_durations = [t["total_duration_ms"] for t in state.actor_timings.values()]
-        sleep_times = [t["sleep_time_ms"] for t in state.actor_timings.values()]
-        execution_times = [t["execution_time_ms"] for t in state.actor_timings.values()]
-        
-        avg_total = sum(total_durations) / len(total_durations) if total_durations else 0
-        avg_sleep = sum(sleep_times) / len(sleep_times) if sleep_times else 0
-        avg_exec = sum(execution_times) / len(execution_times) if execution_times else 0
-        
         # Build per-actor breakdown in format expected by frontend
         # Frontend expects: execution_times[actor_id] = {total_seconds, transaction_seconds, delay_seconds, net_execution_seconds}
         per_actor = {}
         for actor_id, timing in state.actor_timings.items():
             per_actor[actor_id] = {
                 "total_seconds": timing["total_duration_ms"] / 1000,
-                "delay_seconds": timing["sleep_time_ms"] / 1000,
-                "transaction_seconds": timing["execution_time_ms"] / 1000,
-                "net_execution_seconds": timing["execution_time_ms"] / 1000,
+                "transaction_seconds": timing["transaction_duration_ms"] / 1000,
+                "delay_seconds": timing["delay_ms"] / 1000,
+                "net_execution_seconds": timing["net_execution_ms"] / 1000,
             }
         
         return per_actor
