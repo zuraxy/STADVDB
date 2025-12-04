@@ -60,6 +60,7 @@ class ApplierWorker:
     async def start(self) -> None:
         if self._task is None:
             self._stop_event.clear()
+            _LOGGER.warning("APPLIER: Starting applier worker for node=%s", self.settings.node_name)
             self._task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -71,7 +72,11 @@ class ApplierWorker:
     async def _run(self) -> None:
         await self._refresh_cursor_cache()
         while not self._stop_event.is_set():
-            await self.apply_once()
+            try:
+                await self.apply_once()
+            except Exception as exc:
+                _LOGGER.error("APPLIER: Exception in apply_once, will retry: %s", exc, exc_info=True)
+                # Don't crash the loop, just log and continue
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=self.settings.applier_interval)
             except asyncio.TimeoutError:
@@ -83,7 +88,7 @@ class ApplierWorker:
             _LOGGER.debug("APPLIER: Skipping - node is paused")
             return
         
-        _LOGGER.info("APPLIER: apply_once starting, node=%s is_master=%s", self._local_node(), self._is_master())
+        _LOGGER.warning("APPLIER: apply_once starting, node=%s is_master=%s", self._local_node(), self._is_master())
         await self._refresh_cursor_cache()
         async with self.pool.acquire() as conn:
             while True:
@@ -91,12 +96,12 @@ class ApplierWorker:
                 async with conn.transaction():
                     op = await self._next_locked_op(conn)
                     if not op:
-                        _LOGGER.info("APPLIER: No unapplied ops found")
+                        _LOGGER.warning("APPLIER: No unapplied ops found")
                         self.last_error = None
                         return
-                    _LOGGER.info("APPLIER: Processing op=%s lamport=%s origin=%s", op.op_id, op.lamport, op.origin_node)
+                    _LOGGER.warning("APPLIER: Processing op=%s lamport=%s origin=%s", op.op_id, op.lamport, op.origin_node)
                     outcome = await self._process_locked_op(conn, op)
-                    _LOGGER.info("APPLIER: Outcome for op=%s: %s", op.op_id, outcome)
+                    _LOGGER.warning("APPLIER: Outcome for op=%s: %s", op.op_id, outcome)
                     if outcome == "retry":
                         retry_requested = True
                         self.retry_count += 1
