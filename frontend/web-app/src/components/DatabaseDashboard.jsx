@@ -8,9 +8,9 @@ import { Button } from './ui/button';
 import { fetchAllOrders, fetchReplicationStatus, fetchAllNodeMetrics, fetchNodeOrders, resetNodeAvailabilityTracking, getClusterStatus } from '../services/api';
 
 const DEFAULT_NODE_CARDS = [
-  { id: 'node0', title: 'Central Node', description: 'Complete dataset with all orders', isPrimary: true },
-  { id: 'node1', title: 'Fragment Node 1', description: 'Horizontal partition segment 1' },
-  { id: 'node2', title: 'Fragment Node 2', description: 'Horizontal partition segment 2' },
+  { id: 'node0', title: 'Node 0', description: 'Complete dataset with all orders', isPrimary: true },
+  { id: 'node1', title: 'Node 1', description: 'Horizontal partition segment 1' },
+  { id: 'node2', title: 'Node 2', description: 'Horizontal partition segment 2' },
 ];
 
 const buildNodeState = (statusResponse) => {
@@ -175,8 +175,12 @@ export function DatabaseDashboard() {
         // Fallback: combine data from node1 and node2
         console.log('📦 Node0 unavailable, combining data from Node1 + Node2');
         const combined = [...(Array.isArray(node1Orders) ? node1Orders : []), ...(Array.isArray(node2Orders) ? node2Orders : [])];
-        // Sort by order_id for consistent display
-        rows = combined.sort((a, b) => (a.order_id || '').localeCompare(b.order_id || ''));
+        // Sort by updated_at descending for consistent display (same as node0)
+        rows = combined.sort((a, b) => {
+          const dateA = a.updated_at || a.created_at || '';
+          const dateB = b.updated_at || b.created_at || '';
+          return dateB.localeCompare(dateA); // Descending order (newest first)
+        });
       }
       
       setAllData(rows);
@@ -303,7 +307,6 @@ export function DatabaseDashboard() {
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-800">Database Overview</h2>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-gray-500">Auto-refresh: 10s</span>
           <Button
             onClick={fetchData}
             disabled={loading}
@@ -377,18 +380,10 @@ export function DatabaseDashboard() {
                     <p className="text-xs text-muted-foreground">
                       {describeNode(card)}
                     </p>
-                    {/* NEW: Display applier and replicator metrics */}
-                    {nodeMetrics[card.id] && !nodeMetrics[card.id].error && (
-                      <div className="text-xs text-gray-500 mt-2 space-y-0.5">
-                        {nodeMetrics[card.id].applier && (
-                          <>
-                            <div>Applied: {nodeMetrics[card.id].applier.applied_count || 0}</div>
-                            <div>Skipped: {nodeMetrics[card.id].applier.skipped_count || 0}</div>
-                          </>
-                        )}
-                        {nodeMetrics[card.id].replicator && (
-                          <div>Replicated: {nodeMetrics[card.id].replicator.total_replicated || 0}</div>
-                        )}
+                    {/* Display applier metrics */}
+                    {nodeMetrics[card.id] && !nodeMetrics[card.id].error && nodeMetrics[card.id].applier && (
+                      <div className="text-xs text-gray-500 mt-2">
+                        <div>Applied: {nodeMetrics[card.id].applier.applied_count || 0}</div>
                       </div>
                     )}
                     {nodeMetrics[card.id]?.error && (
@@ -407,13 +402,13 @@ export function DatabaseDashboard() {
 
       {/* Main Data Tables */}
       <div className="grid grid-cols-1 gap-6">
-        {/* Node 1 - Central Node */}
+        {/* Leader Node Data Table */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle>Node 0 - Central Database</CardTitle>
-                <CardDescription>Complete dataset with all orders</CardDescription>
+                <CardTitle>Leader Node Data</CardTitle>
+                <CardDescription>Orders from the current leader (combined view when leader is down)</CardDescription>
               </div>
               <Badge variant="outline" className={getBadgeClasses(getNodeStatusById('node0'))}>
                 <Activity className="w-3 h-3 mr-1" />
