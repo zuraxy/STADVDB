@@ -139,6 +139,53 @@ async def toggle_node(node_name: str, body: NodeToggleRequest, request: Request)
     }
 
 
+@router.post("/self/simulate-down")
+async def simulate_self_down(request: Request) -> Dict[str, Any]:
+    """
+    Mark THIS node as simulated down (called by remote coordinator).
+    This is used when a remote node wants to simulate this node as down,
+    so that this node's workers will pause.
+    """
+    cluster_manager = getattr(request.app.state, "cluster_manager", None)
+    if not cluster_manager:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cluster manager not initialized"
+        )
+    
+    my_node = cluster_manager.settings.node_name
+    success = await cluster_manager.set_self_simulated_down(True)
+    return {
+        "node": my_node,
+        "simulated_down": True,
+        "status": "success" if success else "failed",
+        "message": f"Node {my_node} marked itself as simulated down",
+    }
+
+
+@router.post("/self/simulate-up")
+async def simulate_self_up(request: Request) -> Dict[str, Any]:
+    """
+    Mark THIS node as simulated up (called by remote coordinator).
+    This is used when a remote node wants to simulate this node's recovery.
+    """
+    cluster_manager = getattr(request.app.state, "cluster_manager", None)
+    if not cluster_manager:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Cluster manager not initialized"
+        )
+    
+    my_node = cluster_manager.settings.node_name
+    success = await cluster_manager.set_self_simulated_down(False)
+    return {
+        "node": my_node,
+        "simulated_down": False,
+        "status": "success" if success else "failed",
+        "message": f"Node {my_node} marked itself as simulated up",
+    }
+
+
 @router.post("/node/{node_name}/simulate-failure")
 async def simulate_node_failure(node_name: str, request: Request) -> Dict[str, Any]:
     """Shorthand to simulate a node failure."""

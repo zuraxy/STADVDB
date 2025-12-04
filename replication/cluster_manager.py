@@ -571,6 +571,42 @@ class ClusterManager:
 
     # ==================== Node Control (Simulation) ====================
 
+    async def set_self_simulated_down(self, down: bool) -> bool:
+        """
+        Mark THIS node as simulated down/up (called when remote coordinator requests it).
+        This directly updates this node's own state so workers will pause.
+        """
+        my_node = self.settings.node_name
+        if my_node not in self._nodes:
+            return False
+        
+        state = self._nodes[my_node]
+        state.is_simulated_down = down
+        state.is_alive = not down
+        
+        if down:
+            # Mark self as down
+            await self._emit_event(
+                ClusterEventType.NODE_DOWN,
+                f"Node {my_node} marked itself as simulated down",
+                node=my_node,
+                level="warning",
+                simulated=True,
+            )
+            # Demote to follower if we were leader
+            if self._my_role == NodeRole.LEADER:
+                self._my_role = NodeRole.FOLLOWER
+        else:
+            # Mark self as up
+            state.last_heartbeat = datetime.now(timezone.utc)
+            await self._emit_event(
+                ClusterEventType.NODE_UP,
+                f"Node {my_node} marked itself as simulated up",
+                node=my_node,
+            )
+        
+        return True
+
     async def set_node_down(self, node_name: str):
         """Simulate a node going down."""
         if node_name not in self._nodes:
@@ -593,6 +629,11 @@ class ClusterManager:
         if node_name == self._current_leader and was_alive:
             await self._start_leader_election()
         
+        # Notify the target node to mark itself as simulated down
+        # (so its workers will pause)
+        if node_name != self.settings.node_name:
+            await self._notify_node_simulation(node_name, down=True)
+        
         return True
 
     async def set_node_up(self, node_name: str):
@@ -611,6 +652,11 @@ class ClusterManager:
             f"Node {node_name} coming online",
             node=node_name,
         )
+        
+        # Notify the target node to mark itself as simulated up
+        # (so its workers will resume)
+        if node_name != self.settings.node_name:
+            await self._notify_node_simulation(node_name, down=False)
         
         if was_down:
             # If node0 (default_master) comes back, re-elect it as leader and demote others
@@ -632,6 +678,30 @@ class ClusterManager:
                     await self._trigger_node_recovery(node_name)
         
         return True
+
+    async def _notify_node_simulation(self, node_name: str, down: bool):
+        """
+        Notify a remote node to mark itself as simulated down/up.
+        This ensures the target node's workers will pause/resume.
+        """
+        # Find the peer URL
+        peer_url = None
+        for peer in self.settings.peer_nodes:
+            if peer.name.lower() == node_name.lower():
+                peer_url = peer.base_url
+                break
+        
+        if not peer_url:
+            _LOGGER.warning("Cannot find URL for node %s to notify simulation state", node_name)
+            return
+        
+        endpoint = "/cluster/self/simulate-down" if down else "/cluster/self/simulate-up"
+        try:
+            await self.http_client.post_json(f"{peer_url}{endpoint}", {})
+            _LOGGER.info("Notified %s to simulate %s", node_name, "down" if down else "up")
+        except Exception as e:
+            # This is expected if the node is truly down (not just simulated)
+            _LOGGER.debug("Failed to notify %s simulation state: %s", node_name, e)
 
     async def _restore_default_leader(self, node_name: str):
         """Restore node0 as leader when it comes back online and demote promoted nodes."""
