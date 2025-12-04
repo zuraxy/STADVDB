@@ -405,7 +405,13 @@ class ClusterManager:
             await asyncio.sleep(HEARTBEAT_INTERVAL)
 
     async def _check_node_health(self):
-        """Check health of all nodes and trigger failover if leader is down."""
+        """Check health of all nodes and trigger failover if needed."""
+        # If THIS node is simulated down, skip health monitoring
+        # A "down" node shouldn't be making decisions about cluster state
+        my_state = self._nodes.get(self.settings.node_name)
+        if my_state and my_state.is_simulated_down:
+            return
+        
         now = datetime.now(timezone.utc)
         
         for name, state in self._nodes.items():
@@ -535,11 +541,18 @@ class ClusterManager:
     async def _broadcast_election_result(self, new_leader: str):
         """Broadcast election result to all peers."""
         lamport = await self._tick_lamport()
+        
+        # Check if this node (the sender) is simulated down - include this info
+        # so receivers know to update their view of this node's status
+        my_state = self._nodes.get(self.settings.node_name)
+        sender_is_down = my_state.is_simulated_down if my_state else False
+        
         payload = {
             "from_node": self.settings.node_name,
             "new_leader": new_leader,
             "lamport": lamport,
             "timestamp": self._now(),
+            "sender_is_down": sender_is_down,  # Tell receivers this node is going down
         }
         
         tasks = []
@@ -992,24 +1005,45 @@ class ClusterManager:
         
         IMPORTANT: We validate the election result to prevent wrong leader scenarios.
         If node0 (default_master) is alive, only accept node0 as leader.
+        
+        EXCEPTION: If the election is sent BY the default_master itself (with sender_is_down=True),
+        it means the default_master is going offline and delegating leadership.
         """
         new_leader = payload.get("new_leader")
         received_lamport = payload.get("lamport", 0)
+        from_node = payload.get("from_node", "").lower()
+        sender_is_down = payload.get("sender_is_down", False)
         
         await self._update_lamport(received_lamport)
         
         if new_leader:
-            # Validate: If default_master (node0) is alive, it should ALWAYS be leader
+            # Get default master info
             default_master = self.settings.default_master.lower()
             default_master_state = self._nodes.get(default_master)
             
+            # If sender says it's going down, update our view of it
+            if sender_is_down and from_node:
+                sender_state = self._nodes.get(from_node)
+                if sender_state:
+                    sender_state.is_alive = False
+                    _LOGGER.info("Updated %s status to DOWN (sender reported going offline)", from_node)
+            
+            # Validate: If default_master (node0) is alive, it should ALWAYS be leader
+            # EXCEPTION: If the message is FROM default_master saying it's going down
             if new_leader.lower() != default_master:
                 # Someone is trying to elect a non-default-master as leader
-                # Only accept if default_master is actually down
-                if default_master_state and default_master_state.effective_alive:
+                # Only accept if default_master is actually down OR default_master sent this message
+                is_from_default_master = (from_node == default_master)
+                default_master_effectively_alive = (
+                    default_master_state and 
+                    default_master_state.effective_alive and
+                    not sender_is_down  # Don't consider alive if sender says it's going down
+                )
+                
+                if default_master_effectively_alive and not is_from_default_master:
                     _LOGGER.warning(
                         "Rejecting election result: %s claims leader is %s, but default_master %s is alive",
-                        payload.get("from_node", "unknown"), new_leader, default_master
+                        from_node, new_leader, default_master
                     )
                     return {"status": "rejected", "reason": "default_master is alive", "leader": self._current_leader}
             
