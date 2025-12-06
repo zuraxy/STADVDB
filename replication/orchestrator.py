@@ -556,7 +556,7 @@ class TransactionOrchestrator:
                 "details": details,
             }
             
-            # Calculate and store timing
+            # Calculate and store timing (only for successful commits)
             total_end = time.perf_counter()
             total_duration_ms = (total_end - total_start) * 1000
             transaction_duration_ms = (txn_end - txn_start) * 1000
@@ -578,6 +578,7 @@ class TransactionOrchestrator:
             sqlstate = getattr(exc, "sqlstate", None)
             if sqlstate == "40001":
                 # Serialization conflict - will be retried by _execute_actor
+                # Don't store timing for aborted attempts - only successful commits get timing
                 await state.log("client_serialization_abort", actor_id=plan.actor_id, error=str(exc), attempt=attempt)
                 state.client_status[plan.actor_id]["status"] = "serialization_aborted"
                 raise  # Re-raise to trigger retry logic
