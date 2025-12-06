@@ -442,11 +442,23 @@ class TransactionOrchestrator:
     async def _execute_actor(self, state: RunState, plan: ActorPlan, order_id: UUID) -> None:
         import time
         
+        # Track total time across all retry attempts
+        total_start = time.perf_counter()
+        
         # Retry logic for serialization conflicts (up to 3 attempts)
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 await self._execute_actor_once(state, plan, order_id, attempt)
+                
+                # Success - calculate total timing including all attempts
+                total_end = time.perf_counter()
+                total_wall_time_ms = (total_end - total_start) * 1000
+                
+                # Update timing to reflect total time across all attempts
+                if plan.actor_id in state.actor_timings:
+                    state.actor_timings[plan.actor_id]["total_duration_ms"] = total_wall_time_ms
+                
                 return  # Success - exit retry loop
             except Exception as exc:
                 sqlstate = getattr(exc, "sqlstate", None)
