@@ -554,7 +554,7 @@ export function TransactionOrchestrator() {
           </div>
         </div>
 
-        {requiresWriter && scenario === 'READ_WRITE' && (
+        {requiresWriter && (scenario === 'READ_WRITE' || scenario === 'NON_REPEATABLE_READ') && (
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-2">
               <Label htmlFor="newValue1" className="text-slate-700 font-medium">
@@ -565,11 +565,13 @@ export function TransactionOrchestrator() {
                 type="number"
                 value={newValue1}
                 onChange={(e) => setNewValue1(e.target.value)}
-                placeholder="e.g., 42"
+                placeholder="e.g., 3"
                 className="bg-white border-slate-300"
               />
               <p className="text-xs text-muted-foreground">
-                The value the writer will set the quantity to.
+                {scenario === 'READ_WRITE' 
+                  ? 'The value the writer will set the quantity to.' 
+                  : 'The value the writer will update to during the reader\'s sleep (1-5).'}
               </p>
             </div>
           </div>
