@@ -703,28 +703,49 @@ export function TransactionOrchestrator() {
                       </div>
                     )}
                     {statusSnapshot.result_summary.execution_times && Object.keys(statusSnapshot.result_summary.execution_times).length > 0 && (
-                      <div className="md:col-span-2 p-3 border rounded-md bg-blue-50">
-                        <p className="text-xs uppercase text-slate-500 mb-2 flex items-center gap-1">
-                          <Clock className="w-3 h-3" />
-                          Execution Times (Average)
-                        </p>
-                        {(() => {
-                          const times = Object.values(statusSnapshot.result_summary.execution_times);
-                          const avgTotal = times.reduce((sum, t) => sum + (t.total_seconds || 0), 0) / times.length * 1000;
-                          const avgTxn = times.reduce((sum, t) => sum + (t.transaction_seconds || 0), 0) / times.length * 1000;
-                          const avgDelay = times.reduce((sum, t) => sum + (t.delay_seconds || 0), 0) / times.length * 1000;
-                          const avgNet = times.reduce((sum, t) => sum + (t.net_execution_seconds || 0), 0) / times.length * 1000;
-                          
-                          return (
-                            <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
-                              <span>Avg Total: {avgTotal.toFixed(2)}ms</span>
-                              <span>Avg Transaction: {avgTxn.toFixed(2)}ms</span>
-                              <span>Avg Delay: {avgDelay.toFixed(2)}ms</span>
-                              <span className="font-medium text-blue-700">Avg Net: {avgNet.toFixed(2)}ms</span>
-                            </div>
-                          );
-                        })()}
-                      </div>
+                      <>
+                        <div className="md:col-span-2 p-3 border rounded-md bg-blue-50">
+                          <p className="text-xs uppercase text-slate-500 mb-2 flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            Execution Times (Average)
+                          </p>
+                          {(() => {
+                            const times = Object.values(statusSnapshot.result_summary.execution_times);
+                            const avgTotal = times.reduce((sum, t) => sum + (t.total_seconds || 0), 0) / times.length * 1000;
+                            const avgTxn = times.reduce((sum, t) => sum + (t.transaction_seconds || 0), 0) / times.length * 1000;
+                            const avgDelay = times.reduce((sum, t) => sum + (t.delay_seconds || 0), 0) / times.length * 1000;
+                            const avgNet = times.reduce((sum, t) => sum + (t.net_execution_seconds || 0), 0) / times.length * 1000;
+                            
+                            return (
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
+                                <span>Avg Total: {avgTotal.toFixed(2)}ms</span>
+                                <span>Avg Transaction: {avgTxn.toFixed(2)}ms</span>
+                                <span>Avg Delay: {avgDelay.toFixed(2)}ms</span>
+                                <span className="font-medium text-blue-700">Avg Net: {avgNet.toFixed(2)}ms</span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                        <div className="md:col-span-2 p-3 border rounded-md bg-slate-50">
+                          <p className="text-xs uppercase text-slate-500 mb-2 flex items-center gap-1">
+                            <User className="w-3 h-3" />
+                            Per-Actor Execution Times
+                          </p>
+                          <div className="space-y-2">
+                            {Object.entries(statusSnapshot.result_summary.execution_times).map(([actorId, timing]) => (
+                              <div key={actorId} className="text-xs">
+                                <p className="font-medium text-slate-700 mb-1">{actorId}</p>
+                                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-slate-600 pl-2">
+                                  <span>Total: {(timing.total_seconds * 1000).toFixed(2)}ms</span>
+                                  <span>Transaction: {(timing.transaction_seconds * 1000).toFixed(2)}ms</span>
+                                  <span>Delay: {(timing.delay_seconds * 1000).toFixed(2)}ms</span>
+                                  <span className="font-medium text-blue-600">Net: {(timing.net_execution_seconds * 1000).toFixed(2)}ms</span>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </>
                     )}
                   </div>
                 ) : (
