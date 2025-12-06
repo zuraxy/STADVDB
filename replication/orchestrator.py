@@ -444,20 +444,33 @@ class TransactionOrchestrator:
         
         # Track total time across all retry attempts
         total_start = time.perf_counter()
+        cumulative_delay_ms = 0.0
+        cumulative_txn_ms = 0.0
+        last_attempt_succeeded = False
         
         # Retry logic for serialization conflicts (up to 3 attempts)
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 await self._execute_actor_once(state, plan, order_id, attempt)
+                last_attempt_succeeded = True
+                
+                # Accumulate metrics from this attempt
+                if plan.actor_id in state.actor_timings:
+                    cumulative_delay_ms += state.actor_timings[plan.actor_id].get("delay_ms", 0)
+                    cumulative_txn_ms += state.actor_timings[plan.actor_id].get("transaction_duration_ms", 0)
                 
                 # Success - calculate total timing including all attempts
                 total_end = time.perf_counter()
                 total_wall_time_ms = (total_end - total_start) * 1000
                 
                 # Update timing to reflect total time across all attempts
-                if plan.actor_id in state.actor_timings:
-                    state.actor_timings[plan.actor_id]["total_duration_ms"] = total_wall_time_ms
+                state.actor_timings[plan.actor_id] = {
+                    "total_duration_ms": total_wall_time_ms,
+                    "transaction_duration_ms": cumulative_txn_ms,
+                    "delay_ms": cumulative_delay_ms,
+                    "net_execution_ms": cumulative_txn_ms - cumulative_delay_ms,
+                }
                 
                 return  # Success - exit retry loop
             except Exception as exc:
@@ -467,8 +480,15 @@ class TransactionOrchestrator:
                     if attempt == 0:
                         # Only add to conflicts list once (on first failure)
                         state.serialization_conflicts.append(plan.actor_id)
+                    
+                    # Accumulate metrics from failed attempt (if any were stored)
+                    if plan.actor_id in state.actor_timings:
+                        cumulative_delay_ms += state.actor_timings[plan.actor_id].get("delay_ms", 0)
+                        cumulative_txn_ms += state.actor_timings[plan.actor_id].get("transaction_duration_ms", 0)
+                    
                     await state.log("serialization_retry", actor_id=plan.actor_id, attempt=attempt + 1)
-                    await asyncio.sleep(0.05 * (attempt + 1))  # Brief exponential backoff
+                    backoff_ms = 50 * (attempt + 1)
+                    await asyncio.sleep(backoff_ms / 1000)  # Brief exponential backoff
                     continue
                 else:
                     # Non-retryable error or max retries reached
