@@ -532,6 +532,11 @@ class TransactionOrchestrator:
                     delay_ms += plan.delay_seconds * 1000
             else:
                 details = await self._perform_write(state, conn, plan, order_id)
+                # Track delays from _perform_write
+                if "internal_delay_seconds" in details:
+                    delay_ms += details["internal_delay_seconds"] * 1000
+                if plan.delay_seconds:
+                    delay_ms += plan.delay_seconds * 1000
                 # For READ_WRITE scenario: writer delays before commit to allow
                 # reader to attempt reading uncommitted data (dirty read test)
                 if state.payload.scenario == ScenarioType.READ_WRITE:
@@ -735,14 +740,19 @@ class TransactionOrchestrator:
         current_payload = row["payload"] if row else None
         await state.log("write_locked", actor_id=plan.actor_id, quantity=current_qty)
         
+        # Track internal delays for timing metrics
+        internal_delay_seconds = 0.0
+        
         # For WRITE_WRITE: add delay after getting lock to let other writer queue up
         # This creates contention and demonstrates serialization behavior
         if state.payload.scenario == ScenarioType.WRITE_WRITE:
             await asyncio.sleep(0.5)  # Hold lock to create contention
+            internal_delay_seconds += 0.5
         
         if plan.delay_seconds:
             await conn.execute("SELECT pg_sleep($1)", plan.delay_seconds)
             await state.log("pg_sleep", actor_id=plan.actor_id, seconds=plan.delay_seconds)
+            internal_delay_seconds += plan.delay_seconds
         
         # Determine the new quantity value
         if plan.auto_increment:
@@ -792,6 +802,7 @@ class TransactionOrchestrator:
         return {
             "locked_quantity": current_qty,
             "committed_quantity": final_quantity,
+            "internal_delay_seconds": internal_delay_seconds,
         }
 
     async def _cleanup_phantom_read(
